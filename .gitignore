@@ -29,7 +29,8 @@ frontend-vue-backup/dist/
 frontend-vue-backup/package.json.md5
 # 注意：不要整目录忽略 /build/ —— 里面的 appicon.png 与 windows/ 清单是
 # wails build 的必需输入，忽略掉会让 CI/新克隆构建出默认图标。
-/frontend/wailsjs/
+# frontend/wailsjs 是 wails generate 的生成物，但刻意入库：CI 的前端检查
+# （tsc/eslint）与无 wails CLI 的本地开发都依赖它，否则类型检查直接失败。
 
 # 本地 Go 构建缓存（沙箱/CI 用 GOCACHE 指到工作区时产生）
 /.gocache/

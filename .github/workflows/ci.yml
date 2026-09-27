@@ -28,6 +28,12 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
 
+      # main.go 以 go:embed all:frontend/dist 嵌入前端产物：没有该目录时
+      # vet/test/跨平台编译会在 embed 阶段直接失败。本 job 只验证 Go 代码，
+      # 垫一个占位文件让 embed 通过即可（真正的产物由 build job 构建）。
+      - name: Prepare embedded assets placeholder
+        run: mkdir -p frontend/dist && touch frontend/dist/.gitkeep
+
       - name: go vet
         run: go vet ./...
 
@@ -75,14 +81,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            platform: windows/amd64
-          - os: ubuntu-22.04
-            platform: linux/amd64
-          - os: macos-latest
-            platform: darwin/universal
+    matrix:
+      include:
+        - os: windows-latest
+          platform: windows/amd64
+        # 24.04：libasound2t64 与 libwebkit2gtk-4.1-dev 都在默认源里
+        # （22.04 没有 t64 包名，apt 步骤会直接失败）
+        - os: ubuntu-24.04
+          platform: linux/amd64
+        - os: macos-latest
+          platform: darwin/universal
 
     steps:
       - uses: actions/checkout@v4
