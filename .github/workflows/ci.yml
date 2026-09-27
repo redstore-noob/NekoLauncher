@@ -19,7 +19,9 @@ env:
 jobs:
   checks:
     name: Vet & Test
-    runs-on: ubuntu-latest
+    # 固定 22.04：wails v2.15 的 linux 端是 cgo，pkg-config 认的是 webkit2gtk-4.0，
+    # 该 API 包在 24.04+ 已被移除；vet/test 编译 main 包同样需要这些头文件
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -27,6 +29,12 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Linux dependencies (webkit2gtk)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev \
+            libnss3-dev libasound2 pkg-config imagemagick
 
       # main.go 以 go:embed all:frontend/dist 嵌入前端产物：没有该目录时
       # vet/test/跨平台编译会在 embed 阶段直接失败。本 job 只验证 Go 代码，
@@ -81,16 +89,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            platform: windows/amd64
-          # 24.04：libasound2t64 与 libwebkit2gtk-4.1-dev 都在默认源里
-          # （22.04 没有 t64 包名，apt 步骤会直接失败）
-          - os: ubuntu-24.04
-            platform: linux/amd64
-          - os: macos-latest
-            platform: darwin/universal
+    matrix:
+      include:
+        - os: windows-latest
+          platform: windows/amd64
+        # 22.04：wails v2.15 认 webkit2gtk-4.0（4.0 的 API 包 24.04 已移除，
+        # 而 libasound2t64 是 24.04 的包名，22.04 上必须用 libasound2）
+        - os: ubuntu-22.04
+          platform: linux/amd64
+        - os: macos-latest
+          platform: darwin/universal
 
     steps:
       - uses: actions/checkout@v4
@@ -112,8 +120,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev \
-            libnss3-dev libasound2t64 pkg-config imagemagick
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev \
+            libnss3-dev libasound2 pkg-config imagemagick
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
