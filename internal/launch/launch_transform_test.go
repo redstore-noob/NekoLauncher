@@ -178,11 +178,16 @@ func TestPluginTransformFlowsIntoCommandLine(t *testing.T) {
 	if resolved.WorkingDirectory != working {
 		t.Fatalf("工作目录覆盖没生效：%q", resolved.WorkingDirectory)
 	}
-	// 环境变量名在 Windows 上按小写规范化（子进程环境不区分大小写）
-	if resolved.EnvironmentVariables["demo_plugin"] != "1" {
+	// 环境变量名在 Windows 上按小写规范化（子进程环境不区分大小写），
+	// 其他平台保留声明时的原始大小写
+	environmentVariables := resolved.EnvironmentVariables
+	if environmentVariables["demo_plugin"] != "1" && environmentVariables["DEMO_PLUGIN"] != "1" {
 		t.Fatalf("环境变量注入没生效：%v", resolved.EnvironmentVariables)
 	}
-	if _, removed := resolved.RemovedEnvironmentVariables["demo_removed"]; !removed {
+	removedEnvironmentVariables := resolved.RemovedEnvironmentVariables
+	_, removedLowercase := removedEnvironmentVariables["demo_removed"]
+	_, removedUppercase := removedEnvironmentVariables["DEMO_REMOVED"]
+	if !removedLowercase && !removedUppercase {
 		t.Fatalf("环境变量移除没生效：%v", resolved.RemovedEnvironmentVariables)
 	}
 }

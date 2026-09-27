@@ -246,10 +246,13 @@ func createTestZip(t *testing.T, path string, files map[string]string) {
 
 // TestExtractTerracottaTarGz 解压 tar.gz（实测发行包用的就是这个格式）。
 func TestExtractTerracottaTarGz(t *testing.T) {
+	// 压缩包里的可执行文件名按当前平台的候选名构造，
+	// 否则非 Windows 平台上 locateTerracottaBinary 找不到 terracotta.exe
+	binaryName := terracottaBinaryNames()[0]
 	directory := t.TempDir()
-	archivePath := filepath.Join(directory, "terracotta-0.4.2-windows-x86_64-pkg.tar.gz")
+	archivePath := filepath.Join(directory, "terracotta-0.4.2-pkg.tar.gz")
 	createTestTarGz(t, archivePath, map[string]string{
-		"terracotta/terracotta.exe": "binary",
+		"terracotta/" + binaryName:   "binary",
 		"terracotta/assets/note.txt": "hello",
 	})
 
@@ -257,7 +260,7 @@ func TestExtractTerracottaTarGz(t *testing.T) {
 	if err := extractTerracottaArchive(archivePath, target); err != nil {
 		t.Fatalf("解压 tar.gz 失败：%v", err)
 	}
-	data, readErr := os.ReadFile(filepath.Join(target, "terracotta", "terracotta.exe"))
+	data, readErr := os.ReadFile(filepath.Join(target, "terracotta", binaryName))
 	if readErr != nil || string(data) != "binary" {
 		t.Fatalf("解压内容不符：%v / %q", readErr, data)
 	}
@@ -266,7 +269,7 @@ func TestExtractTerracottaTarGz(t *testing.T) {
 	if locateErr != nil {
 		t.Fatalf("解压后未找到可执行文件：%v", locateErr)
 	}
-	if filepath.Base(found) != terracottaBinaryNames()[0] {
+	if filepath.Base(found) != binaryName {
 		t.Fatalf("定位到 %q", found)
 	}
 }

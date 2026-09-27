@@ -157,11 +157,13 @@ jobs:
           curl -L -o linuxdeploy.AppImage \
             https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy.AppImage
-          # AppImage 运行需要 FUSE；runner 上用 --appimage-extract-and-run 兜底
+          # AppImage 运行需要 FUSE；runner 上用 --appimage-extract-and-run 兜底。
+          # 注意 extract-and-run 会改变工具的工作目录：appdir/desktop/icon
+          # 必须传绝对路径，否则报 "No such file or directory"
           sudo mv linuxdeploy.AppImage /usr/local/bin/
           linuxdeploy.AppImage --appimage-extract-and-run \
-            --appdir AppDir --desktop-file=neko-launcher.desktop \
-            --icon-file=neko-launcher.png --output appimage
+            --appdir "$PWD/AppDir" --desktop-file="$PWD/AppDir/neko-launcher.desktop" \
+            --icon-file="$PWD/neko-launcher.png" --output appimage
           mv NekoLauncher*.AppImage "NekoLauncher-linux-amd64.AppImage"
           # 同时提供裸二进制 tar.gz（无 FUSE 环境兜底）
           tar -czf "NekoLauncher-linux-amd64.tar.gz" -C build/bin NekoLauncher

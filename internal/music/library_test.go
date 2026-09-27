@@ -195,9 +195,9 @@ func TestScanTrimsFolderPathAndSkipsNonRegularFiles(t *testing.T) {
 func TestSortTracksByAllModesAndKeepsSource(t *testing.T) {
 	base := time.Date(2024, 5, 1, 12, 0, 0, 0, time.UTC)
 	tracks := []MusicTrack{
-		{FilePath: `C:\m\Bravo.mp3`, FileSize: 300, LastModified: base.Add(2 * time.Hour)},
-		{FilePath: `C:\m\alpha.mp3`, FileSize: 100, LastModified: base.Add(3 * time.Hour)},
-		{FilePath: `C:\m\charlie.mp3`, FileSize: 200, LastModified: base.Add(1 * time.Hour)},
+		{FilePath: filepath.Join("m", "Bravo.mp3"), FileSize: 300, LastModified: base.Add(2 * time.Hour)},
+		{FilePath: filepath.Join("m", "alpha.mp3"), FileSize: 100, LastModified: base.Add(3 * time.Hour)},
+		{FilePath: filepath.Join("m", "charlie.mp3"), FileSize: 200, LastModified: base.Add(1 * time.Hour)},
 	}
 
 	cases := []struct {
@@ -396,7 +396,9 @@ func TestMemoryConfigStoreHandlesZeroValue(t *testing.T) {
 // （MB 阈值写成 1000000）、时间格式串写错导致界面出现 "0001-01-01"。
 func TestTrackDisplayHelpers(t *testing.T) {
 	track := MusicTrack{
-		FilePath:     `C:\music\Demo Song.MP3`,
+		// 用平台分隔符拼路径：Title/Extension 走 filepath.Base，
+		// 硬编码 Windows 路径在 linux/darwin 上无法按分隔符截断
+		FilePath:     filepath.Join("music", "Demo Song.MP3"),
 		FileSize:     4404019, // 4.2 MB
 		LastModified: time.Date(2024, 5, 6, 7, 8, 9, 0, time.UTC),
 	}
