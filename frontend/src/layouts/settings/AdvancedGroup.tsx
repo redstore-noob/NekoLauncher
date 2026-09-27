@@ -10,6 +10,7 @@ import { ChevronDown20Regular } from "@fluentui/react-icons";
 
 import { useSettingsSearch } from "../../components/settings-search";
 import { useI18n } from "../../i18n";
+import { useSimpleMode } from "../simple-mode";
 
 const storageKey = (id: string) => `nya-settings-advanced-${id}`;
 
@@ -35,6 +36,8 @@ const AdvancedGroup: React.FC<AdvancedGroupProps> = ({
   const { t } = useI18n();
   const search = useSettingsSearch();
   const searching = !!search && search.query.trim().length > 0;
+  // S 模式面向低龄玩家：高级设置整组隐藏（连折叠头都不出现）
+  const { simpleMode } = useSimpleMode();
   const [open, setOpen] = useState(
     () => localStorage.getItem(storageKey(id)) === "1",
   );
@@ -42,6 +45,8 @@ const AdvancedGroup: React.FC<AdvancedGroupProps> = ({
   useEffect(() => {
     localStorage.setItem(storageKey(id), open ? "1" : "0");
   }, [id, open]);
+
+  if (simpleMode) return null;
 
   const expanded = open || searching || !!forceOpen;
 
