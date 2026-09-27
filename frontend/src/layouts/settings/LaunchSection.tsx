@@ -37,6 +37,7 @@ import { asObject } from "../../lib/guards";
 import { t } from "../../i18n";
 
 import Section, { SettingRow } from "./Section";
+import AdvancedGroup from "./AdvancedGroup";
 
 interface LaunchSettings {
   WindowWidth: number;
@@ -217,30 +218,6 @@ const LaunchSection: React.FC = () => {
         />
       </SettingRow>
 
-      <div className="pt-2">
-        <div className="text-sm text-gray-800 dark:text-gray-200 mb-1">
-          {t("附加 JVM 参数")}
-        </div>
-        <Textarea
-          minRows={3}
-          placeholder={t("每行一个，如 -XX:+UseG1GC")}
-          value={jvmArgs}
-          onValueChange={setJvmArgs}
-        />
-      </div>
-
-      <div className="pt-2">
-        <div className="text-sm text-gray-800 dark:text-gray-200 mb-1">
-          {t("附加游戏参数")}
-        </div>
-        <Textarea
-          minRows={3}
-          placeholder={t("每行一个，如 --fullscreen")}
-          value={gameArgs}
-          onValueChange={setGameArgs}
-        />
-      </div>
-
       <SettingRow label={t("全屏启动")}>
         <Switch
           color="primary"
@@ -249,47 +226,77 @@ const LaunchSection: React.FC = () => {
         />
       </SettingRow>
 
-      <SettingRow label={t("进程优先级")}>
-        <Select
-          className="w-40 min-w-0 max-w-full [&_*]:min-w-0"
-          popoverProps={{ motionProps: popoverMotionProps }}
-          selectedKeys={[s.ProcessPriority || "normal"]}
-          size="sm"
-          onSelectionChange={(keys) =>
-            setS({
-              ...s,
-              ProcessPriority: (Array.from(keys)[0] as string) || "normal",
-            })
-          }
-        >
-          {PRIORITY_KEYS.map((key) => (
-            <SelectItem key={key}>{priorityLabel(key)}</SelectItem>
-          ))}
-        </Select>
-      </SettingRow>
-
-      <SettingRow label={t("包装命令")}>
-        <Input
-          className="w-72 min-w-0 max-w-full [&_*]:min-w-0"
-          placeholder="gamemoderun %command%"
-          radius="lg"
-          size="sm"
-          value={s.WrapperCommand ?? ""}
-          onValueChange={(v) => setS({ ...s, WrapperCommand: v })}
-        />
-      </SettingRow>
-
-      <div className="pt-2">
-        <div className="text-sm text-gray-800 dark:text-gray-200 mb-1">
-          {t("附加环境变量（每行一个，格式 KEY=VALUE）")}
+      {/* Java 启动参数与进程调优属于高深内容：折叠收纳，保存按钮留在组外 */}
+      <AdvancedGroup
+        hint={t("JVM / 游戏参数、进程优先级、环境变量")}
+        id="launch"
+      >
+        <div className="pt-1">
+          <div className="text-sm text-gray-800 dark:text-gray-200 mb-1">
+            {t("附加 JVM 参数")}
+          </div>
+          <Textarea
+            minRows={3}
+            placeholder={t("每行一个，如 -XX:+UseG1GC")}
+            value={jvmArgs}
+            onValueChange={setJvmArgs}
+          />
         </div>
-        <Textarea
-          minRows={2}
-          placeholder={"__GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1"}
-          value={envVars}
-          onValueChange={setEnvVars}
-        />
-      </div>
+
+        <div className="pt-2">
+          <div className="text-sm text-gray-800 dark:text-gray-200 mb-1">
+            {t("附加游戏参数")}
+          </div>
+          <Textarea
+            minRows={3}
+            placeholder={t("每行一个，如 --fullscreen")}
+            value={gameArgs}
+            onValueChange={setGameArgs}
+          />
+        </div>
+
+        <SettingRow label={t("进程优先级")}>
+          <Select
+            className="w-40 min-w-0 max-w-full [&_*]:min-w-0"
+            popoverProps={{ motionProps: popoverMotionProps }}
+            selectedKeys={[s.ProcessPriority || "normal"]}
+            size="sm"
+            onSelectionChange={(keys) =>
+              setS({
+                ...s,
+                ProcessPriority: (Array.from(keys)[0] as string) || "normal",
+              })
+            }
+          >
+            {PRIORITY_KEYS.map((key) => (
+              <SelectItem key={key}>{priorityLabel(key)}</SelectItem>
+            ))}
+          </Select>
+        </SettingRow>
+
+        <SettingRow label={t("包装命令")}>
+          <Input
+            className="w-72 min-w-0 max-w-full [&_*]:min-w-0"
+            placeholder="gamemoderun %command%"
+            radius="lg"
+            size="sm"
+            value={s.WrapperCommand ?? ""}
+            onValueChange={(v) => setS({ ...s, WrapperCommand: v })}
+          />
+        </SettingRow>
+
+        <div className="pt-2">
+          <div className="text-sm text-gray-800 dark:text-gray-200 mb-1">
+            {t("附加环境变量（每行一个，格式 KEY=VALUE）")}
+          </div>
+          <Textarea
+            minRows={2}
+            placeholder={"__GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1"}
+            value={envVars}
+            onValueChange={setEnvVars}
+          />
+        </div>
+      </AdvancedGroup>
 
       <div className="pt-2 flex items-center gap-3">
         <Button color="primary" size="sm" onPress={save}>

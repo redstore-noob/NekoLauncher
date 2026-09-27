@@ -17,6 +17,7 @@ import {
 import { useI18n } from "../../i18n";
 
 import Section, { SettingRow } from "./Section";
+import AdvancedGroup from "./AdvancedGroup";
 
 const PROXY_MODE_KEYS = ["system", "off", "custom"] as const;
 
@@ -114,71 +115,79 @@ const NetworkSection: React.FC = () => {
         </Select>
       </SettingRow>
 
-      {mode === "custom" ? (
-        <>
-          <SettingRow
-            hint={t("可加 http:// 或 socks5:// 前缀，缺省按 http 处理")}
-            label={t("代理地址")}
-          >
-            <Input
-              className="w-56 min-w-0 max-w-full [&_*]:min-w-0"
-              placeholder="127.0.0.1:7890"
-              radius="lg"
-              size="sm"
-              value={address}
-              onValueChange={setAddress}
-            />
-          </SettingRow>
-          <SettingRow label={t("代理账号（可选）")}>
-            <Input
-              className="w-56 min-w-0 max-w-full [&_*]:min-w-0"
-              radius="lg"
-              size="sm"
-              value={username}
-              onValueChange={setUsername}
-            />
-          </SettingRow>
-          <SettingRow label={t("代理密码（可选）")}>
-            <Input
-              className="w-56 min-w-0 max-w-full [&_*]:min-w-0"
-              radius="lg"
-              size="sm"
-              type="password"
-              value={password}
-              onValueChange={setPassword}
-            />
-          </SettingRow>
-        </>
-      ) : null}
-
-      <div className="flex flex-wrap items-center gap-2 pt-1">
-        <Button
-          color="primary"
-          isLoading={busy}
-          radius="full"
-          size="sm"
-          onPress={save}
-        >
-          {t("保存网络设置")}
-        </Button>
-        <Button
-          isDisabled={busy}
-          isLoading={testing}
-          radius="full"
-          size="sm"
-          variant="flat"
-          onPress={test}
-        >
-          {t("测试连接")}
-        </Button>
-        {hint ? (
-          <span
-            className={`text-xs ${hintError ? "text-danger" : "text-primary"}`}
-          >
-            {hint}
-          </span>
+      {/* 代理详情（地址/账号/密码/测试）是高深内容：折叠收纳；
+          选到「自定义」时自动展开，避免改完模式找不到要填的框 */}
+      <AdvancedGroup
+        forceOpen={mode === "custom"}
+        hint={t("代理地址、账号密码与连接测试")}
+        id="network"
+      >
+        {mode === "custom" ? (
+          <>
+            <SettingRow
+              hint={t("可加 http:// 或 socks5:// 前缀，缺省按 http 处理")}
+              label={t("代理地址")}
+            >
+              <Input
+                className="w-56 min-w-0 max-w-full [&_*]:min-w-0"
+                placeholder="127.0.0.1:7890"
+                radius="lg"
+                size="sm"
+                value={address}
+                onValueChange={setAddress}
+              />
+            </SettingRow>
+            <SettingRow label={t("代理账号（可选）")}>
+              <Input
+                className="w-56 min-w-0 max-w-full [&_*]:min-w-0"
+                radius="lg"
+                size="sm"
+                value={username}
+                onValueChange={setUsername}
+              />
+            </SettingRow>
+            <SettingRow label={t("代理密码（可选）")}>
+              <Input
+                className="w-56 min-w-0 max-w-full [&_*]:min-w-0"
+                radius="lg"
+                size="sm"
+                type="password"
+                value={password}
+                onValueChange={setPassword}
+              />
+            </SettingRow>
+          </>
         ) : null}
-      </div>
+
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <Button
+            color="primary"
+            isLoading={busy}
+            radius="full"
+            size="sm"
+            onPress={save}
+          >
+            {t("保存网络设置")}
+          </Button>
+          <Button
+            isDisabled={busy}
+            isLoading={testing}
+            radius="full"
+            size="sm"
+            variant="flat"
+            onPress={test}
+          >
+            {t("测试连接")}
+          </Button>
+          {hint ? (
+            <span
+              className={`text-xs ${hintError ? "text-danger" : "text-primary"}`}
+            >
+              {hint}
+            </span>
+          ) : null}
+        </div>
+      </AdvancedGroup>
     </Section>
   );
 };

@@ -34,6 +34,7 @@ import {
 } from "../../../wailsjs/go/bindings/DownloadAPI";
 import { t } from "../../i18n";
 
+import AdvancedGroup from "./AdvancedGroup";
 import Section, { SettingRow } from "./Section";
 
 const DownloadSection: React.FC = () => {
@@ -116,86 +117,96 @@ const DownloadSection: React.FC = () => {
         </Select>
       </SettingRow>
 
-      <SettingRow label={t("自动回退源")}>
-        <Select
-          className="w-56 min-w-0 max-w-full [&_*]:min-w-0"
-          items={[{ Name: "__none__", __label: t("禁用") } as any, ...sources]}
-          popoverProps={{ motionProps: popoverMotionProps }}
-          selectedKeys={[fallback || "__none__"]}
-          size="sm"
-          onSelectionChange={(keys) =>
-            changeFallback(Array.from(keys)[0] as string)
-          }
+      {/* 回退源 / 并发线程 / 限速属于高深内容：折叠收纳，保存按钮留在组内 */}
+      <AdvancedGroup hint={t("回退源、并发线程与下载限速")} id="download">
+        <SettingRow label={t("自动回退源")}>
+          <Select
+            className="w-56 min-w-0 max-w-full [&_*]:min-w-0"
+            items={[
+              { Name: "__none__", __label: t("禁用") } as any,
+              ...sources,
+            ]}
+            popoverProps={{ motionProps: popoverMotionProps }}
+            selectedKeys={[fallback || "__none__"]}
+            size="sm"
+            onSelectionChange={(keys) =>
+              changeFallback(Array.from(keys)[0] as string)
+            }
+          >
+            {(item: any) => (
+              <SelectItem key={item.Name}>
+                {item.__label ?? item.Name}
+              </SelectItem>
+            )}
+          </Select>
+        </SettingRow>
+
+        <SettingRow label={t("并行下载线程数")}>
+          <Input
+            className="w-24 min-w-0 max-w-full [&_*]:min-w-0"
+            isInvalid={parallel < 1 || parallel > 64}
+            max={64}
+            min={1}
+            size="sm"
+            type="number"
+            value={String(parallel)}
+            onValueChange={(v) => {
+              // 夹在 1~64：空串/非法输入回落 4，避免 0 或离谱值被存下去
+              const n = Math.round(Number(v));
+
+              setParallel(
+                Number.isFinite(n) ? Math.min(64, Math.max(1, n)) : 4,
+              );
+            }}
+          />
+        </SettingRow>
+
+        <SettingRow
+          hint={t("0 表示不限速，所有下载任务共享总带宽")}
+          label={t("下载限速（KB/s）")}
         >
-          {(item: any) => (
-            <SelectItem key={item.Name}>{item.__label ?? item.Name}</SelectItem>
-          )}
-        </Select>
-      </SettingRow>
+          <Input
+            className="w-32 min-w-0 max-w-full [&_*]:min-w-0"
+            isInvalid={speedLimit < 0}
+            min={0}
+            size="sm"
+            type="number"
+            value={String(speedLimit)}
+            onValueChange={(v) => {
+              const n = Math.round(Number(v));
 
-      <SettingRow label={t("并行下载线程数")}>
-        <Input
-          className="w-24 min-w-0 max-w-full [&_*]:min-w-0"
-          isInvalid={parallel < 1 || parallel > 64}
-          max={64}
-          min={1}
-          size="sm"
-          type="number"
-          value={String(parallel)}
-          onValueChange={(v) => {
-            // 夹在 1~64：空串/非法输入回落 4，避免 0 或离谱值被存下去
-            const n = Math.round(Number(v));
+              setSpeedLimit(
+                Number.isFinite(n) ? Math.min(1048576, Math.max(0, n)) : 0,
+              );
+            }}
+          />
+        </SettingRow>
 
-            setParallel(Number.isFinite(n) ? Math.min(64, Math.max(1, n)) : 4);
-          }}
-        />
-      </SettingRow>
-
-      <SettingRow
-        hint={t("0 表示不限速，所有下载任务共享总带宽")}
-        label={t("下载限速（KB/s）")}
-      >
-        <Input
-          className="w-32 min-w-0 max-w-full [&_*]:min-w-0"
-          isInvalid={speedLimit < 0}
-          min={0}
-          size="sm"
-          type="number"
-          value={String(speedLimit)}
-          onValueChange={(v) => {
-            const n = Math.round(Number(v));
-
-            setSpeedLimit(
-              Number.isFinite(n) ? Math.min(1048576, Math.max(0, n)) : 0,
-            );
-          }}
-        />
-      </SettingRow>
-
-      <div className="flex items-center gap-2 pt-1">
-        <Button
-          color="primary"
-          size="sm"
-          onPress={async () => {
-            await SaveParallelDownloads(parallel);
-            await SaveSpeedLimitKbps(speedLimit);
-            setSaveHint(
-              speedLimit > 0
-                ? t("已保存：{0} 线程，限速 {1} KB/s", {
-                    "0": parallel,
-                    "1": speedLimit,
-                  })
-                : t("已保存：{0} 线程，不限速", { "0": parallel }),
-            );
-            setTimeout(() => setSaveHint(""), 2000);
-          }}
-        >
-          {t("保存下载设置")}
-        </Button>
-        {saveHint ? (
-          <span className="text-xs text-primary">{saveHint}</span>
-        ) : null}
-      </div>
+        <div className="flex items-center gap-2 pt-1">
+          <Button
+            color="primary"
+            size="sm"
+            onPress={async () => {
+              await SaveParallelDownloads(parallel);
+              await SaveSpeedLimitKbps(speedLimit);
+              setSaveHint(
+                speedLimit > 0
+                  ? t("已保存：{0} 线程，限速 {1} KB/s", {
+                      "0": parallel,
+                      "1": speedLimit,
+                    })
+                  : t("已保存：{0} 线程，不限速", { "0": parallel }),
+              );
+              setTimeout(() => setSaveHint(""), 2000);
+            }}
+          >
+            {t("保存下载设置")}
+          </Button>
+          {saveHint ? (
+            <span className="text-xs text-primary">{saveHint}</span>
+          ) : null}
+        </div>
+      </AdvancedGroup>
     </Section>
   );
 };
