@@ -25,6 +25,10 @@ const (
 	maximumEntryBytes = 2 * 1024 * 1024 * 1024
 	// maximumExtractedBytes 解压防护：累计解压字节上限（8 GB，防止压缩炸弹撑爆磁盘）。
 	maximumExtractedBytes = 8 * 1024 * 1024 * 1024
+	// maximumIndexBytes 整合包清单（modrinth.index.json / manifest.json）体积上限（8 MB）：
+	// 这几个文件在用 json.Unmarshal 之前读进内存，必须有独立的限长，
+	// 不能只依赖后面解压阶段的体积防护。
+	maximumIndexBytes = 8 * 1024 * 1024
 )
 
 // DownloadFileToInstance 下载文件到实例内容目录的指定子目录（如 mods / resourcepacks / shaderpacks）。
@@ -56,7 +60,7 @@ func ResolveContentDirectoryForInstance(minecraftDirectory, sourcePath, versionI
 		return ""
 	}
 	// GameVersionIsolation.Resolve 只依赖 SourcePath 与 MinecraftDirectory，
-	// 其余快照字段对本判定无影响（见 launch_bridge.go 的钩子说明）。
+	// 其余快照字段对本判定无影响（见 host_hooks.go 的钩子说明）。
 	if ResolveContentDirectoryHook != nil {
 		if dir := ResolveContentDirectoryHook(minecraftDirectory, sourcePath, versionID); dir != "" {
 			return dir
@@ -85,10 +89,19 @@ type modpackIndex struct {
 type modpackFileEntry struct {
 	Path      string   `json:"path"`
 	Downloads []string `json:"downloads"`
+	// Hashes mrpack 规范里每个声明文件都带哈希（sha1 / sha512），
+	// 整合包更新检测（X-4）用它做本地比对。
+	Hashes modpackFileHashes `json:"hashes"`
 	// CurseForge manifest 引用（无 downloads 直链、无 path）
 	ProjectID *int  `json:"projectID"`
 	FileID    *int  `json:"fileID"`
 	Required  *bool `json:"required"`
+}
+
+// modpackFileHashes mrpack 声明文件的哈希集合。
+type modpackFileHashes struct {
+	SHA1   string `json:"sha1"`
+	SHA512 string `json:"sha512"`
 }
 
 // InstallModpack 安装整合包到实例内容目录：
@@ -154,7 +167,9 @@ func InstallModpack(
 	if indexEntry != nil {
 		reader, openErr := indexEntry.Open()
 		if openErr == nil {
-			data, readErr := io.ReadAll(reader)
+			// 限长读取：解压期的体积防护在这个阶段之后才生效，
+			// 一个几 MB 的 deflate 全零条目能膨胀成几个 GB 撑爆内存
+			data, readErr := readAllLimited(reader, maximumIndexBytes)
 			reader.Close()
 			if readErr != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("解析 index.json 失败：%v", readErr))
@@ -164,6 +179,17 @@ func InstallModpack(
 					result.Errors = append(result.Errors, fmt.Sprintf("解析 index.json 失败：%v", err))
 				} else {
 					index = &parsed
+					// 清单本身不会留在实例目录里（上面按规范跳过启动器元数据），
+					// 这里存一份快照，后续"整合包文件有没有被改动"才答得上来（X-4）。
+					snapshotFormat := "modrinth"
+					if strings.EqualFold(indexEntry.Name, "manifest.json") {
+						snapshotFormat = "curseforge"
+					}
+					if err := persistModpackIndexSnapshot(
+						contentDirectory, snapshotFormat, string(data)); err != nil {
+						result.Errors = append(result.Errors,
+							fmt.Sprintf("保存整合包清单快照失败（不影响安装）：%v", err))
+					}
 				}
 			}
 		}
@@ -237,7 +263,12 @@ func InstallModpack(
 			// CurseForge 引用：解析 CDN 文件名后落到 mods/ 目录
 			var targetPath string
 			if file.Path != "" {
-				targetPath = mustSafeCombine(contentDirectory, strings.ReplaceAll(file.Path, "\\", "/"))
+				combined, err := safeCombine(contentDirectory, strings.ReplaceAll(file.Path, "\\", "/"))
+				if err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("跳过依赖 %s：%v", file.Path, err))
+					continue
+				}
+				targetPath = combined
 			} else {
 				fileName := resolveCurseForgeFileName(ctx, downloadURL)
 				if strings.TrimSpace(fileName) == "" {
@@ -245,7 +276,12 @@ func InstallModpack(
 						fmt.Sprintf("无法解析 CurseForge 依赖 %d/%d 的文件名，已跳过。", *file.ProjectID, *file.FileID))
 					continue
 				}
-				targetPath = mustSafeCombine(contentDirectory, "mods/"+fileName)
+				combined, err := safeCombine(contentDirectory, "mods/"+fileName)
+				if err != nil {
+					result.Errors = append(result.Errors, fmt.Sprintf("跳过 CurseForge 依赖 %s：%v", fileName, err))
+					continue
+				}
+				targetPath = combined
 			}
 
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
@@ -294,7 +330,10 @@ func extractEntry(
 		relative = relative[len("overrides/"):]
 	}
 
-	destination := mustSafeCombine(contentDirectory, relative)
+	destination, err := safeCombine(contentDirectory, relative)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return err
 	}
@@ -308,8 +347,19 @@ func extractEntry(
 		return err
 	}
 	defer writer.Close()
-	if _, err := io.Copy(writer, reader); err != nil {
+	// 头部声明的 UncompressedSize64 可被恶意 zip 伪造，实际解压字节也要受限，
+	// 防止压缩炸弹绕过开头的声明大小检查（LimitReader 兜底最大写入量）。
+	written, err := io.Copy(writer, io.LimitReader(reader, maximumEntryBytes+1))
+	if err != nil {
 		return err
+	}
+	if written > maximumEntryBytes {
+		return fmt.Errorf("条目 %s 实际解压大小超过单文件上限，疑似压缩炸弹。", entry.Name)
+	}
+	// 累计口径按实际字节修正（声明值可能失真）
+	*extractedBytes += written - int64(entry.UncompressedSize64)
+	if *extractedBytes > maximumExtractedBytes {
+		return fmt.Errorf("累计解压字节超过安全上限（%d MB），疑似压缩炸弹。", maximumExtractedBytes/1024/1024)
 	}
 	// 字节口径与依赖下载一致（UI 按 MB 展示）
 	if progress != nil {
@@ -398,19 +448,31 @@ func DownloadModpackFile(ctx context.Context, downloadURL, fileName, targetPath 
 	return DownloadFileToPath(ctx, downloadURL, targetPath, progress)
 }
 
-// mustSafeCombine 安全拼接：确保解压目标位于内容目录内，阻止路径穿越。
-func mustSafeCombine(root, relativePath string) string {
+// safeCombine 安全拼接：确保解压目标位于内容目录内，阻止路径穿越。
+// 越界时返回错误而不是 panic：条目名来自用户导入的整合包，一个畸形条目
+// 只该被跳过并记录，不该让整个导入崩掉。
+func safeCombine(root, relativePath string) (string, error) {
 	normalized := strings.ReplaceAll(relativePath, "\\", "/")
-	if strings.HasPrefix(normalized, "/") || strings.Contains(normalized, "..") {
-		panic(fmt.Sprintf("非法的整合包内路径：%s", relativePath))
+	if strings.HasPrefix(normalized, "/") || hasParentSegment(normalized) {
+		return "", fmt.Errorf("非法的整合包内路径：%s", relativePath)
 	}
 
 	rootFull := filepath.Clean(root)
 	combined := filepath.Clean(filepath.Join(rootFull, filepath.FromSlash(normalized)))
 	if combined != rootFull && !strings.HasPrefix(strings.ToLower(combined), strings.ToLower(rootFull+string(filepath.Separator))) {
-		panic(fmt.Sprintf("整合包路径越界：%s", relativePath))
+		return "", fmt.Errorf("整合包路径越界：%s", relativePath)
 	}
-	return combined
+	return combined, nil
+}
+
+// hasParentSegment 按路径段判断是否含 ".."，避免误伤 "foo..bar.toml" 这类合法文件名。
+func hasParentSegment(path string) bool {
+	for _, segment := range strings.Split(path, "/") {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 func sanitizeFileName(fileName string) string {
@@ -486,7 +548,7 @@ func ReadModpackRequirements(ctx context.Context, mrpackPath string) (*ModpackRe
 		if openErr != nil {
 			return nil, openErr
 		}
-		data, readErr := io.ReadAll(reader)
+		data, readErr := readAllLimited(reader, maximumIndexBytes)
 		reader.Close()
 		if readErr != nil {
 			return nil, readErr
@@ -504,7 +566,7 @@ func ReadModpackRequirements(ctx context.Context, mrpackPath string) (*ModpackRe
 		if openErr != nil {
 			return nil, openErr
 		}
-		data, readErr := io.ReadAll(reader)
+		data, readErr := readAllLimited(reader, maximumIndexBytes)
 		reader.Close()
 		if readErr != nil {
 			return nil, readErr
@@ -566,7 +628,21 @@ func requirementsFromDependencies(deps map[string]string) *ModpackRequirements {
 
 	req := &ModpackRequirements{MinecraftVersion: mc}
 
-	// 取第一个非 minecraft 的依赖键作为加载器（mrpack 规范最多一个加载器）
+	// 取加载器依赖（mrpack 规范最多一个）。按固定顺序扫，不要直接 range map：
+	// 万一包里同时写了多个加载器键，map 的随机遍历顺序会让同一份整合包
+	// 每次解析出不同的加载器。
+	for _, key := range []string{"fabric-loader", "quilt-loader", "neoforge", "forge"} {
+		value, ok := deps[key]
+		if !ok {
+			continue
+		}
+		req.RawLoaderKey = key
+		req.LoaderType, _ = mapLoaderKey(key)
+		req.LoaderVersion = value
+
+		return req
+	}
+	// 兜底：大小写变体或未知键，保持 Vanilla，由上层据 RawLoaderKey 告警
 	for key, value := range deps {
 		if strings.EqualFold(key, "minecraft") {
 			continue
@@ -576,7 +652,7 @@ func requirementsFromDependencies(deps map[string]string) *ModpackRequirements {
 			req.LoaderType = t
 			req.LoaderVersion = value
 		}
-		// 未知加载器键：保持 Vanilla，由上层据 RawLoaderKey 告警
+
 		break
 	}
 	return req

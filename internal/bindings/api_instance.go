@@ -5,8 +5,9 @@ package bindings
 
 import (
 	"strings"
+	"time"
 
-	"nyalauncher/internal/instance"
+	"nekolauncher/internal/instance"
 )
 
 // GetCurrentInstanceSnapshot 当前已发布的实例快照。
@@ -26,9 +27,6 @@ func (a *InstanceAPI) RefreshInstances(path string) instance.GameInstanceSnapsho
 // SelectInstance 选中实例；扫描中 / 出错 / 不存在返回 false。
 func (a *InstanceAPI) SelectInstance(versionID string) bool { return instance.Select(versionID) }
 
-// CanResolveSource 路径是否为有效 Minecraft 目录或外部实例。
-func (a *InstanceAPI) CanResolveSource(path string) bool { return instance.CanResolveSource(path) }
-
 // ---- 目录定位（MinecraftDirectoryLocator） ----
 
 // GetDefaultMinecraftDirectory 平台默认 .minecraft 目录。
@@ -39,11 +37,6 @@ func (a *InstanceAPI) EnsureDefaultMinecraftDirectory() string {
 	return instance.EnsureDefaultDirectory()
 }
 
-// ResolveInstallationPath 解析 Minecraft 根目录或 versions/<版本> 独立实例目录。
-func (a *InstanceAPI) ResolveInstallationPath(path string) (instance.MinecraftInstallationLocation, error) {
-	return instance.ResolveInstallationPath(path)
-}
-
 // GetInstalledVersionIds 枚举目录下已安装版本。
 func (a *InstanceAPI) GetInstalledVersionIds(minecraftDirectory string) []string {
 	return instance.GetInstalledVersionIds(minecraftDirectory)
@@ -51,9 +44,16 @@ func (a *InstanceAPI) GetInstalledVersionIds(minecraftDirectory string) []string
 
 // ---- 详情 / 重命名 ----
 
+// readySnapshot 等待首次实例扫描完成（毫秒级）后返回当前快照。
+// 详情/改名入口若在启动早期被调用，会在加载态快照上操作：
+// 目录字段为空导致重命名报"原版本文件夹不存在"、详情为空。
+func (a *InstanceAPI) readySnapshot() instance.GameInstanceSnapshot {
+	return instance.WaitForReady(10 * time.Second)
+}
+
 // GetVersionDetails 装载版本详情（加载器识别 + 内容扫描）。
 func (a *InstanceAPI) GetVersionDetails(versionID string) (instance.GameVersionDetails, error) {
-	return instance.LoadDetails(callCtx(a.ctx), instance.CurrentSnapshot(), versionID)
+	return instance.LoadDetails(callCtx(a.ctx), a.readySnapshot(), versionID)
 }
 
 // GetInstanceDisplayVersion 返回实例用于界面展示的「游戏版本」号（如 26.2 / 1.12.2）。
@@ -62,7 +62,7 @@ func (a *InstanceAPI) GetVersionDetails(versionID string) (instance.GameVersionD
 // （沿 inheritsFrom / clientVersion 解析的基础版本）。本方法对前端给出明确可用的入口：
 // 解析失败或未识别时回落为版本目录 ID 本身。
 func (a *InstanceAPI) GetInstanceDisplayVersion(versionID string) (string, error) {
-	details, err := instance.LoadDetails(callCtx(a.ctx), instance.CurrentSnapshot(), versionID)
+	details, err := instance.LoadDetails(callCtx(a.ctx), a.readySnapshot(), versionID)
 	if err != nil {
 		return versionID, err
 	}
@@ -75,7 +75,13 @@ func (a *InstanceAPI) GetInstanceDisplayVersion(versionID string) (string, error
 
 // RenameInstance 重命名版本目录并修补 inheritsFrom / jar 引用，返回实际新版本 ID。
 func (a *InstanceAPI) RenameInstance(oldVersionID, requestedVersionID string) (string, error) {
-	return instance.RenameVersion(callCtx(a.ctx), instance.CurrentSnapshot().MinecraftDirectory, oldVersionID, requestedVersionID)
+	return instance.RenameVersion(callCtx(a.ctx), a.readySnapshot().MinecraftDirectory, oldVersionID, requestedVersionID)
+}
+
+// CopyInstance 复制实例（目录整体拷贝 + 版本 JSON id 补丁 + 实例档案克隆），
+// 返回新版本 ID。外部导入的实例不支持复制。
+func (a *InstanceAPI) CopyInstance(sourceVersionID, requestedVersionID string) (string, error) {
+	return instance.CopyVersion(callCtx(a.ctx), a.readySnapshot().MinecraftDirectory, sourceVersionID, requestedVersionID)
 }
 
 // ---- 隔离布局（GameVersionIsolation） ----
@@ -83,21 +89,6 @@ func (a *InstanceAPI) RenameInstance(oldVersionID, requestedVersionID string) (s
 // ResolveInstanceIsolation 解析实例布局。
 func (a *InstanceAPI) ResolveInstanceIsolation(snapshot instance.GameInstanceSnapshot, versionID string) instance.GameVersionLayout {
 	return instance.GameVersionIsolationResolve(snapshot, versionID)
-}
-
-// GetInstanceGameDirectory 隔离布局下的游戏目录；共享布局为空串。
-func (a *InstanceAPI) GetInstanceGameDirectory(snapshot instance.GameInstanceSnapshot, versionID string) string {
-	return instance.GameVersionIsolationGetGameDirectory(snapshot, versionID)
-}
-
-// GetInstanceContentDirectory 实例内容目录（隔离或共享）。
-func (a *InstanceAPI) GetInstanceContentDirectory(snapshot instance.GameInstanceSnapshot, versionID string) string {
-	return instance.GameVersionIsolationGetContentDirectory(snapshot, versionID)
-}
-
-// IsVersionDirectorySource 是否为 versions/<版本> 实例目录。
-func (a *InstanceAPI) IsVersionDirectorySource(sourcePath string) bool {
-	return instance.IsVersionDirectorySource(sourcePath)
 }
 
 // TryResolveExternalInstance 识别 MultiMC / PCL 等外部启动器实例。

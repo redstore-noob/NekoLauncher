@@ -9,8 +9,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"nyalauncher/internal/download/modrinth"
-	"nyalauncher/internal/models"
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/download/modrinth"
+	"nekolauncher/internal/models"
 )
 
 // GameDownloadPhase 下载任务阶段。
@@ -167,6 +168,9 @@ func (s *GameDownloadService) runDownloadTask(
 		return false
 	}
 	taskCtx, cancel := context.WithCancel(ctx)
+	// 无论成功还是失败都要释放：只置空 activeTask 会把 cancelCtx 一直挂在
+	// 父 ctx 的 children 上，每次下载泄一个。
+	defer cancel()
 	s.activeTask = cancel
 	s.hasActive = true
 	taskID := s.taskID.Add(1)
@@ -224,13 +228,13 @@ func (s *GameDownloadService) runDownloadTask(
 	}
 
 	// 全局默认隔离开启时，为新版本预建隔离内容目录骨架。
-	if ConfigDefaultVersionIsolation() {
+	if config.DefaultVersionIsolation() {
 		scaffoldIsolatedContentDirectory(targetRoot, instanceID)
 	}
 
-	sourcePath := ConfigGameDirectory()
+	sourcePath := config.GameDirectory()
 	if strings.TrimSpace(sourcePath) == "" {
-		ConfigSaveGameDirectory(targetRoot)
+		config.SaveGameDirectory(targetRoot)
 		sourcePath = targetRoot
 	}
 
@@ -306,12 +310,12 @@ func (s *GameDownloadService) ResumeActive() bool {
 }
 
 // resolveTargetMinecraftDirectory 解析下载目标根目录：
-// 配置的游戏目录 → 环境变量 NYALAUNCHER_MINECRAFT_DIR → 默认 .minecraft；
+// 配置的游戏目录 → 环境变量 NEKOLAUNCHER_MINECRAFT_DIR → 默认 .minecraft；
 // 若指向 versions/ 子目录则上提一级（与 C# 行为一致）。
 func (s *GameDownloadService) resolveTargetMinecraftDirectory() string {
-	configured := ConfigGameDirectory()
+	configured := config.GameDirectory()
 	if strings.TrimSpace(configured) == "" {
-		configured = os.Getenv("NYALAUNCHER_MINECRAFT_DIR")
+		configured = os.Getenv("NEKOLAUNCHER_MINECRAFT_DIR")
 	}
 	if strings.TrimSpace(configured) == "" {
 		configured = EnsureDefaultMinecraftDirectory()
@@ -365,7 +369,7 @@ func (s *GameDownloadService) downloadFabricAPIIfNeeded(
 	var layoutContentDirectory string
 	if ResolveInstanceLayoutHook != nil {
 		layoutContentDirectory = ResolveInstanceLayoutHook(
-			targetRoot, sourcePath, instanceName, gameVersion, ConfigDefaultVersionIsolation())
+			targetRoot, sourcePath, instanceName, gameVersion, config.DefaultVersionIsolation())
 	}
 	if strings.TrimSpace(layoutContentDirectory) == "" {
 		layoutContentDirectory = targetRoot
@@ -411,7 +415,7 @@ func (s *GameDownloadService) downloadFabricAPIIfNeeded(
 		return nil
 	}
 
-	targetPath := filepath.Join(modsDir, latest.filename)
+	targetPath := filepath.Join(modsDir, sanitizeFileName(latest.filename))
 	if _, err := os.Stat(targetPath); err == nil {
 		return nil
 	}

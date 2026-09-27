@@ -4,9 +4,15 @@ package bindings
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"time"
+
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/instance"
 )
 
 // errEmptyPath 路径为空。
@@ -42,8 +48,129 @@ func (a *InstanceAPI) DeleteInstance(instanceID, gameDirectory string) error {
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 		return errInvalidInstancePath
 	}
-	if info, err := os.Stat(absTarget); err != nil || !info.IsDir() {
-		return os.ErrNotExist
+	var info os.FileInfo
+	if stat, err := os.Stat(absTarget); err == nil {
+		info = stat
+	} else {
+		// 注意：不要在这里因为 Stat 报 NotExist 就放弃。Windows 会把目录名
+		// 尾部的空格/点在常规路径 API 里剥掉（如 "1.20.1 "），导致 Stat 误报
+		// 不存在、资源管理器也删不掉——这正是清不掉的残留。改用 \\?\ 路径
+		// 做存在性检查，且删除保持幂等：本就不存在即视为成功。
+		extInfo, extErr := os.Stat(extendedPath(absTarget))
+		if extErr != nil {
+			if os.IsNotExist(extErr) {
+				return nil
+			}
+			return extErr
+		}
+		info = extInfo
 	}
-	return os.RemoveAll(absTarget)
+	if !info.IsDir() {
+		return errInvalidInstancePath
+	}
+	return removeAllForce(absTarget)
+}
+
+// removeAllForce 删除目录树，尽力保证删干净。Windows 上常见的残留原因逐个处理：
+//   - 只读属性：其它启动器导入的整合包常带只读文件/目录，os.RemoveAll 会失败；
+//     删除前先递归清掉只读位（不是失败后才清）。
+//   - 路径超过 MAX_PATH（260）：.minecraft 目录嵌套很深，用 \\?\ 前缀绕过。
+//   - 瞬时占用：杀毒/索引/资源管理器短暂握住句柄，用带退避的重试吸收。
+//
+// 重试耗尽后若目录仍存在，返回带首个残留路径的错误，便于用户定位占用者。
+func removeAllForce(root string) error {
+	extRoot := extendedPath(root)
+
+	// 预处理：清只读。第一次 RemoveAll 之前就做，避免「删了一半卡在只读文件」。
+	clearReadOnly(extRoot)
+
+	var lastErr error
+	for attempt := 0; attempt < removeMaxAttempts; attempt++ {
+		if err := os.RemoveAll(extRoot); err == nil {
+			// RemoveAll 返回 nil 时目录已不存在
+			return nil
+		} else {
+			lastErr = err
+		}
+		// 失败后再次清只读（可能有新暴露出的层级），等一小会儿再试
+		clearReadOnly(extRoot)
+		time.Sleep(time.Duration(1<<uint(attempt)) * 100 * time.Millisecond)
+	}
+
+	// 仍失败：找出第一个删不掉的条目，附在错误里
+	if leftover, findErr := firstExisting(extRoot); findErr == nil && leftover != "" {
+		return fmt.Errorf("%w: %s", lastErr, leftover)
+	}
+	return lastErr
+}
+
+const removeMaxAttempts = 5
+
+// extendedPath 返回绕过 Windows MAX_PATH 限制的路径形式。
+// 普通盘符路径加 \\?\ 前缀；UNC 路径转为 \\?\UNC\...；非 Windows 原样返回。
+func extendedPath(path string) string {
+	if runtime.GOOS != "windows" {
+		return path
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	abs = filepath.Clean(abs)
+	if strings.HasPrefix(abs, `\\?\`) {
+		return abs
+	}
+	if strings.HasPrefix(abs, `\\`) {
+		return `\\?\UNC\` + strings.TrimPrefix(abs, `\\`)
+	}
+	return `\\?\` + abs
+}
+
+// clearReadOnly 递归移除 root 下所有文件与目录的只读位，忽略个别失败。
+func clearReadOnly(root string) {
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if !d.Type().IsRegular() && !d.IsDir() {
+			return nil
+		}
+		if info, statErr := d.Info(); statErr == nil && info.Mode()&0o222 == 0 {
+			_ = os.Chmod(path, info.Mode()|0o222)
+		}
+		return nil
+	})
+}
+
+// firstExisting 返回 root 下仍然存在的第一个条目路径；root 本身已不在则返回空串。
+func firstExisting(root string) (string, error) {
+	info, err := os.Stat(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return root, nil
+	}
+	if !info.IsDir() {
+		return root, nil
+	}
+	found := ""
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil && found == "" {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if found == "" {
+		// 目录本身无法删除（被当作句柄占用等）
+		return root, nil
+	}
+	return found, nil
+}
+
+// ScanImportableInstances 扫描 Prism/MultiMC/CurseForge/Modrinth/ATLauncher 等
+// 其它启动器的实例，返回可一键注册为游戏目录的列表（不复制文件）。
+func (a *InstanceAPI) ScanImportableInstances() []instance.ImportableInstance {
+	return instance.ScanImportableInstances(config.GetFolders())
 }

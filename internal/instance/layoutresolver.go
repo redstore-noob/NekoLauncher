@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"strings"
 
-	"nyalauncher/internal/tools"
+	"nekolauncher/internal/tools"
 )
 
 // GameVersionLayout 版本隔离布局解析结果：内容目录与判定来源。
@@ -59,9 +59,9 @@ func ResolveLayout(minecraftDirectory, sourcePath, versionID string, explicitIso
 	// 1. 用户显式设置最优先
 	if explicitIsolation != nil {
 		if *explicitIsolation {
-			return isolatedLayout(isolatedDirectory, "NyaLauncher", "用户已明确开启版本隔离")
+			return isolatedLayout(isolatedDirectory, "NekoLauncher", "用户已明确开启版本隔离")
 		}
-		return sharedLayout(mcRoot, "NyaLauncher", "用户已明确关闭版本隔离")
+		return sharedLayout(mcRoot, "NekoLauncher", "用户已明确关闭版本隔离")
 	}
 
 	// 2. 自动检测：按第三方启动器特征与内容证据依次尝试
@@ -73,7 +73,7 @@ func ResolveLayout(minecraftDirectory, sourcePath, versionID string, explicitIso
 	if fallbackIsolation != nil && *fallbackIsolation {
 		return isolatedLayout(
 			isolatedDirectory,
-			"NyaLauncher",
+			"NekoLauncher",
 			"全局默认开启版本隔离（未检测到已有实例内容）")
 	}
 	return sharedLayout(mcRoot, "官方 / 共享布局", "未检测到版本独立内容或隔离设置")
@@ -99,7 +99,7 @@ func detectAutoIsolation(mcRoot, versionDirectory, isolatedDirectory, sourcePath
 	}
 
 	hmclMarker := filepath.Join(versionDirectory, ".hmclversion.cfg")
-	if fileExists(hmclMarker) && hasMinecraftContent(isolatedDirectory) {
+	if tools.FileExists(hmclMarker) && hasMinecraftContent(isolatedDirectory) {
 		layout := isolatedLayout(
 			isolatedDirectory,
 			"HMCL",
@@ -258,7 +258,7 @@ func resolveIsolatedContentDirectory(versionDirectory string) string {
 // tryResolveMultiMcFamily 识别 MultiMC / Prism 系实例：instance.cfg 标记加独立 minecraft 目录。
 func tryResolveMultiMcFamily(versionDirectory string) (string, bool) {
 	cfgPath := filepath.Join(versionDirectory, "instance.cfg")
-	if !fileExists(cfgPath) {
+	if !tools.FileExists(cfgPath) {
 		return "", false
 	}
 
@@ -280,7 +280,7 @@ func tryResolveMultiMcFamily(versionDirectory string) (string, bool) {
 func tryResolveKnownPackLayout(versionDirectory string) (string, string, bool) {
 	for _, known := range knownPackLayouts {
 		markerPath := filepath.Join(versionDirectory, known.Marker)
-		if !fileExists(markerPath) {
+		if !tools.FileExists(markerPath) {
 			continue
 		}
 		contentDirectory := resolveIsolatedContentDirectory(versionDirectory)
@@ -300,17 +300,17 @@ func hasExternalMarker(directory string) bool {
 
 // getExternalMarker 按优先级探测外部实例元数据文件，返回启动器名称与判定依据。
 func getExternalMarker(directory string) (string, string, bool) {
-	if fileExists(filepath.Join(directory, "instance.cfg")) {
+	if tools.FileExists(filepath.Join(directory, "instance.cfg")) {
 		return "MultiMC / Prism Launcher",
 			"检测到外部 instance.cfg 与独立 minecraft/.minecraft 内容目录", true
 	}
-	if fileExists(filepath.Join(directory, "minecraftinstance.json")) {
+	if tools.FileExists(filepath.Join(directory, "minecraftinstance.json")) {
 		return "CurseForge", "检测到外部 minecraftinstance.json 实例元数据", true
 	}
-	if fileExists(filepath.Join(directory, "profile.json")) {
+	if tools.FileExists(filepath.Join(directory, "profile.json")) {
 		return "Modrinth App", "检测到外部 profile.json 实例元数据", true
 	}
-	if fileExists(filepath.Join(directory, "instance.json")) {
+	if tools.FileExists(filepath.Join(directory, "instance.json")) {
 		return "ATLauncher", "检测到外部 instance.json 实例元数据", true
 	}
 	return "", "", false
@@ -334,7 +334,7 @@ func resolveExternalContentDirectory(instanceDirectory string) (string, bool) {
 // 旧键 VersionArgumentIndie 兜底。文件缺失或不可读返回 nil。
 func tryReadPclIsolation(versionDirectory string) *bool {
 	setupPath := filepath.Join(versionDirectory, "PCL", "Setup.ini")
-	if !fileExists(setupPath) {
+	if !tools.FileExists(setupPath) {
 		return nil
 	}
 
@@ -386,7 +386,7 @@ func hasMinecraftContent(directory string) bool {
 	}
 
 	for _, fileName := range contentFiles {
-		if fileExists(filepath.Join(directory, fileName)) {
+		if tools.FileExists(filepath.Join(directory, fileName)) {
 			return true
 		}
 	}
@@ -430,11 +430,20 @@ func mustAbs(path string) string {
 	return abs
 }
 
+// trimEndingSeparator 去掉路径尾部的目录分隔符，但保留盘符根
+//（"C:\" 保持原样，与 config 包 trimTrailingSeparator 语义一致；
+// 直接 strings.TrimRight 会把 "C:\" 剪成 "C:"）。
 func trimEndingSeparator(path string) string {
-	return strings.TrimRight(path, `\/`)
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+	for len(path) > 0 {
+		last := path[len(path)-1]
+		if last != '/' && last != '\\' {
+			break
+		}
+		// 已到根（父目录等于自身）时停止
+		if filepath.Dir(path) == path {
+			break
+		}
+		path = path[:len(path)-1]
+	}
+	return path
 }

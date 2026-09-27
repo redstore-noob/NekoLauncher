@@ -9,16 +9,22 @@ const (
 	SubVersion  = 0
 	FixVersion  = 0
 	Suffix      = "preview4"
-	IsUnstable  = false
-	UpdateCh    = "main"
 )
 
-// Version 纯版本字符串，如 "1.0.0-preview4"；由上方字段拼接而来。
+// versionOverride 重建分支的临时版本标识：非空时 Version() 直接返回它，
+// 便于整体区分 Rebuild 构建；回到正式版本方案时把它改回空串即可。
+const versionOverride = "Nya_Rebuild"
+
+// Version 纯版本字符串。versionOverride 非空时优先返回（临时标识），
+// 否则由上方字段拼接，如 "1.0.0-preview4"。
 func Version() string {
+	if versionOverride != "" {
+		return versionOverride
+	}
 	return fmt.Sprintf("%d.%d.%d-%s", MainVersion, SubVersion, FixVersion, Suffix)
 }
 
-// FormatVersionString 格式化版本号，如 "NyaLauncher版本号:1.0.0-preview4"。
+// FormatVersionString 格式化版本号，如 "NekoLauncher版本号:1.0.0-preview4"。
 func FormatVersionString() string {
-	return "NyaLauncher版本号:" + Version()
+	return "NekoLauncher版本号:" + Version()
 }

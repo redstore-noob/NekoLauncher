@@ -1,105 +1,95 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-import { defineConfig, globalIgnores } from "eslint/config";
-import { fixupConfigRules, fixupPluginRules } from "@eslint/compat";
+import js from "@eslint/js";
 import react from "eslint-plugin-react";
+import reactHooks from "eslint-plugin-react-hooks";
+import jsxA11Y from "eslint-plugin-jsx-a11y";
+import prettierPlugin from "eslint-plugin-prettier";
+import eslintConfigPrettier from "eslint-config-prettier";
 import unusedImports from "eslint-plugin-unused-imports";
 import _import from "eslint-plugin-import";
 import typescriptEslint from "@typescript-eslint/eslint-plugin";
-import jsxA11Y from "eslint-plugin-jsx-a11y";
-import prettier from "eslint-plugin-prettier";
-import globals from "globals";
 import tsParser from "@typescript-eslint/parser";
-import js from "@eslint/js";
-import { FlatCompat } from "@eslint/eslintrc";
+import globals from "globals";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-  recommendedConfig: js.configs.recommended,
-  allConfig: js.configs.all,
-});
-
-export default defineConfig([
-  globalIgnores([
-    ".now/*",
-    "**/*.css",
-    "**/.changeset",
-    "**/dist",
-    "esm/*",
-    "public/*",
-    "tests/*",
-    "scripts/*",
-    "**/*.config.js",
-    "**/.DS_Store",
-    "**/node_modules",
-    "**/coverage",
-    "**/.next",
-    "**/build",
-    "!**/.commitlintrc.cjs",
-    "!**/.lintstagedrc.cjs",
-    "!**/jest.config.js",
-    "!**/plopfile.js",
-    "!**/react-shim.js",
-    "!**/tsup.config.ts",
-  ]),
+// 原生 flat config：
+// - eslint-plugin-react 尚未提供可用的 flat recommended（configs.flat 在当前版本为空），
+//   这里手动注册插件并沿用其 eslintrc 版 recommended 的规则表；
+// - react-hooks 6 / jsx-a11y 6.10 自带 flat 配置，直接使用；
+// - eslint-plugin-prettier 的 configs.recommended 仍是 eslintrc 形状（plugins 为数组），
+//   因此只注册插件本体 + 用 eslint-config-prettier 关闭冲突规则。
+export default [
   {
-    extends: fixupConfigRules(
-      compat.extends(
-        "plugin:react/recommended",
-        "plugin:prettier/recommended",
-        "plugin:react-hooks/recommended",
-        "plugin:jsx-a11y/recommended",
-      ),
-    ),
+    ignores: [
+      "dist/**",
+      "coverage/**",
+      "wailsjs/**",
+      "node_modules/**",
+      "**/*.css",
+      "**/*.config.js",
+    ],
+  },
 
-    plugins: {
-      react: fixupPluginRules(react),
-      "unused-imports": unusedImports,
-      import: fixupPluginRules(_import),
-      "@typescript-eslint": typescriptEslint,
-      "jsx-a11y": fixupPluginRules(jsxA11Y),
-      prettier: fixupPluginRules(prettier),
-    },
+  js.configs.recommended,
 
+  // 浏览器全局（window/document 等）；TS 文件里 no-undef 交由 tsc 负责，单独关闭
+  {
     languageOptions: {
-      globals: {
-        ...Object.fromEntries(
-          Object.entries(globals.browser).map(([key]) => [key, "off"]),
-        ),
-        ...globals.node,
-      },
-
-      parser: tsParser,
-      ecmaVersion: 12,
+      ecmaVersion: 2022,
       sourceType: "module",
-
-      parserOptions: {
-        ecmaFeatures: {
-          jsx: true,
-        },
-      },
+      globals: { ...globals.browser },
     },
-
-    settings: {
-      react: {
-        version: "detect",
-      },
-    },
-
-
+  },
+  {
     files: ["**/*.ts", "**/*.tsx"],
+    rules: { "no-undef": "off" },
+  },
 
+  {
+    files: ["**/*.{js,mjs,cjs,ts,tsx}"],
+    plugins: { react },
+    languageOptions: {
+      parserOptions: { ecmaFeatures: { jsx: true } },
+    },
+    settings: { react: { version: "detect" } },
     rules: {
-      "no-console": "warn",
+      ...react.configs.recommended.rules,
       "react/prop-types": "off",
       "react/jsx-uses-react": "off",
       "react/react-in-jsx-scope": "off",
-      "react-hooks/exhaustive-deps": "off",
-      "jsx-a11y/click-events-have-key-events": "warn",
-      "jsx-a11y/interactive-supports-focus": "warn",
+      "react/self-closing-comp": "warn",
+      "react/jsx-sort-props": [
+        "warn",
+        {
+          callbacksLast: true,
+          shorthandFirst: true,
+          noSortAlphabetically: false,
+          reservedFirst: true,
+        },
+      ],
+    },
+  },
+
+  // react-hooks 6 的 flat/recommended 是数组形状，统一摊平后再并入
+  ...(Array.isArray(reactHooks.configs["flat/recommended"])
+    ? reactHooks.configs["flat/recommended"]
+    : [reactHooks.configs["flat/recommended"]]),
+
+  jsxA11Y.flatConfigs.recommended,
+
+  {
+    files: ["**/*.{js,mjs,cjs,ts,tsx}"],
+    plugins: {
+      "@typescript-eslint": typescriptEslint,
+      "unused-imports": unusedImports,
+      import: _import,
+      prettier: prettierPlugin,
+    },
+    languageOptions: {
+      parser: tsParser,
+    },
+    rules: {
+      // 只禁调试用的 log/info：error/warn 是各 catch 分支的正经上报，
+      // 一并报 warn 会让 33 条噪音把新问题埋掉（console.log 仅剩插件 log API 一处）
+      "no-console": ["warn", { allow: ["error", "warn"] }],
       "prettier/prettier": "warn",
       "no-unused-vars": "off",
       "unused-imports/no-unused-vars": "off",
@@ -114,6 +104,11 @@ export default defineConfig([
         },
       ],
 
+      "jsx-a11y/click-events-have-key-events": "warn",
+      "jsx-a11y/interactive-supports-focus": "warn",
+      "jsx-a11y/label-has-associated-control": "warn",
+      "jsx-a11y/no-static-element-interactions": "warn",
+
       "import/order": [
         "warn",
         {
@@ -127,7 +122,6 @@ export default defineConfig([
             "sibling",
             "index",
           ],
-
           pathGroups: [
             {
               pattern: "~/**",
@@ -135,20 +129,7 @@ export default defineConfig([
               position: "after",
             },
           ],
-
           "newlines-between": "always",
-        },
-      ],
-
-      "react/self-closing-comp": "warn",
-
-      "react/jsx-sort-props": [
-        "warn",
-        {
-          callbacksLast: true,
-          shorthandFirst: true,
-          noSortAlphabetically: false,
-          reservedFirst: true,
         },
       ],
 
@@ -172,4 +153,7 @@ export default defineConfig([
       ],
     },
   },
-]);
+
+  // 必须放在最后：关闭所有与 prettier 冲突的格式类规则
+  eslintConfigPrettier,
+];

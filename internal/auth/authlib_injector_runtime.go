@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"nyalauncher/internal/logs"
+	"nekolauncher/internal/logs"
 )
 
 // 注入器 latest.json 的官方源与 BMCLAPI 镜像。
@@ -27,12 +28,55 @@ const (
 // 统一 User-Agent。
 var injectorClient = &http.Client{Timeout: 2 * time.Minute}
 
-// AuthlibArtifact latest.json 的产物描述；sha256 为新版字段，旧版仅提供 sha1。
+// AuthlibArtifact latest.json 的产物描述。
+//
+// 官方现行格式（build_number / version / download_url / checksums{sha256,sha1}）：
+//
+//	{"build_number":56,"version":"1.2.8","download_url":"…/authlib-injector-1.2.8.jar",
+//	 "checksums":{"sha256":"…"}}
+//
+// 早期格式把 url / sha256 / sha1 放在顶层。两种都认（取值一律走下面的访问器，
+// 新格式优先）——只按旧格式解析会让 Url 恒为空，两个下载源全部失败，
+// 皮肤站账号在全新安装上根本启动不了。
 type AuthlibArtifact struct {
-	Version string `json:"version"`
-	Url     string `json:"url"`
-	Sha256  string `json:"sha256"`
-	Sha1    string `json:"sha1"`
+	Version     string `json:"version"`
+	DownloadURL string `json:"download_url"`
+	Checksums   struct {
+		Sha256 string `json:"sha256"`
+		Sha1   string `json:"sha1"`
+	} `json:"checksums"`
+
+	// 旧格式字段（保留兼容）
+	Url    string `json:"url"`
+	Sha256 string `json:"sha256"`
+	Sha1   string `json:"sha1"`
+}
+
+// ArtifactURL 产物下载地址（新格式优先）。
+func (a *AuthlibArtifact) ArtifactURL() string {
+	if value := strings.TrimSpace(a.DownloadURL); value != "" {
+		return value
+	}
+
+	return strings.TrimSpace(a.Url)
+}
+
+// ArtifactSha256 产物 SHA-256（新格式优先）。
+func (a *AuthlibArtifact) ArtifactSha256() string {
+	if value := strings.TrimSpace(a.Checksums.Sha256); value != "" {
+		return value
+	}
+
+	return strings.TrimSpace(a.Sha256)
+}
+
+// ArtifactSha1 产物 SHA-1（新格式优先）。
+func (a *AuthlibArtifact) ArtifactSha1() string {
+	if value := strings.TrimSpace(a.Checksums.Sha1); value != "" {
+		return value
+	}
+
+	return strings.TrimSpace(a.Sha1)
 }
 
 // EnsureInjector 确保 minecraftDirectory 下存在可用的 authlib-injector 注入器 jar，
@@ -40,7 +84,7 @@ type AuthlibArtifact struct {
 // 全源失败时回退到任意已存在的旧版 jar（外置登录多数场景下仍可用）。
 func EnsureInjector(ctx context.Context, minecraftDirectory string, log func(string)) (string, error) {
 	if strings.TrimSpace(minecraftDirectory) == "" {
-		panic("minecraftDirectory 不能为空")
+		return "", errors.New("minecraftDirectory 不能为空")
 	}
 	installDirectory := filepath.Join(minecraftDirectory, "authlib-injector")
 	if err := os.MkdirAll(installDirectory, 0o755); err != nil {
@@ -82,8 +126,8 @@ func ensureFromSource(
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(artifact.Url) == "" || strings.TrimSpace(artifact.Version) == "" {
-		return "", fmt.Errorf("latest.json 缺少 url 或 version 字段。")
+	if strings.TrimSpace(artifact.ArtifactURL()) == "" || strings.TrimSpace(artifact.Version) == "" {
+		return "", fmt.Errorf("latest.json 缺少下载地址或 version 字段。")
 	}
 
 	targetPath := filepath.Join(installDirectory, fmt.Sprintf("authlib-injector-%s.jar", artifact.Version))
@@ -102,7 +146,7 @@ func ensureFromSource(
 		_ = os.Remove(targetPath)
 	}
 
-	downloadUrl := resolveInjectorDownloadUrl(latestJsonUrl, artifact.Url)
+	downloadUrl := resolveInjectorDownloadUrl(latestJsonUrl, artifact.ArtifactURL())
 	logLog(log, fmt.Sprintf("正在下载 authlib-injector %s…", artifact.Version))
 	if err := downloadInjectorFile(ctx, downloadUrl, targetPath); err != nil {
 		return "", err
@@ -141,24 +185,34 @@ func fetchLatestArtifact(ctx context.Context, latestJsonUrl string) (*AuthlibArt
 }
 
 // resolveInjectorDownloadUrl 把官方源的产物地址映射到对应镜像（BMCLAPI 的
-// authlib-injector 镜像与官方目录结构一致，仅替换主机与 /mirrors/authlib-injector 前缀）。
+// authlib-injector 镜像与官方目录结构一致，仅替换主机与前缀）。
+//
+// 官方 download_url 形如 https://authlib-injector.yushi.moe/artifact/56/xxx.jar，
+// 镜像目录是 https://bmclapi2.bangbang93.com/mirrors/authlib-injector/，
+// 所以正确的拼接是「镜像目录 + artifact/56/xxx.jar」——早先按 LastIndex 截出来的
+// mirrorBase 已经带上了 /artifact，再拼原始 path 会得到 /artifact/artifact/56/…。
 func resolveInjectorDownloadUrl(latestJsonUrl, artifactUrl string) string {
 	if latestJsonUrl != officialLatestJsonUrl ||
 		!(strings.HasPrefix(artifactUrl, "http://") || strings.HasPrefix(artifactUrl, "https://")) {
 		return artifactUrl
 	}
-	mirrorBase := mirrorLatestJsonUrl[:strings.LastIndex(mirrorLatestJsonUrl, "/")]
+
+	// 镜像根（latest.json 所在目录的上一级）：…/mirrors/authlib-injector/
+	mirrorRoot := mirrorLatestJsonUrl[:strings.LastIndex(mirrorLatestJsonUrl, "/")+1]
+	mirrorRoot = mirrorRoot[:strings.LastIndex(strings.TrimSuffix(mirrorRoot, "/"), "/")+1]
+
 	path := artifactUrl
 	if index := strings.Index(path[8:], "/"); index >= 0 {
-		path = path[8+index:]
+		path = path[8+index+1:]
 	} else {
-		path = "/"
+		return artifactUrl
 	}
-	return mirrorBase + path
+
+	return mirrorRoot + path
 }
 
 func hasKnownHash(artifact *AuthlibArtifact) bool {
-	return strings.TrimSpace(artifact.Sha256) != "" || strings.TrimSpace(artifact.Sha1) != ""
+	return artifact.ArtifactSha256() != "" || artifact.ArtifactSha1() != ""
 }
 
 func matchesHash(filePath string, artifact *AuthlibArtifact) (bool, error) {
@@ -166,13 +220,13 @@ func matchesHash(filePath string, artifact *AuthlibArtifact) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if strings.TrimSpace(artifact.Sha256) != "" {
+	if expected := artifact.ArtifactSha256(); expected != "" {
 		sum := sha256.Sum256(data)
-		return hashMatches(hex.EncodeToString(sum[:]), artifact.Sha256), nil
+		return hashMatches(hex.EncodeToString(sum[:]), expected), nil
 	}
-	if strings.TrimSpace(artifact.Sha1) != "" {
+	if expected := artifact.ArtifactSha1(); expected != "" {
 		sum := sha1.Sum(data)
-		return hashMatches(hex.EncodeToString(sum[:]), artifact.Sha1), nil
+		return hashMatches(hex.EncodeToString(sum[:]), expected), nil
 	}
 	return false, nil
 }

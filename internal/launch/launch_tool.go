@@ -6,10 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
-	"nyalauncher/internal/auth"
-	"nyalauncher/internal/download"
+	"nekolauncher/internal/auth"
+	"nekolauncher/internal/download"
+	"nekolauncher/internal/tools"
 )
 
 // MicrosoftMinecraftLauncher 正版（Microsoft 账号）Minecraft 启动器。
@@ -76,10 +78,13 @@ func (l *OfflineMinecraftLauncher) Launch(
 		return nil, err
 	}
 
-	command := exec.Command(plan.JavaExecutable, plan.Arguments...)
+	program, arguments := buildProcessCommand(plan)
+	command := exec.Command(program, arguments...)
 	command.Dir = plan.WorkingDirectory
 	// Minecraft 统一以 UTF-8 输出；子进程继承启动器环境变量
 	command.Env = buildChildEnvironment(plan)
+	// java.exe 是控制台程序，禁止其分配控制台窗口（游戏全程不弹黑窗）
+	tools.HideProcessWindow(command)
 
 	stdoutPipe, err := command.StdoutPipe()
 	if err != nil {
@@ -96,6 +101,9 @@ func (l *OfflineMinecraftLauncher) Launch(
 		TryDeleteDirectory(plan.NativeDirectory)
 		return nil, newLaunchErrorWrap("Java 进程未能启动。", err)
 	}
+
+	// 进程优先级尽力而为：设置失败（权限不足等）只记录日志，不影响游戏运行
+	applyProcessPriority(command.Process, plan.ProcessPriority, options.LogCallback)
 
 	writeDebugArguments(plan)
 
@@ -119,6 +127,41 @@ func (l *OfflineMinecraftLauncher) Launch(
 	}()
 
 	return result, nil
+}
+
+// buildProcessCommand 组装最终进程：配置了包装命令时用包装程序替换 Java 入口，
+// %command% 占位展开为 Java 可执行文件与全部参数（HMCL 同款语义）；
+// 未配置包装命令时直接启动 Java。
+func buildProcessCommand(plan *MinecraftLaunchPlan) (string, []string) {
+	if len(plan.WrapperCommand) == 0 {
+		return plan.JavaExecutable, plan.Arguments
+	}
+	arguments := make([]string, 0, len(plan.WrapperCommand)+len(plan.Arguments))
+	expanded := false
+	for _, part := range plan.WrapperCommand {
+		if part == "%command%" {
+			expanded = true
+			arguments = append(arguments, plan.JavaExecutable)
+			arguments = append(arguments, plan.Arguments...)
+			continue
+		}
+		arguments = append(arguments, part)
+	}
+	if !expanded {
+		// 模板缺少占位符：忽略包装命令，保持原生启动（构造计划时已记录日志）
+		return plan.JavaExecutable, plan.Arguments
+	}
+	return arguments[0], arguments[1:]
+}
+
+// parseWrapperCommand 拆分包装命令模板；空模板返回 nil。
+// 不解析引号：含空格的路径请用 8.3 短路径或软链接规避（与 HMCL 行为一致）。
+func parseWrapperCommand(wrapper string) []string {
+	fields := strings.Fields(strings.TrimSpace(wrapper))
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
 }
 
 // pumpLines 逐行读取进程输出并转发；行读取结束后通道自动关闭。
@@ -164,11 +207,21 @@ func pumpLines(pipe interface{ Read([]byte) (int, error) }, isStderr bool, callb
 }
 
 // buildChildEnvironment 构造子进程环境：父环境 + 注入变量 - 移除变量。
+// 环境变量名仅 Windows 上不区分大小写；其余平台必须保留原始大小写，
+// 否则注入变量会被改名（FOO→foo）后写入子进程环境。
 func buildChildEnvironment(plan *MinecraftLaunchPlan) []string {
+	caseInsensitiveNames := runtime.GOOS == "windows"
+	envKey := func(name string) string {
+		if caseInsensitiveNames {
+			return strings.ToLower(name)
+		}
+		return name
+	}
+
 	environment := os.Environ()
 	overrides := map[string]string{}
 	for name, value := range plan.EnvironmentVariables {
-		overrides[strings.ToLower(name)] = value
+		overrides[envKey(name)] = name + "=" + value
 	}
 	removed := plan.RemovedEnvironmentVariables
 	filtered := make([]string, 0, len(environment)+len(overrides))
@@ -178,7 +231,7 @@ func buildChildEnvironment(plan *MinecraftLaunchPlan) []string {
 		if equals > 0 {
 			name = entry[:equals]
 		}
-		key := strings.ToLower(name)
+		key := envKey(name)
 		if removed[key] {
 			continue
 		}
@@ -187,11 +240,11 @@ func buildChildEnvironment(plan *MinecraftLaunchPlan) []string {
 		}
 		filtered = append(filtered, entry)
 	}
-	for key, value := range overrides {
+	for key, entry := range overrides {
 		if removed[key] {
 			continue
 		}
-		filtered = append(filtered, key+"="+value)
+		filtered = append(filtered, entry)
 	}
 	return filtered
 }
@@ -202,7 +255,7 @@ func (l *OfflineMinecraftLauncher) createPlan(
 	options MinecraftLaunchOptions,
 ) (*MinecraftLaunchPlan, error) {
 	if strings.TrimSpace(options.MinecraftDirectory) == "" ||
-		!directoryExists(options.MinecraftDirectory) {
+		!tools.DirectoryExists(options.MinecraftDirectory) {
 		return nil, newLaunchError("Minecraft 目录不存在：" + options.MinecraftDirectory)
 	}
 
@@ -217,7 +270,7 @@ func (l *OfflineMinecraftLauncher) createPlan(
 	if gameDirectory, err = filepath.Abs(gameDirectory); err != nil {
 		return nil, err
 	}
-	if !directoryExists(gameDirectory) {
+	if !tools.DirectoryExists(gameDirectory) {
 		return nil, newLaunchError(fmt.Sprintf("实例游戏目录不存在：%s", gameDirectory))
 	}
 
@@ -281,15 +334,84 @@ func (l *OfflineMinecraftLauncher) createPlan(
 		return nil, err
 	}
 
+	// 环境变量合并：插件 Transform 先落地，用户实例/全局设置覆盖同名变量
+	environment := transform.EnvironmentVariables
+	if len(options.EnvironmentVariables) > 0 {
+		environment = make(map[string]string, len(transform.EnvironmentVariables)+len(options.EnvironmentVariables))
+		for name, value := range transform.EnvironmentVariables {
+			environment[name] = value
+		}
+		for name, value := range options.EnvironmentVariables {
+			environment[name] = value
+		}
+	}
+
+	wrapperCommand := parseWrapperCommand(options.WrapperCommand)
+	if len(wrapperCommand) > 0 {
+		// 缺少 %command% 占位的模板无法展开，直接忽略而不是启动出错误进程
+		placeholder := false
+		for _, part := range wrapperCommand {
+			if part == "%command%" {
+				placeholder = true
+
+				break
+			}
+		}
+		if !placeholder {
+			logLog(options.LogCallback, "包装命令缺少 %command% 占位，已忽略该设置。")
+			wrapperCommand = nil
+		}
+	}
+
 	return &MinecraftLaunchPlan{
 		JavaExecutable:              javaExecutable,
 		WorkingDirectory:            transform.WorkingDirectory,
 		NativeDirectory:             nativeDirectory,
 		RequiredJavaMajorVersion:    profile.RequiredJavaMajorVersion,
 		Arguments:                   arguments,
-		EnvironmentVariables:        transform.EnvironmentVariables,
+		EnvironmentVariables:        environment,
 		RemovedEnvironmentVariables: transform.RemovedEnvironmentVariables,
+		WrapperCommand:              wrapperCommand,
+		ProcessPriority:             options.ProcessPriority,
 	}, nil
+}
+
+// EnsureJavaRuntime 为"需要指定主版本 Java"的启动/开服场景解析出可执行文件：
+//  1. 已有精确匹配主版本的 Java 优先（避免不必要的下载，也避免用过高的 Java
+//     启动对 JPMS 模块敏感的旧版加载器，如 Forge 1.20.x）；
+//  2. 没有精确匹配时自动下载所需 Java（Temurin 源，与 Mojang 官方启动器行为一致）；
+//  3. 自动下载失败时回退到现有最佳 Java（可能不完全兼容，但让真实错误浮现）。
+//
+// requiredMajorVersion 为 nil 时不校验版本，按候选来源优先级直接查找。
+// 供游戏启动与 Minecraft 开服（internal/mcserver）共用。
+func EnsureJavaRuntime(
+	locator JavaRuntimeLocator,
+	ctx context.Context,
+	configuredPath string,
+	requiredMajorVersion *int,
+	runtimeDirectory string,
+	log func(string),
+) (string, error) {
+	// 无版本要求：直接查找
+	if requiredMajorVersion == nil {
+		return locator.FindJavaExecutable(configuredPath, nil, runtimeDirectory)
+	}
+	required := *requiredMajorVersion
+
+	// 1. 优先用已存在的精确匹配 Java（避免不必要的下载）
+	if exactMatch := locator.FindExactMatchJava(configuredPath, required, runtimeDirectory); exactMatch != "" {
+		return exactMatch, nil
+	}
+
+	// 2. 没有精确匹配：自动下载所需 Java（与 Mojang 官方启动器行为一致）
+	logLog(log, fmt.Sprintf("未检测到 Java %d，正在自动下载…", required))
+	if installed := tryAutoInstallJava(ctx, required, log); installed != "" {
+		logLog(log, fmt.Sprintf("Java %d 安装完成：%s", required, installed))
+		return installed, nil
+	}
+
+	// 3. 自动下载失败：回退到现有最佳 Java
+	return locator.FindJavaExecutable(configuredPath, requiredMajorVersion, runtimeDirectory)
 }
 
 // resolveJavaExecutable 解析启动用 Java：优先已存在的精确匹配版本；找不到则自动下载
@@ -302,26 +424,8 @@ func (l *OfflineMinecraftLauncher) resolveJavaExecutable(
 	runtimeDirectory string,
 	log func(string),
 ) (string, error) {
-	// 无版本要求：直接查找
-	if requiredMajorVersion == nil {
-		return l.javaRuntimeLocator.FindJavaExecutable(configuredPath, nil, runtimeDirectory)
-	}
-	required := *requiredMajorVersion
-
-	// 1. 优先用已存在的精确匹配 Java（避免不必要的下载）
-	if exactMatch := l.javaRuntimeLocator.FindExactMatchJava(configuredPath, required, runtimeDirectory); exactMatch != "" {
-		return exactMatch, nil
-	}
-
-	// 2. 没有精确匹配：自动下载所需 Java（与 Mojang 官方启动器行为一致）
-	logLog(log, fmt.Sprintf("未检测到 Java %d，正在自动下载…", required))
-	if installed := tryAutoInstallJava(ctx, required, log); installed != "" {
-		logLog(log, fmt.Sprintf("Java %d 安装完成：%s", required, installed))
-		return installed, nil
-	}
-
-	// 3. 自动下载失败：回退到现有最佳 Java
-	return l.javaRuntimeLocator.FindJavaExecutable(configuredPath, requiredMajorVersion, runtimeDirectory)
+	return EnsureJavaRuntime(
+		l.javaRuntimeLocator, ctx, configuredPath, requiredMajorVersion, runtimeDirectory, log)
 }
 
 // tryAutoInstallJava 自动下载并安装指定主版本的 Java（优先 Temurin，带 SHA-256 校验）。
@@ -366,12 +470,12 @@ func tryAutoInstallJava(ctx context.Context, requiredMajorVersion int, log func(
 	return installed.JavaExecutablePath
 }
 
-// writeDebugArguments 调试辅助：设置环境变量 NYALAUNCHER_DEBUG_ARGS=1 时，
+// writeDebugArguments 调试辅助：设置环境变量 NEKOLAUNCHER_DEBUG_ARGS=1 时，
 // 将实际启动参数写入临时目录 nya_launcher_debug_args.txt，便于排查登录/会话问题。
 // 与 GameLaunchService.redactSecrets 同等强度脱敏：dump 文件长期留在临时目录，
 // 绝不能写入真实的 accessToken / 会话令牌。
 func writeDebugArguments(plan *MinecraftLaunchPlan) {
-	if os.Getenv("NYALAUNCHER_DEBUG_ARGS") != "1" {
+	if os.Getenv("NEKOLAUNCHER_DEBUG_ARGS") != "1" {
 		return
 	}
 

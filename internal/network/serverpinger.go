@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"nekolauncher/internal/config"
 )
 
 // MinecraftServerStatus 服务器状态查询结果（Minecraft Server List Ping 协议）。
@@ -105,6 +107,27 @@ func ParseAddress(input string) (string, int, error) {
 	}
 
 	return address, defaultPort, nil
+}
+
+// ServerAddress 解析后的服务器地址。
+//
+// 供 Wails 绑定层使用：桥只支持 0/1/2 个返回值（第 2 个为 error），
+// 直接绑定 (string, int, error) 会让前端拿到 null 并吞掉错误，
+// 故以结构体承载 host + port。
+type ServerAddress struct {
+	// Host 主机名或 IP（IPv6 已去掉方括号）。
+	Host string `json:"Host"`
+	// Port 端口，缺省为 25565。
+	Port int `json:"Port"`
+}
+
+// ParseServerAddress 解析服务器地址，语义与 ParseAddress 完全一致。
+func ParseServerAddress(input string) (ServerAddress, error) {
+	host, port, err := ParseAddress(input)
+	if err != nil {
+		return ServerAddress{}, err
+	}
+	return ServerAddress{Host: host, Port: port}, nil
 }
 
 // Ping 查询服务器状态；失败返回 error（调用方决定降级展示）。
@@ -272,16 +295,10 @@ func tryCacheFavicon(root map[string]any, host string, port int) string {
 	return path
 }
 
-// StorageDirectory 返回启动器存储目录。
-// C# 侧来自 LauncherConfig.StorageDirectory；Go 侧 internal/config 尚未就绪，
-// 暂用用户目录下的 .nyalauncher，待配置模块完成后改为注入。
-func StorageDirectory() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return ".nyalauncher"
-	}
-	return filepath.Join(home, ".nyalauncher")
-}
+// StorageDirectory 返回启动器存储目录（服务器图标缓存落在此目录下）。
+// 转发到 config.StorageDirectory，与插件、皮肤、快照等其余缓存保持同一处：
+// 此前这里硬编码 ~/.nyalauncher，用户改了存储目录后图标仍写到旧位置。
+func StorageDirectory() string { return config.StorageDirectory() }
 
 // pruneIconCache 按最后写入时间修剪服务器图标缓存：保留最新的 200 个。
 func pruneIconCache(directory string) {
@@ -355,9 +372,20 @@ func flattenChatComponent(element any) string {
 // appendStylePrefix 把 JSON 聊天组件的样式属性转译为 § 样式码前缀。
 func appendStylePrefix(builder *strings.Builder, element map[string]any) {
 	if color, ok := element["color"].(string); ok {
-		if code, ok := minecraftTextColorCode(color); ok {
-			builder.WriteString("§")
-			builder.WriteRune(code)
+		switch {
+		case isHexColor(color):
+			// 原版 Bungee/Spigot 的 hex 表示：§x 后跟 6 个 §<hex位>。
+			// 前端渲染器据此还原精确颜色（现代服务器渐变 MOTD 依赖此格式）。
+			builder.WriteString("§x")
+			for _, digit := range strings.ToLower(strings.TrimPrefix(color, "#")) {
+				builder.WriteString("§")
+				builder.WriteRune(digit)
+			}
+		default:
+			if code, ok := minecraftTextColorCode(color); ok {
+				builder.WriteString("§")
+				builder.WriteRune(code)
+			}
 		}
 	}
 	if isTrue(element, "bold") {
@@ -423,6 +451,23 @@ func minecraftTextColorCode(name string) (rune, bool) {
 	}
 }
 
+// isHexColor 判断是否为 "#RRGGBB" 形式的十六进制颜色（大小写均可）。
+func isHexColor(color string) bool {
+	if len(color) != 7 || color[0] != '#' {
+		return false
+	}
+	for _, digit := range color[1:] {
+		if !isHexDigit(digit) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexDigit(r rune) bool {
+	return (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')
+}
+
 // ---------------------------------------------------------------------------
 // 数据包读写
 // ---------------------------------------------------------------------------
@@ -430,9 +475,9 @@ func minecraftTextColorCode(name string) (rune, bool) {
 // bytesBuffer 轻量字节缓冲（等价 C# MemoryStream 的写法习惯）。
 type bytesBuffer []byte
 
-func (b *bytesBuffer) write(bytes []byte) { *b = append(*b, bytes...) }
+func (b *bytesBuffer) write(bytes []byte)   { *b = append(*b, bytes...) }
 func (b *bytesBuffer) writeByte(value byte) { *b = append(*b, value) }
-func (b *bytesBuffer) bytes() []byte { return []byte(*b) }
+func (b *bytesBuffer) bytes() []byte        { return []byte(*b) }
 
 // readByte 读取单字节；越界返回 false。
 func (b *bytesBuffer) readByte() (byte, bool) {
@@ -455,8 +500,7 @@ func writePacket(conn net.Conn, body []byte) error {
 
 // readPacket 读取一个完整数据包：长度前缀 → 包内容（含 packetId）。
 func readPacket(conn net.Conn) ([]byte, error) {
-	reader := bytesBuffer(nil)
-	length, err := readVarintConn(conn, &reader)
+	length, err := readVarintConn(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +519,7 @@ func readPacket(conn net.Conn) ([]byte, error) {
 }
 
 // readVarintConn 从连接读取 VarInt。
-func readVarintConn(conn net.Conn, _ *bytesBuffer) (int, error) {
+func readVarintConn(conn net.Conn) (int, error) {
 	var result int
 	one := make([]byte, 1)
 	for shift := 0; shift < 32; shift += 7 {

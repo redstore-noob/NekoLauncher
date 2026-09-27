@@ -1,10 +1,15 @@
 package bindings
 
-// ModpackAPI：整合包导出（Modrinth .mrpack / MultiMC .zip）与导出配置档案。
-// 事件：modpack:exportProgress（ModpackExportProgress）。
+// ModpackAPI：整合包导出（Modrinth .mrpack / MultiMC .zip / CurseForge .zip）
+// 与 NekoSolo 安装包（.exe）导出、导出配置档案。
+// 事件：modpack:exportProgress（ModpackExportProgress，NekoSolo 导出复用同一事件）。
 
 import (
-	"nyalauncher/internal/modpack"
+	"strings"
+
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/modpack"
+	"nekolauncher/internal/solo"
 )
 
 // CollectExportContent 收集实例内容目录中可打包的内容单元。
@@ -13,24 +18,40 @@ func (a *ModpackAPI) CollectExportContent(contentDirectory string) []modpack.Mod
 }
 
 // ExportModpack 打包整合包到指定输出路径；进度经 modpack:exportProgress 事件推送。
+// CurseForge 格式自动带出用户已保存的 API Key（指纹反查 projectID/fileID 用）。
 func (a *ModpackAPI) ExportModpack(
 	options modpack.ModpackExportOptions,
 	contentDirectory, outputPath string,
 ) (modpack.ModpackExportResult, error) {
+	if options.Format == modpack.FormatCurseForge && strings.TrimSpace(options.CurseForgeAPIKey) == "" {
+		options.CurseForgeAPIKey = strings.TrimSpace(config.GetValue(curseForgeAPIKeyConfigKey))
+	}
 	return modpack.Export(callCtx(a.ctx), options, contentDirectory, outputPath, func(progress modpack.ModpackExportProgress) {
 		emit(a.ctx, "modpack:exportProgress", progress)
 	})
 }
 
 // NewExportOptions 带默认值的导出参数（ResolveModrinthLinks = true 等）。
-func (a *ModpackAPI) NewExportOptions() modpack.ModpackExportOptions { return modpack.NewExportOptions() }
+func (a *ModpackAPI) NewExportOptions() modpack.ModpackExportOptions {
+	return modpack.NewExportOptions()
+}
+
+// ---- NekoSolo 安装包（.exe） ----
+
+// GetSoloStubStatus 查询 NekoSolo 安装器模板是否就绪（未就绪时 exe 导出不可用）。
+func (a *ModpackAPI) GetSoloStubStatus() solo.StubStatus {
+	return solo.StubTemplateStatus()
+}
+
+// ExportSoloPack 导出 NekoSolo 安装包（启动器 + 可选捆绑 Java + 整合包三合一 exe）；
+// 进度复用 modpack:exportProgress 事件推送。
+func (a *ModpackAPI) ExportSoloPack(options solo.SoloExportOptions, outputPath string) (modpack.ModpackExportResult, error) {
+	return solo.ExportSolo(callCtx(a.ctx), options, outputPath, func(progress modpack.ModpackExportProgress) {
+		emit(a.ctx, "modpack:exportProgress", progress)
+	})
+}
 
 // ---- 导出配置档案（按版本目录持久化） ----
-
-// GetExportProfilePath 导出配置文件路径。
-func (a *ModpackAPI) GetExportProfilePath(versionDirectory string) string {
-	return modpack.GetProfilePath(versionDirectory)
-}
 
 // LoadExportProfile 读取导出配置（无则空档案）。
 func (a *ModpackAPI) LoadExportProfile(versionDirectory string) modpack.ModpackExportProfile {

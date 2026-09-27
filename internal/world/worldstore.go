@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"nyalauncher/internal/instance"
+	"nekolauncher/internal/instance"
+	"nekolauncher/internal/tools"
 )
 
 // WorldInfo 表示一个 Minecraft 世界的简要信息。
@@ -102,6 +103,11 @@ func GetRecentWorlds(snapshot instance.GameInstanceSnapshot, max int) []WorldInf
 			if !worldEntry.IsDir() {
 				continue
 			}
+			// 启动器的临时目录（存档导入 .nya-import-*、回滚恢复 .nya-restore-*）
+			// 与世界目录同级，别把它们当成世界列出来
+			if strings.HasPrefix(worldEntry.Name(), ".") {
+				continue
+			}
 			worldPath := filepath.Join(savesDirectory, worldEntry.Name())
 			levelFile := filepath.Join(worldPath, "level.dat")
 			var lastPlayed time.Time
@@ -114,7 +120,7 @@ func GetRecentWorlds(snapshot instance.GameInstanceSnapshot, max int) []WorldInf
 			}
 			iconPath := filepath.Join(worldPath, "icon.png")
 			worldIcon := ""
-			if fileExists(iconPath) {
+			if tools.FileExists(iconPath) {
 				worldIcon = iconPath
 			}
 
@@ -139,9 +145,4 @@ func GetRecentWorlds(snapshot instance.GameInstanceSnapshot, max int) []WorldInf
 		worlds = worlds[:max]
 	}
 	return worlds
-}
-
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }

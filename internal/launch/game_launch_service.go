@@ -2,19 +2,18 @@ package launch
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"nyalauncher/internal/auth"
-	"nyalauncher/internal/config"
-	"nyalauncher/internal/logs"
+	"nekolauncher/internal/auth"
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/logs"
 )
 
 // GameLaunchPhase 启动生命周期阶段。
@@ -86,6 +85,14 @@ type GameLaunchService struct {
 	// OnChanged 快照变更回调（对应 C# Changed 多播事件；
 	// Go 移植为单回调字段，多订阅方需自行分发——语义偏离见 PORTING_NOTES.md）。
 	OnChanged func(GameLaunchSnapshot)
+
+	// OnLogLine 逐行日志回调：游戏进程 stdout/stderr 每出一行就回调一次
+	// （tag 为 "GAME"），启动器自身的阶段日志回调 tag 为 "LAUNCH"。
+	//
+	// 与 OnChanged 的区别：快照只在阶段切换时变，日志窗口过去只能靠
+	// GetLogText() 全量轮询（长日志每次重传 2000 行）。这里把行直接推给前端，
+	// 轮询退化为"重连兜底"。回调在日志追加之后、快照发布之前触发。
+	OnLogLine func(tag, line string)
 }
 
 // NewGameLaunchService 构造启动服务；accountStore 为空时使用 auth.Shared。
@@ -122,34 +129,84 @@ func (s *GameLaunchService) LaunchSelected(
 	serverHost string,
 	serverPort *int,
 ) LaunchResult {
+	return s.launch(ctx, "", serverHost, serverPort)
+}
+
+// LaunchExplicit 以显式版本启动，不改变用户"当前选中"的实例（插件 API 使用）。
+// 显式路径只为本次启动临时改写快照选中：不落存储、不发 changed 事件。
+func (s *GameLaunchService) LaunchExplicit(
+	ctx context.Context,
+	versionID, serverHost string,
+	serverPort *int,
+) LaunchResult {
+	return s.launch(ctx, versionID, serverHost, serverPort)
+}
+
+// launch 统一启动入口：explicitVersionID 非空时按显式版本启动，为空时按当前选中。
+func (s *GameLaunchService) launch(
+	ctx context.Context,
+	explicitVersionID, serverHost string,
+	serverPort *int,
+) LaunchResult {
 	// 原子占位：结束（含异常）时在 finally 释放
 	if !s.launchInProgress.CompareAndSwap(0, 1) {
+		// 仅记日志不发布失败快照：此时另一个启动正在跑，发布会覆盖它的状态
+		s.appendLog("拒绝重复启动：已有启动流程进行中。", "LAUNCH")
 		return FailedLaunch("游戏正在启动，请稍候。")
 	}
 	defer s.launchInProgress.Store(0)
 
+	// 早期守卫统一走 fail：写文件日志 + 发布失败快照。
+	// 此前这些路径只返回结果不发快照——前端只在按钮下方显示一行小字、
+	// 日志文件毫无痕迹，用户"点了启动没反应"时无从排查。
+	fail := func(message string) LaunchResult {
+		s.appendLog(fmt.Sprintf("启动失败：%s", message), "LAUNCH")
+		s.publishFailure("启动失败", message, 0)
+		return FailedLaunch(message)
+	}
+
 	// 前置校验：进程未运行、实例扫描完成、目录有效、已选实例，
 	// 且不是暂不支持直接启动的外部启动器实例。
 	if s.isProcessRunning() {
+		// 游戏确实在运行：快照已是运行态，不发失败事件覆盖它
+		s.appendLog("拒绝启动：游戏已经在运行。", "LAUNCH")
 		return FailedLaunch("游戏已经在运行。")
 	}
-	instance := currentInstanceSnapshot()
-	if instance.IsLoading {
-		return FailedLaunch("游戏实例仍在扫描，请稍候。")
+	// 首次扫描在 Startup 异步执行：等待其就绪（旧移植版此处直接拒绝，
+	// 且快照钩子未接线，导致每次启动都失败在"仍在扫描"）。
+	snap := waitForInstanceSnapshot()
+	if snap.IsLoading {
+		return fail("游戏实例仍在扫描，请稍候。")
 	}
-	if strings.TrimSpace(instance.ErrorMessage) != "" {
-		return FailedLaunch(fmt.Sprintf("Minecraft 目录无效：%s", instance.ErrorMessage))
+	if strings.TrimSpace(snap.ErrorMessage) != "" {
+		return fail(fmt.Sprintf("Minecraft 目录无效：%s", snap.ErrorMessage))
 	}
-	if strings.TrimSpace(instance.SelectedVersionId) == "" ||
-		strings.TrimSpace(instance.MinecraftDirectory) == "" {
-		return FailedLaunch("请先选择一个已安装的游戏实例。")
+	// 显式版本启动（插件 API）：先校验版本存在（与实例存储同一套大小写不敏感
+	// 匹配，杜绝把任意字符串/路径穿越串送进启动管线），再只在本次启动内改写
+	// 快照选中——不落存储、不发 changed 事件，用户"当前选中"保持原样。
+	if explicitVersionID != "" {
+		var match string
+		for _, id := range snap.VersionIds {
+			if strings.EqualFold(id, explicitVersionID) {
+				match = id
+				break
+			}
+		}
+		if match == "" {
+			return fail(fmt.Sprintf("找不到游戏实例：%s", explicitVersionID))
+		}
+		snap.SelectedVersionId = match
+	}
+	if strings.TrimSpace(snap.SelectedVersionId) == "" ||
+		strings.TrimSpace(snap.MinecraftDirectory) == "" {
+		return fail("请先选择一个已安装的游戏实例。")
 	}
 
 	// 外部启动器（MultiMC/CurseForge 等）的实例可管理内容，但暂不能直接启动
-	if external, ok := resolveExternalInstance(instance.SourcePath); ok &&
-		strings.EqualFold(external.InstanceId, instance.SelectedVersionId) {
-		return FailedLaunch(fmt.Sprintf(
-			"已识别 %s 实例并可管理其内容，但其原生版本补丁元数据暂不能由 NyaLauncher 直接启动。",
+	if external, ok := resolveExternalInstance(snap.SourcePath); ok &&
+		strings.EqualFold(external.InstanceId, snap.SelectedVersionId) {
+		return fail(fmt.Sprintf(
+			"已识别 %s 实例并可管理其内容，但其原生版本补丁元数据暂不能由 NekoLauncher 直接启动。",
 			external.Provider))
 	}
 
@@ -157,25 +214,31 @@ func (s *GameLaunchService) LaunchSelected(
 	selectedAccount := s.accounts.Selected()
 	if selectedAccount == nil {
 		if len(s.accounts.Current()) == 0 {
-			return FailedLaunch("请先添加并选择一个账号。")
+			return fail("请先添加并选择一个账号。")
 		}
-		return FailedLaunch("请先选择账号。")
+		return fail("请先选择账号。")
 	}
 
-	versionId := instance.SelectedVersionId
+	versionId := snap.SelectedVersionId
 	launchId := atomic.AddInt64(&s.launchId, 1)
 	s.resetLog()
 	s.appendLog(fmt.Sprintf("准备启动 Minecraft %s。", versionId), "LAUNCH")
-	s.publishPreparing(instance, selectedAccount, "正在准备账号与 Java 启动参数…")
+	s.publishPreparing(snap, selectedAccount, "正在准备账号与 Java 启动参数…")
+
+	// 新实例首次启动：options.txt 还没有 lang 时按系统语言写入（已有则不动）
+	s.syncInstanceLanguage(snap, versionId)
 
 	// 启动前按配置校验并补全缺失的游戏文件；失败只记录日志，不阻断启动。
 	if config.VerifyFilesBeforeLaunch() {
 		s.appendLog("正在校验游戏文件完整性…", "LAUNCH")
-		s.publishPreparing(instance, selectedAccount, "正在校验游戏文件完整性…")
+		s.publishPreparing(snap, selectedAccount, "正在校验游戏文件完整性…")
 		var verifier downloadVerifier
-		repaired, err := verifier.verifyAndRepair(ctx, instance.MinecraftDirectory, versionId, func(status string) {
-			s.appendLog(status, "LAUNCH")
-		})
+		repaired, err := verifier.verifyAndRepair(ctx, snap.MinecraftDirectory, versionId,
+			// 与启动参数装配同一来源：实例独立窗口尺寸，未跟随全局时取全局值
+			effectiveHasCustomResolution(snap.MinecraftDirectory, versionId),
+			func(status string) {
+				s.appendLog(status, "LAUNCH")
+			})
 		if err != nil {
 			// 校验失败不阻断启动：缺失文件由游戏侧自行暴露
 			s.appendLog(fmt.Sprintf("文件校验异常（将继续启动）：%v", err), "LAUNCH")
@@ -198,7 +261,7 @@ func (s *GameLaunchService) LaunchSelected(
 		return s.reportPrepareFailure(prepareErr)
 	}
 
-	options, optionsErr := s.buildLaunchOptions(instance, versionId, launchAccount, serverHost, serverPort)
+	options, optionsErr := s.buildLaunchOptions(snap, versionId, launchAccount, serverHost, serverPort)
 	if optionsErr != nil {
 		s.appendLog(fmt.Sprintf("启动失败：%v", optionsErr), "LAUNCH")
 		s.publishFailure("启动失败", optionsErr.Error(), 0)
@@ -251,11 +314,6 @@ func (s *GameLaunchService) prepareMicrosoftAccount(
 ) (MinecraftAccount, error) {
 	s.appendLog("正在校验正版账号凭据。", "LAUNCH")
 
-	var refreshed *auth.MicrosoftAccount
-	if selectedAccount.Microsoft != nil {
-		candidate := *selectedAccount.Microsoft
-		refreshed = &candidate
-	}
 	var validated *auth.MicrosoftAccount
 	var validateErr error
 	lockErr := s.accounts.WithRefreshLock(selectedAccount, func() error {
@@ -284,10 +342,12 @@ func (s *GameLaunchService) prepareMicrosoftAccount(
 		}
 		return nil, lockErr
 	}
-	_ = refreshed
 
-	// 通过账号存储更新，确保 UI 订阅者收到变更通知
-	s.accounts.UpdateMicrosoftAccount(selectedAccount, validated)
+	// 通过账号存储更新，确保 UI 订阅者收到变更通知；
+	// 账号可能在凭据校验的网络往返期间被删除，失败不阻断启动
+	if err := s.accounts.UpdateMicrosoftAccount(selectedAccount, validated); err != nil {
+		s.appendLog(fmt.Sprintf("凭据写回失败：%v", err), "LAUNCH")
+	}
 	s.appendLog("正版账号凭据校验完成。", "LAUNCH")
 	accountCopy := *validated
 	return &accountCopy, nil
@@ -305,10 +365,18 @@ func (s *GameLaunchService) prepareAuthlibAccount(
 	}
 
 	s.appendLog("正在校验皮肤站账号凭据。", "LAUNCH")
-	credential := *selectedAccount.Authlib
+	var credential auth.AuthlibCredential
 	var accessToken string
 	var validateErr error
 	lockErr := s.accounts.WithRefreshLock(selectedAccount, func() error {
+		// 锁内重读最新凭据：等待锁的期间可能已有并发刷新写入轮换后的令牌
+		//（与 prepareMicrosoftAccount 同一口径；锁外拷贝会用已被作废的旧令牌校验）
+		current := selectedAccount.Authlib
+		if current == nil {
+			validateErr = errors.New("账号缺少皮肤站凭据，请重新登录。")
+			return validateErr
+		}
+		credential = *current
 		token, err := auth.DefaultAuthlibAuthenticator.ValidateOrRefresh(ctx, &credential, "")
 		if err != nil {
 			validateErr = err
@@ -363,6 +431,12 @@ func (s *GameLaunchService) runLauncher(
 		return FailedLaunch(message)
 	}
 
+	// 注册进程句柄：isProcessRunning / TryStopGame / 退出观察者（sameLaunch 判定）
+	// 都依赖该引用；缺失会导致停止按钮失效、重复启动被放行、退出快照永不发布。
+	s.gate.Lock()
+	s.gameProcess = result.Cmd
+	s.gate.Unlock()
+
 	javaHint := describeJavaRequirement(result.RequiredJavaMajorVersion)
 	s.appendLog(fmt.Sprintf("Java 进程已启动，进程 ID：%d。", result.Pid()), "LAUNCH")
 	s.publish(GameLaunchSnapshot{
@@ -376,7 +450,8 @@ func (s *GameLaunchService) runLauncher(
 	})
 
 	// 进程观察与退出收尾（对应 C# PrepareProcessObservation / CompleteProcessExit）
-	s.observeProcess(result, launchId)
+	// startedAt 供退出时结算游玩时长（写入实例档案的累计统计）
+	s.observeProcess(result, launchId, options.MinecraftDirectory, time.Now())
 	return CompletedLaunch(fmt.Sprintf("已启动 %s。", result.VersionId))
 }
 
@@ -439,12 +514,20 @@ func (s *GameLaunchService) appendLog(line, logType string) {
 
 	// 内存日志与日志文件共用同一条脱敏结果，保证两边口径一致。
 	redacted := RedactSecrets(line)
+	stamped := fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), redacted)
 	s.gate.Lock()
-	s.logLines = append(s.logLines, fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), redacted))
+	s.logLines = append(s.logLines, stamped)
 	if len(s.logLines) > maximumLogLines {
 		s.logLines = s.logLines[len(s.logLines)-maximumLogLines:]
 	}
+	handler := s.OnLogLine
 	s.gate.Unlock()
+
+	// 逐行推送（tag = LAUNCH / GAME），前端据此增量追加；在 gate 之外回调，
+	// 避免订阅方（Wails 事件）拖住日志写入与快照查询。
+	if handler != nil {
+		handler(logType, stamped)
+	}
 
 	// 文件写入放在 gate 之外：logs.Write 内部有独立写锁并做磁盘 I/O，
 	// 持 gate 写文件会阻塞快照查询与 stdout 读取线程。
@@ -493,13 +576,7 @@ func newMicrosoftCredentialsError(message string) error {
 }
 
 // asRotatedCredentials errors.As 包装（独立函数便于将来替换错误语义）。
+// 用 errors.As 而非直接断言：错误可能被中间层 wrap。
 func asRotatedCredentials(err error, target **auth.RotatedCredentialsError) bool {
-	if rotated, ok := err.(*auth.RotatedCredentialsError); ok {
-		*target = rotated
-		return true
-	}
-	return false
+	return errors.As(err, target)
 }
-
-var _ = runtime.GOOS
-var _ = os.Getenv

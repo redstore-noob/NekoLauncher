@@ -15,6 +15,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"nekolauncher/internal/tools"
 )
 
 // StageCount 安装总阶段数。
@@ -153,6 +155,8 @@ func (i *MinecraftVersionInstaller) InstallFromMetadataBytes(
 	if err != nil {
 		return err
 	}
+	// 日志配置（log4j2）与资源索引同级：都属于 assets 目录下的公共资源
+	loggingFile := createLoggingPlan(&metadata, root)
 
 	started := time.Now()
 	counters := &installCounters{}
@@ -167,6 +171,10 @@ func (i *MinecraftVersionInstaller) InstallFromMetadataBytes(
 		counters.addTotalBytes(maxInt64(0, assetIndexFile.size))
 		counters.addTotalFiles(1)
 	}
+	if loggingFile != nil {
+		counters.addTotalBytes(maxInt64(0, loggingFile.size))
+		counters.addTotalFiles(1)
+	}
 
 	if err := downloadStage(ctx, 3, "下载游戏客户端", clientFiles, progress, counters, started); err != nil {
 		return err
@@ -177,6 +185,11 @@ func (i *MinecraftVersionInstaller) InstallFromMetadataBytes(
 
 	if assetIndexFile != nil {
 		if err := downloadStage(ctx, 5, "下载资源索引", []downloadFile{*assetIndexFile}, progress, counters, started); err != nil {
+			return err
+		}
+	}
+	if loggingFile != nil {
+		if err := downloadStage(ctx, 5, "下载日志配置", []downloadFile{*loggingFile}, progress, counters, started); err != nil {
 			return err
 		}
 	}
@@ -243,13 +256,23 @@ func createLibraryPlan(metadata *VersionJSON, minecraftDirectory string) ([]down
 			continue
 		}
 
-		if planDownloadsArtifact(library, result, &order, minecraftDirectory) {
+		handled, err := planDownloadsArtifact(library, result, &order, minecraftDirectory)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
 			continue
 		}
-		if planLegacyNatives(library, result, &order, minecraftDirectory) {
+		handled, err = planLegacyNatives(library, result, &order, minecraftDirectory)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
 			continue
 		}
-		planCoordinateLibrary(library, result, &order, minecraftDirectory)
+		if err := planCoordinateLibrary(library, result, &order, minecraftDirectory); err != nil {
+			return nil, err
+		}
 	}
 
 	files := make([]downloadFile, 0, len(result))
@@ -260,40 +283,44 @@ func createLibraryPlan(metadata *VersionJSON, minecraftDirectory string) ([]down
 }
 
 // planDownloadsArtifact 新版本格式：downloads.artifact / downloads.classifiers + natives。
-func planDownloadsArtifact(library libraryJSON, result map[string]downloadFile, order *[]string, minecraftDirectory string) bool {
+func planDownloadsArtifact(library libraryJSON, result map[string]downloadFile, order *[]string, minecraftDirectory string) (bool, error) {
 	if library.Downloads == nil {
-		return false
+		return false, nil
 	}
 
 	if library.Downloads.Artifact != nil {
-		addLibraryDownload(result, order, library.Downloads.Artifact, minecraftDirectory, "依赖库")
+		if err := addLibraryDownload(result, order, library.Downloads.Artifact, minecraftDirectory, "依赖库"); err != nil {
+			return true, err
+		}
 	}
 
 	if library.Downloads.Classifiers != nil && library.Natives != nil {
 		if classifier, ok := library.Natives[RuleEvaluatorOSName()]; ok {
 			if native, ok := library.Downloads.Classifiers[expandArchPlaceholder(classifier)]; ok {
-				addLibraryDownload(result, order, native, minecraftDirectory, "原生依赖库")
+				if err := addLibraryDownload(result, order, native, minecraftDirectory, "原生依赖库"); err != nil {
+					return true, err
+				}
 			}
 		}
 	}
 
-	return true
+	return true, nil
 }
 
 // planLegacyNatives 旧版本（1.7.x 及更早）natives 回退：版本 JSON 无 downloads 字段，
 // 用 name + classifier 拼出 natives JAR 并下载，否则这些版本永远缺原生库无法启动。
-func planLegacyNatives(library libraryJSON, result map[string]downloadFile, order *[]string, minecraftDirectory string) bool {
+func planLegacyNatives(library libraryJSON, result map[string]downloadFile, order *[]string, minecraftDirectory string) (bool, error) {
 	if library.Natives == nil {
-		return false
+		return false, nil
 	}
 	classifier, ok := library.Natives[RuleEvaluatorOSName()]
 	if !ok {
-		return false
+		return false, nil
 	}
 
 	nativeRelPath := CreateNativeMavenPath(library.Name, classifier)
 	if nativeRelPath == "" {
-		return false
+		return false, nil
 	}
 
 	nativeBaseURL := library.URL
@@ -301,21 +328,24 @@ func planLegacyNatives(library libraryJSON, result map[string]downloadFile, orde
 		nativeBaseURL = "https://libraries.minecraft.net/"
 	}
 	nativeURL := strings.TrimRight(nativeBaseURL, "/") + "/" + filepath.ToSlash(nativeRelPath)
-	nativeTarget := resolveRelativePath(filepath.Join(minecraftDirectory, "libraries"), nativeRelPath)
+	nativeTarget, err := resolveRelativePath(filepath.Join(minecraftDirectory, "libraries"), nativeRelPath)
+	if err != nil {
+		return true, err
+	}
 	setPlan(result, order, nativeTarget, downloadFile{
 		url: nativeURL, targetPath: nativeTarget, displayName: "原生依赖库",
 	})
-	return true
+	return true, nil
 }
 
 // planCoordinateLibrary 更早的纯坐标格式：由 name（Maven 坐标）+ url 推导下载地址。
-func planCoordinateLibrary(library libraryJSON, result map[string]downloadFile, order *[]string, minecraftDirectory string) {
+func planCoordinateLibrary(library libraryJSON, result map[string]downloadFile, order *[]string, minecraftDirectory string) error {
 	if library.Name == "" {
-		return
+		return nil
 	}
 	relativePath := CreateMavenPath(library.Name)
 	if relativePath == "" {
-		return
+		return nil
 	}
 	baseURL := library.URL
 	if strings.TrimSpace(baseURL) == "" {
@@ -325,10 +355,14 @@ func planCoordinateLibrary(library libraryJSON, result map[string]downloadFile, 
 		baseURL = "https://libraries.minecraft.net/"
 	}
 	url := strings.TrimRight(baseURL, "/") + "/" + filepath.ToSlash(relativePath)
-	target := resolveRelativePath(filepath.Join(minecraftDirectory, "libraries"), relativePath)
+	target, err := resolveRelativePath(filepath.Join(minecraftDirectory, "libraries"), relativePath)
+	if err != nil {
+		return err
+	}
 	setPlan(result, order, target, downloadFile{
 		url: url, targetPath: target, displayName: "依赖库",
 	})
+	return nil
 }
 
 // setPlan 以大小写不敏感的路径为键写入计划（保持插入顺序）。
@@ -365,9 +399,19 @@ func createAssetIndexPlan(metadata *VersionJSON, minecraftDirectory string) (*do
 	if metadata.AssetIndex.URL == "" {
 		return nil, fmt.Errorf("资源索引缺少下载地址。")
 	}
+	// 索引 id 来自版本 JSON（可能由第三方 Loader 元数据/镜像提供），
+	// 必须跟其它下载目标一样做目录包含校验，否则 "../.." 可写到 Minecraft 目录之外
+	target, err := resolveRelativePath(
+		filepath.Join(minecraftDirectory, "assets", "indexes"),
+		id+".json",
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	return &downloadFile{
 		url:         metadata.AssetIndex.URL,
-		targetPath:  filepath.Join(minecraftDirectory, "assets", "indexes", id+".json"),
+		targetPath:  target,
 		sha1:        metadata.AssetIndex.SHA1,
 		size:        metadata.AssetIndex.Size,
 		displayName: "资源索引",
@@ -406,7 +450,10 @@ func createAssetPlan(ctx context.Context, indexPath, minecraftDirectory string) 
 			continue
 		}
 		relativePath := filepath.Join(hash[:2], hash)
-		target := resolveRelativePath(filepath.Join(minecraftDirectory, "assets", "objects"), relativePath)
+		target, err := resolveRelativePath(filepath.Join(minecraftDirectory, "assets", "objects"), relativePath)
+		if err != nil {
+			return nil, err
+		}
 		setPlan(result, &order, target, downloadFile{
 			url:         fmt.Sprintf("https://resources.download.minecraft.net/%s/%s", hash[:2], hash),
 			targetPath:  target,
@@ -559,7 +606,12 @@ func downloadOneFile(
 			// 停滞看门狗（进度感知）：每次读到数据都会重置空闲计时，
 			// 慢速但仍在推进的连接不会被误杀；只有连接彻底停滞才触发重试。
 			perFileCtx, cancel := context.WithCancel(ctx)
-			watchdog := newStallWatchdog(func() { cancel() }, StallTimeout)
+			// stalled 由看门狗（另一个 goroutine）置位，用它区分"停滞中断"与真实 IO 失败
+			stalled := &atomic.Bool{}
+			watchdog := newStallWatchdog(func() {
+				stalled.Store(true)
+				cancel()
+			}, StallTimeout)
 
 			attemptBytes := &atomic.Int64{}
 			err := func() error {
@@ -572,7 +624,7 @@ func downloadOneFile(
 					}
 					if moveErr := os.Rename(temporaryPath, file.targetPath); moveErr != nil {
 						// Windows 上 Rename 不能覆盖已存在文件：先删目标再移动
-						tryDeleteFile(file.targetPath)
+						tools.RemoveFileIfExists(file.targetPath)
 						if moveErr := os.Rename(temporaryPath, file.targetPath); moveErr != nil {
 							return moveErr
 						}
@@ -590,15 +642,16 @@ func downloadOneFile(
 			if written := attemptBytes.Load(); written > 0 {
 				addProgressBytes(-written)
 			}
-			tryDeleteFile(temporaryPath)
+			tools.RemoveFileIfExists(temporaryPath)
 
 			// 外部令牌取消：直接向上冒泡为"用户已取消"
 			if ctx.Err() != nil {
 				return 0, ctx.Err()
 			}
-			// perFileCtx 的取消只可能来自停滞看门狗：
-			// 把停滞中断转换为普通 IO 失败参与重试，而不是向上冒泡成"用户已取消"。
-			if perFileCtx.Err() != nil && ctx.Err() == nil {
+			// 不能用 perFileCtx.Err() 判断停滞：cancel 在上面的闭包里 defer，
+			// 走到这里时它必然已是 Canceled，会把 404/校验失败/磁盘错误
+			// 一律报成"连接停滞"。改用看门狗自己的标记。
+			if stalled.Load() && ctx.Err() == nil {
 				lastErr = fmt.Errorf("下载连接停滞（%.0f 秒无进度）：%s", StallTimeout.Seconds(), file.displayName)
 			} else {
 				lastErr = err
@@ -720,13 +773,13 @@ func matchesSHA1(path, expectedSHA1 string) bool {
 func writeAllBytesAtomically(path string, data []byte) error {
 	temporaryPath := path + ".nya-download"
 	if err := os.WriteFile(temporaryPath, data, 0o644); err != nil {
-		tryDeleteFile(temporaryPath)
+		tools.RemoveFileIfExists(temporaryPath)
 		return err
 	}
 	if err := os.Rename(temporaryPath, path); err != nil {
-		tryDeleteFile(path)
+		tools.RemoveFileIfExists(path)
 		if err := os.Rename(temporaryPath, path); err != nil {
-			tryDeleteFile(temporaryPath)
+			tools.RemoveFileIfExists(temporaryPath)
 			return err
 		}
 	}
@@ -859,14 +912,15 @@ func inferMavenRepository(coordinate string) string {
 	return "https://libraries.minecraft.net/"
 }
 
-// resolveRelativePath 将相对路径解析到 root 之下，越界时报错（防路径穿越）。
-func resolveRelativePath(root, relativePath string) string {
+// resolveRelativePath 将相对路径解析到 root 之下，越界时返回错误（防路径穿越）。
+// 版本 JSON 可能来自第三方 Loader 元数据：越界必须中止安装而不是 panic。
+func resolveRelativePath(root, relativePath string) (string, error) {
 	normalizedRoot := filepath.Clean(root)
 	target := filepath.Clean(filepath.Join(normalizedRoot, relativePath))
 	if target != normalizedRoot && !strings.HasPrefix(target, normalizedRoot+string(filepath.Separator)) {
-		panic(fmt.Sprintf("下载路径超出 Minecraft 目录：%s", relativePath))
+		return "", fmt.Errorf("下载路径超出 Minecraft 目录：%s", relativePath)
 	}
-	return target
+	return target, nil
 }
 
 func isSHA1(value string) bool {
@@ -922,11 +976,14 @@ func addLibraryDownload(
 	order *[]string,
 	element *downloadInfoJSON,
 	minecraftDirectory, displayName string,
-) {
+) error {
 	if element == nil || strings.TrimSpace(element.Path) == "" {
-		return
+		return nil
 	}
-	target := resolveRelativePath(filepath.Join(minecraftDirectory, "libraries"), element.Path)
+	target, err := resolveRelativePath(filepath.Join(minecraftDirectory, "libraries"), element.Path)
+	if err != nil {
+		return err
+	}
 	setPlan(result, order, target, downloadFile{
 		url:         element.URL,
 		targetPath:  target,
@@ -934,4 +991,5 @@ func addLibraryDownload(
 		size:        element.Size,
 		displayName: filepath.Base(target),
 	})
+	return nil
 }

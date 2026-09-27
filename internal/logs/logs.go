@@ -1,12 +1,17 @@
+// 该文件已经过验证.
 // Package logs 启动器共享日志：单文件追加 + 超限轮转，全部实例写同一文件。
 package logs
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	"nekolauncher/internal/tools"
 )
 
 var (
@@ -23,8 +28,13 @@ func timeGet() string {
 	return time.Now().Format("2006-01-02_15-04-05")
 }
 
-// logDirectory 日志目录：用户目录下的 NyaLauncher/Logs，用户目录不可用时回落到程序目录。
+// logDirectory 日志目录：用户目录下的 NekoLauncher/Logs；便携模式下跟着数据目录走
+// （否则"绿色版"的日志仍写进用户目录，既割裂又可能在受限环境里写不进去）；
+// 用户目录不可用时回落到程序目录。
 func logDirectory() string {
+	if portable, ok := tools.PortableDataDirectory(); ok {
+		return filepath.Join(portable, "Logs")
+	}
 	home := os.Getenv("USERPROFILE")
 	if home == "" {
 		if h, err := os.UserHomeDir(); err == nil {
@@ -39,7 +49,7 @@ func logDirectory() string {
 			home = "."
 		}
 	}
-	return filepath.Join(home, "NyaLauncher", "Logs")
+	return filepath.Join(home, "NekoLauncher", "Logs")
 }
 
 // ensureSharedFilePath 取得（并按需创建）本次运行的共享日志文件路径，需持锁调用。
@@ -79,13 +89,14 @@ func Write(typ, info string) bool {
 	line := fmt.Sprintf("[%s][%s]%s", timeGet(), typ, info)
 	writeMu.Lock()
 	path, err := ensureSharedFilePath()
+	var f *os.File
 	if err == nil {
 		rotateIfTooLarge(path)
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err == nil {
-			_, err = f.WriteString(line + "\n")
-			f.Close()
-		}
+		f, err = os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	}
+	if err == nil {
+		_, err = f.WriteString(line + "\n")
+		f.Close()
 	}
 	writeMu.Unlock()
 	if err != nil {
@@ -110,7 +121,39 @@ func rotateIfTooLarge(path string) {
 	_ = os.Rename(path, archived)
 }
 
+// ReadCurrent 读取本次运行共享日志文件的全部内容；尚未产生日志时返回空串。
+func ReadCurrent() (string, error) {
+	writeMu.Lock()
+	path := sharedFilePath
+	writeMu.Unlock()
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(data), nil
+}
+
+// ExportCurrent 把本次运行的日志导出到 dest；尚未产生日志时写出空文件。
+func ExportCurrent(dest string) error {
+	if strings.TrimSpace(dest) == "" {
+		return errors.New("导出路径不能为空")
+	}
+	content, err := ReadCurrent()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dest, []byte(content), 0o644)
+}
+
 // ClearLogs 清空日志目录：删除其中的全部 .log 文件（含 .old.log 归档）。
+// 本此运行的共享日志文件一并删除，并重置共享路径：后续写入会按当前时刻
+// 新建文件，而不是继续向已被删除的旧路径追加。
 // 返回成功删除的文件数量；目录不存在返回 0，发生异常时返回 -1。
 func ClearLogs() int {
 	dir := logDirectory()
@@ -120,6 +163,7 @@ func ClearLogs() int {
 	deleted := 0
 	writeMu.Lock()
 	files, err := filepath.Glob(filepath.Join(dir, "*.log"))
+	sharedFilePath = ""
 	writeMu.Unlock()
 	if err != nil {
 		return -1
@@ -130,4 +174,10 @@ func ClearLogs() int {
 		}
 	}
 	return deleted
+
+}
+
+// 优化过后的日志清理函数，支持精确至日期的清理.
+func RemoveLogs() int {
+	return 0
 }

@@ -7,12 +7,12 @@ import (
 	"strings"
 	"sync"
 
-	"nyalauncher/internal/logs"
-	"nyalauncher/internal/tools"
+	"nekolauncher/internal/logs"
+	"nekolauncher/internal/tools"
 )
 
 // GameVersionProfile 单个游戏实例（Minecraft 目录 + 版本 ID）的可编辑启动设置。
-// JSON 字段名与 C# 记录的默认序列化名（PascalCase）保持一致，兼容读取既有 config.json。
+// JSON 字段名与 C# 记录的默认序列化名（PascalCase）保持一致，兼容读取既有 launcher.yaml。
 type GameVersionProfile struct {
 	MinecraftDirectory           string `json:"MinecraftDirectory"`
 	VersionId                    string `json:"VersionId"`
@@ -31,18 +31,33 @@ type GameVersionProfile struct {
 	// InstanceIconOverride 实例图标偏好：null 表示"跟随加载器自动"；
 	// "gameicon:{key}" 表示显式选择某个内置图标；"custom" 表示使用自定义图标。
 	InstanceIconOverride *string `json:"InstanceIconOverride"`
+	// ProcessPriority 游戏进程优先级："low" / "belownormal" / "normal" /
+	// "abovenormal" / "high"；空串表示未设置（等价 normal，不调整）。
+	ProcessPriority string `json:"ProcessPriority"`
+	// WrapperCommand 包装命令模板，需含 %command% 占位
+	// （如 "gamemoderun %command%"）；启动时占位替换为 Java 与全部参数。
+	WrapperCommand string `json:"WrapperCommand"`
+	// AdditionalEnvironmentVariables 注入游戏进程的额外环境变量（"KEY=VALUE" 每项一条）。
+	AdditionalEnvironmentVariables []string `json:"AdditionalEnvironmentVariables"`
+	// LaunchFullscreen 以全屏启动游戏（追加 --fullscreen 游戏参数）。
+	LaunchFullscreen bool `json:"LaunchFullscreen"`
+	// PlaytimeSeconds 累计游玩时长（秒）。游戏进程退出时由启动管线累加。
+	PlaytimeSeconds int64 `json:"PlaytimeSeconds"`
+	// LastPlayedAt 最后一次游戏进程退出的 Unix 秒；0 表示从未游玩。
+	LastPlayedAt int64 `json:"LastPlayedAt"`
 }
 
 // NewGameVersionProfile 返回带 C# 默认值的新实例档案。
 func NewGameVersionProfile() GameVersionProfile {
 	return GameVersionProfile{
-		MinimumMemoryMb:              512,
-		MaximumMemoryMb:              4096,
-		FollowGlobalAdvancedSettings: true,
-		WindowWidth:                  854,
-		WindowHeight:                 480,
-		AdditionalJvmArguments:       []string{},
-		AdditionalGameArguments:      []string{},
+		MinimumMemoryMb:                512,
+		MaximumMemoryMb:                4096,
+		FollowGlobalAdvancedSettings:   true,
+		WindowWidth:                    854,
+		WindowHeight:                   480,
+		AdditionalJvmArguments:         []string{},
+		AdditionalGameArguments:        []string{},
+		AdditionalEnvironmentVariables: []string{},
 	}
 }
 
@@ -116,6 +131,15 @@ func getFoldersLocked() []string {
 }
 
 // AddFolder 向文件夹列表添加目录。目录不存在或路径非法时返回 false。
+//
+// 只把用户显式添加的目录写入存储（gameVersionFolders）：当前活跃目录与
+// 平台默认目录是 getFoldersLocked 的展示期聚合，不能随本次写入固化进
+// 存储。旧实现把聚合列表整体写回——每次添加/导入都会把当时的活跃目录
+// 沉淀成永久条目；在路径存在多种写法的系统上（大小写变体 / 符号链接 /
+// macOS Unicode 规范化差异使去重比较失效），活跃目录与存储条目永远
+// 比不相等，目录列表随每次操作不断膨胀，表现为"无限复制出重复项"。
+// 成员判定仍按聚合视图：目录已以任何身份（活跃 / 默认 / 已存储）存在时
+// 直接成功，不重复入列、也不产生任何写入。
 func AddFolder(path string) bool {
 	if strings.TrimSpace(path) == "" {
 		logs.Write("ERROR", "AddFolder: path 不能为空")
@@ -128,14 +152,16 @@ func AddFolder(path string) bool {
 
 	profileGate.Lock()
 	defer profileGate.Unlock()
-	folders := getFoldersLocked()
-	for _, existing := range folders {
+	for _, existing := range getFoldersLocked() {
 		if pathsEqualFold(existing, normalized) {
-			return saveFoldersAndNotify(folders)
+			return true
 		}
 	}
-	folders = append(folders, normalized)
-	return saveFoldersAndNotify(folders)
+	// 只追加到用户存储列表；保存前去重，顺带清掉历史版本可能沉淀的重复条目
+	stored := distinctPaths(
+		append(deserializeStringList(GetValue(foldersKey)), normalized),
+	)
+	return saveFoldersAndNotify(stored)
 }
 
 // RemoveFolder 从文件夹列表中移除指定目录。不允许移除平台默认 Minecraft 目录；
@@ -159,19 +185,28 @@ func RemoveFolder(path string) bool {
 	}
 
 	profileGate.Lock()
-	folders := getFoldersLocked()
+	// 成员判定走聚合视图（活跃 / 默认 / 已存储），写回只针对用户存储列表：
+	// 把聚合结果落盘会把当时的活跃目录与平台默认目录永久固化进
+	// gameVersionFolders，正是 AddFolder 注释里描述的污染（见上）。
 	found := false
-	kept := make([]string, 0, len(folders))
-	for _, folder := range folders {
+	for _, folder := range getFoldersLocked() {
 		if pathsEqualFold(folder, normalized) {
 			found = true
-			continue
+
+			break
 		}
-		kept = append(kept, folder)
 	}
 	if !found {
 		profileGate.Unlock()
 		return false
+	}
+	stored := deserializeStringList(GetValue(foldersKey))
+	kept := make([]string, 0, len(stored))
+	for _, folder := range stored {
+		if pathsEqualFold(folder, normalized) {
+			continue
+		}
+		kept = append(kept, folder)
 	}
 	if !saveFolders(kept) {
 		profileGate.Unlock()
@@ -221,7 +256,7 @@ func Get(minecraftDirectory, versionId string) GameVersionProfile {
 
 // PruneMissingVersions 清理指定 Minecraft 目录下已不存在版本的实例配置。
 // 版本文件夹可能被用户在启动器外手动删除或改名，实例扫描完成后调用本方法，
-// 防止这些版本的隔离、内存等残留设置无限累积在 config.json 中被后续逻辑误读。
+// 防止这些版本的隔离、内存等残留设置无限累积在 launcher.yaml 中被后续逻辑误读。
 // 版本存在性以扫描结果（实例列表实际展示的版本）为准，比较不区分大小写。
 // minecraftDirectory 为本次扫描的 Minecraft 根目录，只清理该目录下的配置；
 // existingVersionIds 为扫描到的仍实际存在的版本 Id 集合（空表示全部清除）。
@@ -279,6 +314,9 @@ func Save(profile GameVersionProfile) bool {
 	normalized.JavaExecutable = strings.TrimSpace(profile.JavaExecutable)
 	normalized.AdditionalJvmArguments = normalizeArguments(profile.AdditionalJvmArguments)
 	normalized.AdditionalGameArguments = normalizeArguments(profile.AdditionalGameArguments)
+	normalized.ProcessPriority = normalizeProcessPriority(profile.ProcessPriority)
+	normalized.WrapperCommand = strings.TrimSpace(profile.WrapperCommand)
+	normalized.AdditionalEnvironmentVariables = normalizeArguments(profile.AdditionalEnvironmentVariables)
 
 	profileGate.Lock()
 	profiles := loadProfiles()
@@ -367,14 +405,14 @@ func SaveInstanceIconOverride(minecraftDirectory, versionId string, overrideValu
 	return SetValue(profilesKey, serializeProfiles(profiles))
 }
 
-// loadProfiles 从 config.json 读取全部实例配置，需持 profileGate 调用。
+// loadProfiles 从 launcher.yaml 读取全部实例配置，需持 profileGate 调用。
 func loadProfiles() []GameVersionProfile {
 	raw := GetValue(profilesKey)
 	if strings.TrimSpace(raw) == "" {
 		return []GameVersionProfile{}
 	}
 	var profiles []GameVersionProfile
-	// config.json 中被手改坏的 JSON 视作未配置
+	// launcher.yaml 中被手改坏的 JSON 视作未配置
 	if err := json.Unmarshal([]byte(raw), &profiles); err != nil {
 		return []GameVersionProfile{}
 	}

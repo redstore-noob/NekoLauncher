@@ -1,0 +1,28 @@
+# 统一按 LF 入库/检出。本机 core.autocrlf=true 时，git 会把文本文件检出成
+# CRLF，而 prettier 默认 endOfLine=lf —— 结果就是 eslint 里成片的
+# "Delete ␍" 警告（曾达 3200+ 条），把真正的问题埋在噪音里。
+* text=auto eol=lf
+
+# 二进制资源不能被当文本转换
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.zip binary
+*.jar binary
+*.pkg binary
+*.AppImage binary
+
+# Windows 侧脚本保留 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

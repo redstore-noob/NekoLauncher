@@ -1,0 +1,19 @@
+id: server-status
+name: 服务器状态
+version: "1.0.0"
+api: "1"
+description: 主页小组件：查询 Minecraft 服务器在线状态，支持一键复制地址与快速进服
+dev: true
+author: NekoLauncher
+
+# 权限声明：调用未声明的权限会直接报错（见 docs/Extensions_Guide.md §5）
+capabilities:
+  server-status: true   # getServerStatus
+  clipboard: true       # setClipboard
+  storage: true         # config.*（读取下面的默认设置）
+
+# 默认设置：首次加载时种入 api.config（仅当键为空时写入，用户改过不覆盖）
+settings:
+  serverHost: "hypixel.net"
+  serverPort: "25565"
+  refreshSeconds: "60"

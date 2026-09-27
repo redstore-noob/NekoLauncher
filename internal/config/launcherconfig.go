@@ -6,12 +6,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"nekolauncher/internal/tools"
 )
 
 // LauncherConfig 启动器配置的统一入口（C# 静态单例类 → Go 包级变量 + 互斥锁）。
-// 底层由 ConfigFileManager 负责 JSON 读写。
-// 配置文件为存储目录下的 config.json，默认目录与 workspace.json 保持一致
-// （%USERPROFILE%\NyaLauncher），可通过 SetStorageDirectory 同步工作区存储目录。
+// 底层由 ConfigFileManager 负责 YAML 读写。配置按域拆分存储（见 storagedomains.go）：
+// 账户域写入 accounts.yaml，其余全部键（启动器外观/行为 + 游戏启动设置）写入
+// launcher.yaml。默认目录为 %USERPROFILE%\NekoLauncher，可通过 SetStorageDirectory 切换。
 
 var (
 	configSyncRoot   sync.Mutex
@@ -19,32 +21,33 @@ var (
 	sharedStore      *ConfigFileManager
 )
 
-// DefaultStorageDirectory 默认存储目录：%USERPROFILE%\NyaLauncher
-// （与 workspace.json 默认目录一致，便于用户直接找到并编辑）。
+// DefaultStorageDirectory 默认存储目录：便携模式下是 exe 同级的便携数据目录，
+// 否则是 %USERPROFILE%\NekoLauncher。
 func DefaultStorageDirectory() string { return defaultStorageDirectoryValue() }
 
+// 便携模式（X-6）：
+//
+//	exe 同级存在 portable.flag（标记文件）或 NekoLauncher-data/（数据目录）时，
+//	存储目录改用后者——U 盘/绿色版用户希望"数据跟着程序走"，而不是写进用户目录。
+//
+// 判定放在**默认值计算**里，因此任何读取存储目录的路径（含测试里的 SetStorageDirectory
+// 还原）都会看到一致的结果；检测失败一律回落用户目录，绝不因为便携模式判断出错而拒绝启动。
+// 判定实现与日志目录共用 tools.PortableDataDirectory（logs 不能 import config，
+// 所以公共逻辑只能放更下层的 tools）。
 func defaultStorageDirectoryValue() string {
+	if portable, ok := PortableStorageDirectory(); ok {
+		return portable
+	}
 	home := UserHome()
 	if home == "" {
-		return filepath.Join(".", "NyaLauncher")
+		return filepath.Join(".", "NekoLauncher")
 	}
-	return filepath.Join(home, "NyaLauncher")
+	return filepath.Join(home, "NekoLauncher")
 }
 
-// LegacyDefaultStorageDirectory 旧版默认存储目录：%LOCALAPPDATA%\NyaLauncher。
-// 仅用于从旧版本一次性迁移配置到 DefaultStorageDirectory
-// （迁移动作由前端的配置存储协调流程发起，见 PORTING_NOTES.md）。
-func LegacyDefaultStorageDirectory() string {
-	localAppData := os.Getenv("LOCALAPPDATA")
-	if localAppData == "" {
-		if home := UserHome(); home != "" {
-			localAppData = filepath.Join(home, "AppData", "Local")
-		}
-	}
-	if localAppData == "" {
-		return filepath.Join(".", "NyaLauncher")
-	}
-	return filepath.Join(localAppData, "NyaLauncher")
+// PortableStorageDirectory 便携模式下的存储目录；非便携模式返回 ok=false。
+func PortableStorageDirectory() (string, bool) {
+	return tools.PortableDataDirectory()
 }
 
 // UserHome 用户主目录（%USERPROFILE%，不可用时回落 os.UserHomeDir）。
@@ -59,22 +62,22 @@ func UserHome() string {
 	return home
 }
 
-// StorageDirectory config.json 所在目录；默认与 workspace.json 同目录。
+// StorageDirectory 配置文件所在目录。
 func StorageDirectory() string {
 	configSyncRoot.Lock()
 	defer configSyncRoot.Unlock()
 	return storageDirectory
 }
 
-// FilePath 配置文件路径：存储目录下的 config.json。
+// FilePath 主配置文件路径：存储目录下的 launcher.yaml。
 func FilePath() string {
 	configSyncRoot.Lock()
 	defer configSyncRoot.Unlock()
 	return launcherConfigFilePath()
 }
 
-// SetStorageDirectory 切换 config.json 的读取目录。文件迁移与冲突处理由前端的
-// 配置存储协调流程完成；本方法只重置底层存储，使后续读取立即应用新目录中的配置。
+// SetStorageDirectory 切换配置的读取目录。本方法只重置底层存储，
+// 使后续读取立即应用新目录中的配置（不做任何文件搬迁）。
 func SetStorageDirectory(storageDir string) error {
 	if strings.TrimSpace(storageDir) == "" {
 		return errors.New("storageDirectory 不能为空")
@@ -86,7 +89,8 @@ func SetStorageDirectory(storageDir string) error {
 		return nil
 	}
 	storageDirectory = normalized
-	sharedStore = nil // 下次访问时用新路径重新加载
+	sharedStore = nil   // 下次访问时用新路径重新加载
+	resetDomainStores() // 账户域存储同样用新路径重新加载
 	return nil
 }
 
@@ -150,7 +154,7 @@ func ClearGameDirectory() {
 }
 
 // SaveJava 保存首选 Java（java.exe 路径 + 版本）。采用「先清空再写入」策略，
-// 保证 config.json 中的 javaPath 始终只有一条首选配置。
+// 保证 launcher.yaml 中的 javaPath 始终只有一条首选配置。
 func SaveJava(javaPath, javaVersion string) bool {
 	if strings.TrimSpace(javaPath) == "" {
 		return false
@@ -242,15 +246,17 @@ func SaveDefaultVersionIsolation(value *bool) {
 }
 
 // VerifyFilesBeforeLaunch 启动前是否校验游戏文件完整性并自动补全缺失文件。默认 true。
+// 值损坏（手改 launcher.yaml 写坏）与未设置同样按默认开启处理：
+// 否则一条坏配置会静默关闭校验。
 func VerifyFilesBeforeLaunch() bool {
 	value := GetValue("verifyFilesBeforeLaunch")
-	// 未设置时默认开启
+	// 未设置或损坏时默认开启
 	if value == "" {
 		return true
 	}
 	result, err := parseBool(value)
 	if err != nil {
-		return false
+		return true
 	}
 	return result
 }
@@ -260,12 +266,36 @@ func SaveVerifyFilesBeforeLaunch(enabled bool) {
 	setValue("verifyFilesBeforeLaunch", formatBool(enabled))
 }
 
-// SetValue 保存/更新任意字符串配置项。
+// AcrylicBackdropEnabled 亚克力模糊（Acrylic 背景）开关。未设置或值损坏时
+// 默认关闭：默认是清晰透明（无模糊），亚克力模糊是可选项。
+func AcrylicBackdropEnabled() bool {
+	value := GetValue("launcherAcrylicEnabled")
+	if value == "" {
+		return false
+	}
+	result, err := parseBool(value)
+	if err != nil {
+		return false
+	}
+	return result
+}
+
+// SaveAcrylicBackdropEnabled 保存亚克力模糊开关。Win11 22621+ 由绑定层运行时热切换
+// （见 internal/bindings/acrylic_windows.go），旧系统回落为重启应用。
+func SaveAcrylicBackdropEnabled(enabled bool) {
+	setValue("launcherAcrylicEnabled", formatBool(enabled))
+}
+
+// SetValue 保存/更新任意字符串配置项。账户域的键写入 accounts.yaml，
+// 其余键写入 launcher.yaml（见 storagedomains.go）。
 func SetValue(key, value string) bool {
 	if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
 		return false
 	}
 	return withStoreBool(func(store *ConfigFileManager) bool {
+		if accountsStore := accountsStoreFor(key); accountsStore != nil {
+			return accountsStore.Set(key, value)
+		}
 		return store.ConfigItemAdd(key, value)
 	})
 }
@@ -276,8 +306,12 @@ func setValue(key, value string) bool {
 }
 
 // GetValue 读取任意字符串配置项；不存在（或为空白）时返回空串。
+// 账户域的键从 accounts.yaml 读取，其余键从 launcher.yaml 读取。
 func GetValue(key string) string {
 	return withStoreString(func(store *ConfigFileManager) string {
+		if accountsStore := accountsStoreFor(key); accountsStore != nil {
+			return accountsStore.Get(key)
+		}
 		value := store.ConfigItemRead(key)
 		if strings.TrimSpace(value) == "" {
 			return ""
@@ -292,6 +326,9 @@ func ClearValue(key string) bool {
 		return false
 	}
 	return withStoreBool(func(store *ConfigFileManager) bool {
+		if accountsStore := accountsStoreFor(key); accountsStore != nil {
+			return accountsStore.Remove(key)
+		}
 		return store.ConfigItemDelete(key)
 	})
 }
@@ -305,7 +342,7 @@ func UpdateInTransaction(mutation func(map[string]any) bool) bool {
 }
 
 func launcherConfigFilePath() string {
-	return filepath.Join(storageDirectory, "config.json")
+	return filepath.Join(storageDirectory, "launcher.yaml")
 }
 
 // ensureStore 取得（或按需创建）底层 ConfigFileManager，需持 configSyncRoot 调用。

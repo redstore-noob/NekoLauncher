@@ -7,10 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
-	"nyalauncher/internal/logs"
+	"nekolauncher/internal/logs"
 )
 
 // httpGetString GET 文本（专用客户端），非 2xx 报 httpStatusError。
@@ -24,6 +23,20 @@ func httpGetString(ctx context.Context, client *http.Client, endpoint string) (s
 		return "", err
 	}
 	return readAllString(resp)
+}
+
+// readAllLimited 限长读取：超过 limit 字节时返回错误而不是截断后继续。
+// 用于把压缩包里的清单文件读进内存前设一道独立上限（解压阶段的体积防护
+// 发生在这之后，挡不住 deflate 全零条目把内存撑爆）。
+func readAllLimited(reader io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("清单文件超过体积上限（%d MB）", limit>>20)
+	}
+	return data, nil
 }
 
 // jsonUnmarshalStrict JSON 解析（独立封装便于统一错误信息）。
@@ -77,9 +90,12 @@ func isHTTPStatusError(err error) bool {
 	return errors.As(err, &statusErr)
 }
 
-// tryDeleteFile 尽力删除文件，失败不影响主流程。
-func tryDeleteFile(path string) {
-	_ = os.Remove(path)
+// rangeMismatchError 断点续传的临时文件与远端内容不一致（416 且长度对不上）。
+// 断点信息已被丢弃，错误本身按瞬时失败处理：重试一次即可从零完整下载。
+type rangeMismatchError struct{}
+
+func (e *rangeMismatchError) Error() string {
+	return "断点信息与远端文件不一致，已重置下载。"
 }
 
 // sanitizeSegment 替换文件名中的非法字符（跨平台基础集，对应 C# Path.GetInvalidFileNameChars 的常见子集）。

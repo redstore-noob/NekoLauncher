@@ -4,12 +4,18 @@ package auth
 
 import (
 	"encoding/base64"
-	"runtime"
 	"syscall"
 	"unsafe"
 )
 
-func runtimeIsWindows() bool { return runtime.GOOS == "windows" }
+// platformSecretUsesDPAPI Windows 使用 DPAPI（CurrentUser）。
+func platformSecretUsesDPAPI() bool { return true }
+
+// platformProtectDPAPI 加密并剥掉前缀后的 Base64 密文；失败返回空串。
+func platformProtectDPAPI(plaintext string) string { return dpapiProtect(plaintext) }
+
+// platformUnprotectDPAPI 解密（入参已去掉 EncryptedPrefix）；失败返回空串。
+func platformUnprotectDPAPI(encodedBase64 string) string { return dpapiUnprotect(encodedBase64) }
 
 var (
 	crypt32                = syscall.NewLazyDLL("crypt32.dll")
@@ -30,6 +36,10 @@ type dataBlob struct {
 // 失败返回空串。
 func dpapiProtect(plaintext string) string {
 	plain := []byte(plaintext)
+	if len(plain) == 0 {
+		// 空明文没有可加密字节：与加密失败一致返回空串，避免 &plain[0] 越界 panic
+		return ""
+	}
 	var in, entropy, out dataBlob
 	in.cbData = uint32(len(plain))
 	in.pbData = &plain[0]

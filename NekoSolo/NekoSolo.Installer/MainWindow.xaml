@@ -1,0 +1,108 @@
+<Window x:Class="NekoSolo.Installer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        Title="NekoSolo 安装器"
+        Height="560" Width="720"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        TextElement.Foreground="{DynamicResource MaterialDesignBody}"
+        Background="{DynamicResource MaterialDesignPaper}"
+        FontFamily="{materialDesign:MaterialDesignFont}"
+        Closing="OnWindowClosing">
+    <Grid>
+        <!-- 第 1 步：欢迎与安装目录 -->
+        <Grid x:Name="StepWelcome" Margin="32">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                <Border Width="72" Height="72" CornerRadius="12" Background="#226C4DF6">
+                    <Grid>
+                        <Image x:Name="PackIcon" Stretch="Uniform" Margin="8" Visibility="Collapsed" />
+                        <materialDesign:PackIcon x:Name="PackIconFallback" Kind="Gamepad" Width="36" Height="36"
+                                                 Visibility="Collapsed" HorizontalAlignment="Center"
+                                                 VerticalAlignment="Center" />
+                    </Grid>
+                </Border>
+                <StackPanel Margin="16,0,0,0" VerticalAlignment="Center">
+                    <TextBlock x:Name="PackTitle" Text="整合包" FontSize="26" FontWeight="SemiBold" />
+                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                        <TextBlock x:Name="PackVersionText" Text="v1.0.0" Foreground="{DynamicResource MaterialDesignBodyLight}" />
+                        <TextBlock x:Name="PackAuthorText" Margin="12,0,0,0"
+                                   Foreground="{DynamicResource MaterialDesignBodyLight}" />
+                        <TextBlock x:Name="PackMcText" Margin="12,0,0,0"
+                                   Foreground="{DynamicResource MaterialDesignBodyLight}" />
+                    </StackPanel>
+                </StackPanel>
+            </StackPanel>
+
+            <Border Grid.Row="1" Padding="14" CornerRadius="8" Background="#11800000" Margin="0,0,0,16">
+                <StackPanel>
+                    <TextBlock x:Name="PackDescription" TextWrapping="Wrap" FontSize="13" />
+                    <TextBlock x:Name="SoloHint" Margin="0,8,0,0" TextWrapping="Wrap" FontSize="12"
+                               Foreground="{DynamicResource MaterialDesignBodyLight}"
+                               Text="将安装 NekoLauncher 启动器与整合包实例；首次启动会自动补全游戏文件并进入简洁模式。" />
+                    <TextBlock x:Name="UpdateHint" Margin="0,8,0,0" TextWrapping="Wrap" FontSize="12" FontWeight="SemiBold"
+                               Text="检测到已有安装：将进入更新模式，存档与设置会被保留。" Visibility="Collapsed" />
+                </StackPanel>
+            </Border>
+
+            <StackPanel Grid.Row="3" Margin="0,0,0,20">
+                <TextBlock Text="安装位置" Margin="0,0,0,6" FontWeight="SemiBold" />
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBox x:Name="InstallDirBox" Padding="6,8"
+                             materialDesign:HintAssist.Hint="安装目录（数据随目录携带，删除目录即卸载）" />
+                    <Button Grid.Column="1" Margin="8,0,0,0" Style="{StaticResource MaterialDesignOutlinedButton}"
+                            Content="浏览…" Click="OnBrowse" />
+                </Grid>
+            </StackPanel>
+
+            <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="ExitButton" Style="{StaticResource MaterialDesignOutlinedButton}"
+                        Content="退出" Margin="0,0,12,0" Click="OnExit" />
+                <Button x:Name="InstallButton" Style="{StaticResource MaterialDesignRaisedButton}"
+                        Content="安装" Click="OnInstall" />
+            </StackPanel>
+        </Grid>
+
+        <!-- 第 2 步：安装进度 -->
+        <Grid x:Name="StepInstalling" Margin="32" Visibility="Collapsed">
+            <StackPanel VerticalAlignment="Center">
+                <TextBlock x:Name="ProgressTitle" Text="正在安装…" FontSize="22" FontWeight="SemiBold"
+                           HorizontalAlignment="Center" Margin="0,0,0,24" />
+                <ProgressBar x:Name="ProgressBar" Height="6" Minimum="0" Maximum="100" />
+                <TextBlock x:Name="ProgressFile" Margin="0,12,0,0" TextWrapping="Wrap" TextTrimming="CharacterEllipsis"
+                           Foreground="{DynamicResource MaterialDesignBodyLight}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- 第 3 步：完成 -->
+        <Grid x:Name="StepDone" Margin="32" Visibility="Collapsed">
+            <StackPanel VerticalAlignment="Center">
+                <materialDesign:PackIcon Kind="CheckCircleOutline" Width="64" Height="64"
+                                         Foreground="{DynamicResource MaterialDesignPrimary}"
+                                         HorizontalAlignment="Center" Margin="0,0,0,16" />
+                <TextBlock Text="安装完成！" FontSize="24" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                <TextBlock x:Name="DoneHint" Margin="0,12,0,0" TextWrapping="Wrap" TextAlignment="Center"
+                           Foreground="{DynamicResource MaterialDesignBodyLight}" />
+                <CheckBox x:Name="LaunchAfterInstall" Content="立即启动游戏" IsChecked="True"
+                          HorizontalAlignment="Center" Margin="0,24,0,0" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,24,0,0">
+                    <Button Style="{StaticResource MaterialDesignOutlinedButton}" Content="打开安装目录"
+                            Margin="0,0,12,0" Click="OnOpenFolder" />
+                    <Button Style="{StaticResource MaterialDesignRaisedButton}" Content="完成" Click="OnFinish" />
+                </StackPanel>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

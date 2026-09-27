@@ -1,8 +1,12 @@
-// Package config 移植自 NyaLauncher.Core.Config：启动器 JSON 配置、
-// 全局启动设置与实例档案的读写。
+// Package config 启动器配置、全局启动设置与实例档案的读写。
+//
+// 存储格式：启动器自身的配置一律存 YAML（launcher.yaml / accounts.yaml）。
+// 只有 Minecraft 本体或跨启动器互操作要求的文件（版本 JSON、整合包 mrpack /
+// mmc-pack.json 等）才保持 JSON——那些格式由外部规范定义，不由本项目决定。
 package config
 
 import (
+	crand "crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,11 +17,13 @@ import (
 	"sync"
 	"time"
 
-	"nyalauncher/internal/logs"
+	"gopkg.in/yaml.v3"
+
+	"nekolauncher/internal/logs"
 )
 
 // JavaPathItem 一条已保存的 Java 路径（对应 C# ConfigFileManager.JavaPathItem，
-// 仅内存使用，config.json 中以 {"path","version"} 对象数组存储）。
+// 仅内存使用，配置文件中以 {"path","version"} 对象数组存储）。
 type JavaPathItem struct {
 	JavaPath    string
 	JavaVersion string
@@ -28,8 +34,8 @@ const (
 	minecraftPathKey = "minecraftPath"
 )
 
-// ConfigFileManager 管理启动器的 JSON 配置，同时保留旧版按键与 Java 路径 API。
-// 配置文档在内存中为 map[string]any，写入时缩进格式化并原子落盘。
+// ConfigFileManager 管理启动器的配置文档（YAML），同时保留旧版按键与 Java 路径 API。
+// 配置文档在内存中为 map[string]any，写入时由 yaml.v3 格式化并原子落盘。
 type ConfigFileManager struct {
 	mu       sync.Mutex
 	filePath string
@@ -299,7 +305,7 @@ func (m *ConfigFileManager) loadConfigLocked() (map[string]any, error) {
 	}
 
 	var root map[string]any
-	if err := json.Unmarshal(data, &root); err != nil {
+	if err := yaml.Unmarshal(data, &root); err != nil {
 		// 仅"内容损坏"才走备份+重建：瞬时 IO 失败绝不能用默认配置覆盖原文件
 		logs.Write("ERROR", fmt.Sprintf("配置文件损坏: %v，已备份并重建默认配置", err))
 		backupPath := filePath + fmt.Sprintf(".corrupted-%s.bak", time.Now().Format("20060102150405"))
@@ -316,7 +322,7 @@ func (m *ConfigFileManager) loadConfigLocked() (map[string]any, error) {
 		return rebuiltConfig, nil
 	}
 	if root == nil {
-		return nil, errors.New("配置文件根节点必须是 JSON 对象")
+		return nil, errors.New("配置文件根节点必须是 YAML 映射")
 	}
 	return root, nil
 }
@@ -355,12 +361,11 @@ func (m *ConfigFileManager) saveConfig(config map[string]any) bool {
 			_ = os.Remove(temporaryPath)
 		}
 	}()
-	data, err := json.MarshalIndent(config, "", "  ")
+	data, err := yaml.Marshal(config)
 	if err != nil {
 		logs.Write("ERROR", fmt.Sprintf("保存配置文件失败: %v", err))
 		return false
 	}
-	data = append(data, '\n')
 
 	fullPath := absolutePath(m.filePath)
 	directory := filepath.Dir(fullPath)
@@ -393,7 +398,7 @@ func createDefaultConfig() map[string]any {
 	}
 }
 
-// readString 断言 JSON 值为字符串类型；键不存在或值为 null 时返回空串
+// readString 断言配置值为字符串类型；键不存在或值为 null 时返回空串
 // （对应 C# ReadString 返回 null，静默处理）；类型不匹配返回错误。
 func readString(value any) (string, error) {
 	if value == nil {
@@ -406,7 +411,10 @@ func readString(value any) (string, error) {
 	return result, nil
 }
 
-// deepCloneMap 通过 JSON 序列化做深拷贝，用于失败回滚。
+// deepCloneMap 深拷贝配置文档，用于写入失败时回滚内存态。
+// 用 JSON 而非 YAML：这里只处理内存中的 map[string]any（值类型限于
+// string / bool / 数字 / []any / map[string]any），JSON 往返最快且无歧义；
+// 落盘格式由 saveConfig 决定，两者互不影响。
 func deepCloneMap(source map[string]any) map[string]any {
 	if source == nil {
 		return nil
@@ -434,11 +442,7 @@ func absolutePath(path string) string {
 func newGUID() string {
 	const hexDigits = "0123456789abcdef"
 	b := make([]byte, 32)
-	f, err := os.OpenFile("/dev/urandom", os.O_RDONLY, 0)
-	if err == nil {
-		defer f.Close()
-		_, _ = f.Read(b)
-	} else {
+	if _, err := crand.Read(b); err != nil {
 		// 回退：基于时间的伪随机即可（仅用于文件名唯一性）
 		now := time.Now().UnixNano()
 		for i := range b {

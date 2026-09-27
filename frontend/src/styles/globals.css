@@ -1,43 +1,785 @@
 /*
-MIT License
-
-Copyright (c) 2024 Next UI
-Copyright (c) 2026 烟花
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-*/
+ * Copyright 2024 Next UI
+ * Copyright 2026 烟花
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 @import "tailwindcss";
 @plugin '../hero.ts';
 
 @source '../../node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}';
 @custom-variant dark (&:is(.dark *));
 
-@font-face {
-    font-family: 'TestFont';
-/*src: url('AaCute.woff') format('woff');*/
-    font-display: swap;
+/* 全局字体：走系统 UI 字体族并按平台挂上中文回退，
+ * 避免 WebView 把中文落到衬线/默认字形上（此前挂的是一个没有 src 的空 @font-face）。 */
+body {
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    sans-serif;
 }
 
-body {
-    font-family: 'TestFont', sans-serif !important;
+/* 窗口底色（供"背景不透明度"动态调节 alpha；浅色取白，深色取 gray-950） */
+:root {
+  --nya-shell: 255 255 255;
+}
+.dark {
+  --nya-shell: 3 7 18;
+}
+
+/* 面板毛玻璃强度系数：外观设置里的"毛玻璃强度"写到这里，1 = 默认观感。
+ * 所有表面的 blur 半径都乘它，因此一个变量就能统一调节强度；0 时由
+ * data-panel-blur="off" 直接摘掉 backdrop-filter（省一次合成开销）。
+ * --nya-glass-alpha 是配套的表面不透明度：光改 blur 半径在 80% 遮盖力的面板上
+ * 几乎看不出来，强度必须同时改通透度才有效果。 */
+:root {
+  --nya-blur-scale: 1;
+  --nya-glass-alpha: 0.8;
+}
+
+/* HeroUI 默认给 :root 画了不透明底色，会让 WebView 页面本身不透明、导致窗口
+ * 透明/亚克力透不出来；这里改成透明，背景完全由 Shell/背景层负责。 */
+html,
+body,
+#root {
+  background-color: transparent !important;
+}
+
+/* 背景层淡入：图源就绪/切换时（BackgroundLayer 按 url 重挂载子节点）柔和淡入，
+ * 避免"图片加载完瞬间硬切"造成的一闪；结束值回落到元素自身的不透明度设置。 */
+@keyframes nya-bg-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.nya-bg-fade {
+  animation: nya-bg-fade 0.35s ease backwards;
+}
+
+/* ---------------- 主题色派生表面 ---------------- */
+
+/* --nya-*-light/dark 由 theme-color.tsx 按当前主题色写入（HSL 通道）。
+ * 侧边栏 / 面板统一使用同一色相、降饱和后的表面色，保证与主题色协调。 */
+:root {
+  --nya-surface-1: var(--nya-surface-1-light, 212 32% 97%);
+  --nya-surface-2: var(--nya-surface-2-light, 212 22% 99%);
+  --nya-border-c: var(--nya-border-light, 212 26% 88%);
+}
+.dark {
+  --nya-surface-1: var(--nya-surface-1-dark, 212 32% 11%);
+  --nya-surface-2: var(--nya-surface-2-dark, 212 22% 15%);
+  --nya-border-c: var(--nya-border-dark, 212 20% 25%);
+}
+
+/* ---------------- 侧边栏标签动画 ---------------- */
+
+/* 入场：每个菜单项交错淡入 + 从左滑入 */
+@keyframes nya-sidebar-item-in {
+  from {
+    opacity: 0;
+    transform: translateX(-12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.nya-sidebar-item {
+  animation: nya-sidebar-item-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+
+/* 图标 hover：轻轻弹一下 */
+@keyframes nya-sidebar-icon-pop {
+  0% {
+    transform: scale(1) rotate(0deg);
+  }
+  35% {
+    transform: scale(1.2) rotate(-8deg);
+  }
+  70% {
+    transform: scale(0.92) rotate(6deg);
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+}
+.nya-sidebar-item:hover .nya-sidebar-icon {
+  animation: nya-sidebar-icon-pop 0.4s ease-out;
+}
+
+/* 选中项图标：活力呼吸 */
+@keyframes nya-sidebar-icon-active {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.12);
+  }
+}
+.nya-sidebar-item-active .nya-sidebar-icon {
+  animation: nya-sidebar-icon-active 1.8s ease-in-out infinite;
+}
+
+/* 选中指示胶囊：一道高光定期扫过 */
+.nya-sidebar-cursor {
+  overflow: hidden;
+}
+.nya-sidebar-cursor::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    hsl(var(--heroui-primary-500) / 0.22) 50%,
+    transparent 65%
+  );
+  animation: nya-sidebar-cursor-shine 3.2s ease-in-out infinite;
+}
+@keyframes nya-sidebar-cursor-shine {
+  0% {
+    transform: translateX(-100%);
+  }
+  55%,
+  100% {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nya-sidebar-item,
+  .nya-sidebar-item:hover .nya-sidebar-icon,
+  .nya-sidebar-item-active .nya-sidebar-icon {
+    animation: none;
+  }
+  .nya-sidebar-cursor::after {
+    content: none;
+  }
+  /* 自动隐藏侧栏的滑出/收起也退化为瞬切，去掉阴影过渡 */
+  .nya-sidebar {
+    transition: none;
+  }
+}
+
+/* 侧边栏：主题派生色毛玻璃（背景图/桌面内容透出并模糊，与标题栏一致）。
+ * 毛玻璃层底色统一定在 80% 不透明度：有背景 scrim 兜底后既保可读又留通透 */
+.nya-sidebar {
+  background-color: hsl(var(--nya-surface-1) / var(--nya-glass-alpha, 0.8));
+  backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1))) saturate(150%);
+  -webkit-backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1)))
+    saturate(150%);
+}
+
+/* 全局背景 scrim：罩在模糊背景图上的黑白底色（亮色白/暗色黑），把背景
+ * 压暗/提亮到与主题同调，保证前景文字在任意壁纸上都可读。
+ * 颜色保持不透明，强度由调用点内联 opacity 控制（设置页"背景压暗度"） */
+.nya-bg-scrim {
+  background-color: rgb(255 255 255);
+}
+.dark .nya-bg-scrim {
+  background-color: rgb(0 0 0);
+}
+
+/* 面板/卡片：半透明主题派生色 + 毛玻璃。blur 烘焙在类里而不是靠调用点
+ * 追加 tailwind backdrop-blur-*，保证所有页面（含漏加的）观感一致。 */
+.nya-panel {
+  background-color: hsl(var(--nya-surface-2) / var(--nya-glass-alpha, 0.8));
+  backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1))) saturate(150%);
+  -webkit-backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1)))
+    saturate(150%);
+}
+/* 浮在内容之上的面板（下载浮标 / 拖动幽灵）：比 nya-panel 更实，
+ * 否则下面的文字会透上来、读数发花 */
+.nya-panel-strong {
+  background-color: hsl(
+    var(--nya-surface-2) / min(0.98, calc(var(--nya-glass-alpha, 0.8) + 0.14))
+  );
+  backdrop-filter: blur(calc(24px * var(--nya-blur-scale, 1))) saturate(160%);
+  -webkit-backdrop-filter: blur(calc(24px * var(--nya-blur-scale, 1)))
+    saturate(160%);
+}
+.nya-panel-inner {
+  /* 与其它毛玻璃层同源的底色强度；嵌套面板下仍有 backdrop 模糊透出 */
+  background-color: hsl(var(--nya-surface-1) / var(--nya-glass-alpha, 0.8));
+  backdrop-filter: blur(calc(16px * var(--nya-blur-scale, 1))) saturate(140%);
+  -webkit-backdrop-filter: blur(calc(16px * var(--nya-blur-scale, 1)))
+    saturate(140%);
+}
+.nya-border {
+  border-color: hsl(var(--nya-border-c) / 0.7);
+}
+
+/* ---------------- 弹窗遮罩 / 面板 / 浮层菜单（毛玻璃） ---------------- */
+
+/* 遮罩淡入：配合 modalBehaviorProps 的 backdrop="blur" + disableAnimation。
+ * HeroUI 原生的遮罩动画是 framer 逐帧 JS 驱动的 0.4s 淡入，偶发丢帧/卡在
+ * 半透明态；CSS keyframes 由渲染引擎驱动，稳定且更快。关闭时即时卸载。 */
+@keyframes nya-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.nya-modal-backdrop {
+  animation: nya-overlay-in 0.18s ease-out backwards;
+}
+
+/* 弹窗面板：毛玻璃表面（覆盖 HeroUI 默认不透明 bg-background——本文件规则
+ * 未分层，级联优先于 utilities 层的 tailwind 类）+ 细描边 */
+.nya-modal-surface {
+  background-color: hsl(
+    var(--nya-surface-2) / min(0.98, calc(var(--nya-glass-alpha, 0.8) + 0.14))
+  );
+  backdrop-filter: blur(calc(28px * var(--nya-blur-scale, 1))) saturate(160%);
+  -webkit-backdrop-filter: blur(calc(28px * var(--nya-blur-scale, 1)))
+    saturate(160%);
+  border: 1px solid hsl(var(--nya-border-c) / 0.7);
+}
+
+/* 弹窗面板入场：上浮 + 轻缩放（替代 framer 的 initial opacity:0 弹簧） */
+@keyframes nya-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.nya-modal-enter {
+  animation: nya-modal-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+/* 浮层菜单（Popover / Dropdown / Select / Autocomplete）：毛玻璃。
+ * HeroUI 的浮层表面靠 DOM 属性选择：content 槽渲染为 [data-slot="content"]
+ * （Tooltip 同名，但它恒带 data-disabled，用 :not 排除），Select 的
+ * popoverContent 槽渲染为 [data-slot="popover"]。本文件规则未分层，
+ * 级联优先于 utilities 层的 bg-content1，无需逐组件传 classNames。 */
+[data-slot="content"]:not([data-disabled]),
+[data-slot="popover"] {
+  background-color: hsl(var(--nya-surface-1) / var(--nya-glass-alpha, 0.8));
+  backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1))) saturate(150%);
+  -webkit-backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1)))
+    saturate(150%);
+  border: 1px solid hsl(var(--nya-border-c) / 0.6);
+}
+
+/* Select / Dropdown 的弹出面板：HeroUI 只给触发器圆角，popover 本体默认直角
+ * （slot 默认类只有 "w-full p-1 overflow-hidden"），这里统一补圆角，
+ * 否则下拉列表出现生硬的直角边。 */
+[data-slot="popover"] {
+  border-radius: 0.875rem;
+  overflow: hidden;
 }
 
 ::-webkit-scrollbar {
-    display: none;  /* Chrome/Safari/Edge */
+  display: none; /* Chrome/Safari/Edge */
+}
+
+/* ---------------- 面板毛玻璃开关（外观设置 → 面板毛玻璃） ----------------
+ * background.tsx 把开关写到 <html data-panel-blur="on|off">。off 时移除全部
+ * 表面的 backdrop-filter，并把半透明底色提到接近不透明——半透明无模糊的
+ * 面板会透出背景图锐利边缘，观感很差，所以关闭模糊必须同时提高遮盖力。
+ * 本文件规则未分层，且属性选择器优先级高于上面的单类规则，直接覆盖。 */
+html[data-panel-blur="off"] .nya-sidebar,
+html[data-panel-blur="off"] .nya-panel,
+html[data-panel-blur="off"] .nya-panel-strong,
+html[data-panel-blur="off"] .nya-panel-inner,
+html[data-panel-blur="off"] .nya-modal-surface,
+html[data-panel-blur="off"] .nya-neon-card,
+html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]),
+html[data-panel-blur="off"] [data-slot="popover"] {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-panel-blur="off"] .nya-sidebar {
+  background-color: hsl(var(--nya-surface-1) / 0.96);
+}
+html[data-panel-blur="off"] .nya-panel {
+  background-color: hsl(var(--nya-surface-2) / 0.96);
+}
+html[data-panel-blur="off"] .nya-panel-strong {
+  background-color: hsl(var(--nya-surface-2) / 0.98);
+}
+html[data-panel-blur="off"] .nya-panel-inner {
+  background-color: hsl(var(--nya-surface-1) / 0.98);
+}
+html[data-panel-blur="off"] .nya-modal-surface {
+  background-color: hsl(var(--nya-surface-2) / 0.98);
+}
+html[data-panel-blur="off"] .nya-neon-card {
+  background-color: hsl(var(--nya-surface-2) / 0.96);
+}
+html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]),
+html[data-panel-blur="off"] [data-slot="popover"] {
+  background-color: hsl(var(--nya-surface-1) / 0.98);
+}
+
+/* ---------------- 音乐播放器 ---------------- */
+
+/* 均衡器跳动条 */
+@keyframes nya-eq {
+  0%,
+  100% {
+    height: 5px;
+  }
+  50% {
+    height: 16px;
+  }
+}
+.nya-eq-bar {
+  width: 3px;
+  height: 5px;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: nya-eq 0.9s ease-in-out infinite;
+}
+.nya-eq-bar:nth-child(2) {
+  animation-delay: 0.25s;
+}
+.nya-eq-bar:nth-child(3) {
+  animation-delay: 0.5s;
+}
+
+/* 唱片旋转 */
+@keyframes nya-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.nya-vinyl {
+  animation: nya-spin 6s linear infinite;
+}
+
+/* 播放中封面呼吸光晕 */
+@keyframes nya-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 hsl(var(--heroui-primary-500) / 0.45);
+  }
+  50% {
+    box-shadow: 0 0 18px 4px hsl(var(--heroui-primary-500) / 0.35);
+  }
+}
+.nya-cover-glow {
+  animation: nya-glow 2.4s ease-in-out infinite;
+}
+
+/* 列表滚动条（音乐页内保留细滚动条） */
+.nya-scroll::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+.nya-scroll::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: rgb(0 0 0 / 0.15);
+}
+.dark .nya-scroll::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.15);
+}
+
+/* ---------------- 主页游玩统计 ---------------- */
+
+/* MD3 emphasized 进入动画：淡入 + 上移 + 轻微缩放回落 */
+@keyframes nya-enter {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.nya-enter {
+  animation: nya-enter 0.45s cubic-bezier(0.2, 0, 0, 1) backwards;
+}
+
+/* 子条目级联入场（每级延迟 60ms，MD3 stagger） */
+.nya-stagger-1 {
+  animation-delay: 0.06s;
+}
+.nya-stagger-2 {
+  animation-delay: 0.12s;
+}
+.nya-stagger-3 {
+  animation-delay: 0.18s;
+}
+
+/* 敲木鱼：飘出的 "+1 功德" 气泡（上浮 + 淡出） */
+@keyframes nya-merit-float {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.8);
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-52px) scale(1);
+  }
+}
+.nya-merit-float {
+  animation: nya-merit-float 0.9s cubic-bezier(0.2, 0, 0.4, 1) both;
+}
+
+/* ---------------- 主页看板娘 ---------------- */
+
+/* 点击看板娘：落地弹跳 */
+@keyframes nya-mascot-bounce {
+  0% {
+    transform: translateY(0) scale(1, 1);
+  }
+  28% {
+    transform: translateY(-7%) scale(1.03, 0.97);
+  }
+  52% {
+    transform: translateY(2%) scale(0.98, 1.02);
+  }
+  74% {
+    transform: translateY(-2%) scale(1.01, 0.99);
+  }
+  100% {
+    transform: translateY(0) scale(1, 1);
+  }
+}
+.nya-mascot-bounce {
+  transform-origin: 50% 100%;
+  animation: nya-mascot-bounce 0.55s cubic-bezier(0.2, 0, 0.3, 1);
+}
+
+/* 气泡里的台词：弹出 */
+@keyframes nya-bubble-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.55) rotate(-4deg);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.08) rotate(1deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+.nya-bubble-pop {
+  animation: nya-bubble-pop 0.34s cubic-bezier(0.2, 0, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nya-mascot-bounce,
+  .nya-bubble-pop {
+    animation: none;
+  }
+}
+
+/* ---------------- 服务器 MOTD 渲染 ---------------- */
+
+/* §k 混淆字符：快速抖动闪烁，模拟原版乱码效果（CSS 无法替换字符，取近似观感） */
+@keyframes nya-mc-obfuscate {
+  0%,
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  25% {
+    opacity: 0.55;
+    transform: translateX(0.5px);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(-0.5px);
+  }
+  75% {
+    opacity: 0.7;
+    transform: translateX(0.5px);
+  }
+}
+.nya-mc-obfuscated {
+  display: inline-block;
+  animation: nya-mc-obfuscate 0.35s steps(2, end) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nya-mc-obfuscated {
+    animation: none;
+  }
+}
+
+/* 卡片：主题色描边 + 主题派生表面毛玻璃（不再使用彩色渐变） */
+.nya-neon-card {
+  position: relative;
+  border-radius: 1.5rem;
+  background-color: hsl(
+    var(--nya-surface-2) / max(0.45, calc(var(--nya-glass-alpha, 0.8) - 0.08))
+  );
+  backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1))) saturate(150%);
+  -webkit-backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1)))
+    saturate(150%);
+  border: 1px solid hsl(var(--heroui-primary-500) / 0.25);
+  box-shadow: 0 0 18px 1px hsl(var(--heroui-primary-500) / 0.1);
+}
+
+/* 游戏运行中：卡片呼吸光晕（主题色） */
+@keyframes nya-neon-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 18px 1px hsl(var(--heroui-primary-500) / 0.16);
+  }
+  50% {
+    box-shadow: 0 0 30px 6px hsl(var(--heroui-primary-500) / 0.3);
+  }
+}
+.nya-neon-live {
+  animation: nya-neon-breathe 2.8s ease-in-out infinite;
+}
+
+/* 时长条目：主题色进度条流光 */
+@keyframes nya-bar-shine {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.nya-bar {
+  background: linear-gradient(
+    90deg,
+    hsl(var(--heroui-primary-500) / 0.6),
+    hsl(var(--heroui-primary-500)),
+    hsl(var(--heroui-primary-400) / 0.9),
+    hsl(var(--heroui-primary-500)),
+    hsl(var(--heroui-primary-500) / 0.6)
+  );
+  background-size: 200% 100%;
+  animation: nya-bar-shine 4.5s linear infinite;
+}
+
+/* ---------------- 主页小组件编辑（长按拖动 / 组件库） ---------------- */
+
+/* 长按 1 秒进入拖动：卡片顶部进度条在 1 秒内填满 */
+@keyframes nya-hold-fill {
+  from {
+    width: 0%;
+  }
+  to {
+    width: 100%;
+  }
+}
+.nya-hold-bar {
+  animation: nya-hold-fill 1s linear forwards;
+}
+
+/* 拖动中跟随指针的幽灵条：投影做出"抬起"感 */
+.nya-drag-ghost {
+  filter: drop-shadow(0 14px 26px rgb(0 0 0 / 0.22));
+}
+
+/* 拖动时的插入位置指示线（主题色） */
+.nya-drop-line {
+  height: 3px;
+  border-radius: 9999px;
+  background: hsl(var(--heroui-primary-500));
+  box-shadow: 0 0 12px 1px hsl(var(--heroui-primary-500) / 0.45);
+}
+
+/* ---------------- 页面 / 标签切换 ---------------- */
+
+/* 新页面从右侧/左侧滑入（CSS 驱动，见 screen-transition.tsx 的说明；
+   进场时长/曲线与旧版 framer 切换保持一致）。
+   ⚠ 所有入场动画的 fill 一律用 backwards、不用 both：动画结束态都等于元素
+   自然状态，backwards 结束后动画完全"松手"；both 会让动画永久生效，
+   Chromium 把这类祖先提升为独立合成层，子孙的 backdrop-filter 采样被
+   截断在层内——表现为"除首页外所有页面的毛玻璃消失、只剩半透明"
+   （首页是首个 key，不播动画，所以一直正常）。neko-alert-out 是退场
+   动画、结束态需保持到卸载，是唯一保留 both 的例外。 */
+@keyframes nya-switch-fwd {
+  from {
+    opacity: 0;
+    transform: translateX(22px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+@keyframes nya-switch-back {
+  from {
+    opacity: 0;
+    transform: translateX(-22px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.nya-switch-in-fwd {
+  animation: nya-switch-fwd 0.24s cubic-bezier(0, 0, 0.2, 1) backwards;
+}
+.nya-switch-in-back {
+  animation: nya-switch-back 0.24s cubic-bezier(0, 0, 0.2, 1) backwards;
+}
+
+/* 实例切换：更明显的滑入 + 轻微缩放与去模糊（比页面切换更活泼） */
+@keyframes nya-instance-fwd {
+  from {
+    opacity: 0;
+    transform: translateX(30px) scale(0.98);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    filter: blur(0);
+  }
+}
+@keyframes nya-instance-back {
+  from {
+    opacity: 0;
+    transform: translateX(-30px) scale(0.98);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+    filter: blur(0);
+  }
+}
+.nya-instance-in-fwd {
+  animation: nya-instance-fwd 0.34s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.nya-instance-in-back {
+  animation: nya-instance-back 0.34s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+/* 详情子块错峰入场：头部 → 标签页 → 内容依次上浮淡入 */
+@keyframes nya-instance-child {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.nya-instance-stagger > * {
+  animation: nya-instance-child 0.42s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.nya-instance-stagger > *:nth-child(1) {
+  animation-delay: 0.04s;
+}
+.nya-instance-stagger > *:nth-child(2) {
+  animation-delay: 0.1s;
+}
+.nya-instance-stagger > *:nth-child(3) {
+  animation-delay: 0.16s;
+}
+.nya-instance-stagger > *:nth-child(4) {
+  animation-delay: 0.22s;
+}
+
+/* 实例选中高亮块：像 HeroUI cursor 一样在列表项之间平移（top/height 过渡） */
+.nya-instance-pill {
+  transition:
+    top 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 创作中心入口卡片错峰入场：fill 只用 backwards（延迟期保持起始帧），
+   结束后不锁定 transform，卡片自身的 hover:scale 缩放不受影响 */
+@keyframes nya-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.97);
+  }
+}
+.nya-card-in {
+  animation: nya-card-in 0.45s cubic-bezier(0.2, 0, 0, 1) backwards;
+}
+
+/* ---------------- 无障碍：减少动态效果 ---------------- */
+
+/* 系统开启"减少动态效果"时停用装饰性动画（入场 / 循环流光 / 呼吸）。
+ * JS 侧（弹层 / 滑块 / 列表增删）由 provider.tsx 的 MotionConfig
+ * reducedMotion="user" 统一降级，这里只兜底 CSS keyframes；
+ * nya-hold-bar（长按进度反馈）是功能性指示，保留不动。 */
+@media (prefers-reduced-motion: reduce) {
+  .nya-enter,
+  .nya-eq-bar,
+  .nya-vinyl,
+  .nya-cover-glow,
+  .nya-neon-live,
+  .nya-bar,
+  .nya-bg-fade,
+  .nya-modal-backdrop,
+  .nya-modal-enter,
+  .nya-switch-in-fwd,
+  .nya-switch-in-back,
+  .nya-instance-in-fwd,
+  .nya-instance-in-back,
+  .nya-instance-stagger > *,
+  .nya-instance-pill {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* ---------------- 全局浮层（NekoAlert / NekoPrompt） ---------------- */
+
+/* NekoAlert：左侧滑入 300ms / 滑出 200ms（MD3 emphasized 缓动） */
+@keyframes neko-alert-in {
+  from {
+    opacity: 0;
+    transform: translateX(-48px);
+  }
+}
+@keyframes neko-alert-out {
+  to {
+    opacity: 0;
+    transform: translateX(-48px);
+  }
+}
+.neko-alert-enter {
+  animation: neko-alert-in 300ms cubic-bezier(0.05, 0.7, 0.1, 1) backwards;
+}
+.neko-alert-leave {
+  animation: neko-alert-out 200ms cubic-bezier(0.3, 0, 0.8, 0.15) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .neko-alert-enter,
+  .neko-alert-leave {
+    animation: none;
+  }
 }

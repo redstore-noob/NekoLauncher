@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"nekolauncher/internal/tools"
 )
 
 // ModDownloadService Mod 文件下载服务。从 Modrinth CDN 下载 mod JAR / mrpack /
@@ -54,14 +56,14 @@ func DownloadFileToPath(
 		err := downloadAttempt(ctx, downloadURL, temporaryPath, progress)
 		if err == nil {
 			// 下载成功后才替换目标文件（原子移动；Windows 上先删旧目标）
-			tryDeleteFile(targetPath)
+			tools.RemoveFileIfExists(targetPath)
 			if moveErr := os.Rename(temporaryPath, targetPath); moveErr != nil {
 				return moveErr
 			}
 			return nil
 		}
 		if attempt >= modDownloadMaxAttempts || !isTransientFailure(err, ctx) {
-			tryDeleteFile(temporaryPath)
+			tools.RemoveFileIfExists(temporaryPath)
 			return err
 		}
 		// 网络抖动 / 超时：退避后从断点续传重试（临时文件保留）
@@ -72,7 +74,7 @@ func DownloadFileToPath(
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
-			tryDeleteFile(temporaryPath)
+			tools.RemoveFileIfExists(temporaryPath)
 			return ctx.Err()
 		}
 	}
@@ -113,8 +115,10 @@ func downloadAttempt(
 		if remoteTotal := parseContentRangeTotal(resp.Header.Get("Content-Range")); remoteTotal >= 0 && resumeFrom == remoteTotal {
 			return nil
 		}
-		tryDeleteFile(temporaryPath)
-		return fmt.Errorf("断点信息与远端文件不一致，已重置下载。")
+		// 断点与远端不一致：删档后报 rangeMismatchError，
+		// DownloadFileToPath 会按瞬时失败处理，从零重新下载一次
+		tools.RemoveFileIfExists(temporaryPath)
+		return &rangeMismatchError{}
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -125,8 +129,16 @@ func downloadAttempt(
 	var downloadedBase int64
 	var destination *os.File
 	if resp.StatusCode == http.StatusPartialContent {
-		// 断点续传：Content-Range 携带完整长度
-		totalBytes = parseContentRangeTotal(resp.Header.Get("Content-Range"))
+		// 断点续传：Content-Range 携带完整长度与本次响应的起始偏移。
+		// 远端文件在两次尝试之间被换掉时 CDN 会按新文件回这个区间，直接追加
+		// 会拼出"前半段旧文件 + 后半段新文件"的损坏文件，还会被当成下载成功。
+		contentRange := resp.Header.Get("Content-Range")
+		if start := parseContentRangeStart(contentRange); start >= 0 && start != resumeFrom {
+			tools.RemoveFileIfExists(temporaryPath)
+
+			return &rangeMismatchError{}
+		}
+		totalBytes = parseContentRangeTotal(contentRange)
 		downloadedBase = resumeFrom
 		destination, err = os.OpenFile(temporaryPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	} else {
@@ -147,7 +159,12 @@ func downloadAttempt(
 		if err := WaitPauseGate(attemptCtx); err != nil {
 			return err
 		}
-		read, err := resp.Body.Read(buffer)
+		// 全局限速：先申请配额，再按配额大小读（低速档下 128KB 的读块会超发）
+		chunk := buffer[:downloadLimiter.permitReadSize(len(buffer))]
+		if err := downloadLimiter.wait(attemptCtx, int64(len(chunk))); err != nil {
+			return err
+		}
+		read, err := resp.Body.Read(chunk)
 		if read > 0 {
 			if _, writeErr := destination.Write(buffer[:read]); writeErr != nil {
 				return writeErr
@@ -158,6 +175,14 @@ func downloadAttempt(
 			}
 		}
 		if err == io.EOF {
+			// 收尾校验：连接干净结束但长度对不上（服务器截断 / 中间被换文件）
+			// 同样算失败，绝不能把残缺文件改名成正式文件。
+			if totalBytes > 0 && downloaded != totalBytes {
+				tools.RemoveFileIfExists(temporaryPath)
+
+				return &rangeMismatchError{}
+			}
+
 			return nil
 		}
 		if err != nil {
@@ -166,6 +191,24 @@ func downloadAttempt(
 	}
 	// 中断时由 defer Close 自动冲刷已写入部分，
 	// 保证临时文件始终是有效前缀，重试可从断点继续。
+}
+
+// parseContentRangeStart 从 "bytes 123-456/789" 中解析本次响应的起始偏移；无信息返回 -1。
+func parseContentRangeStart(header string) int64 {
+	idx := strings.Index(header, " ")
+	if idx < 0 {
+		return -1
+	}
+	rangePart := header[idx+1:]
+	if dash := strings.Index(rangePart, "-"); dash > 0 {
+		rangePart = rangePart[:dash]
+	}
+	var start int64
+	if _, err := fmt.Sscanf(rangePart, "%d", &start); err != nil {
+		return -1
+	}
+
+	return start
 }
 
 // parseContentRangeTotal 从 "bytes 123-456/789" 中解析完整长度；无信息返回 -1。
@@ -196,6 +239,11 @@ func isTransientFailure(err error, ctx context.Context) bool {
 		// 仅 408（Request Timeout）/ 429（Too Many Requests）可重试
 		return statusErr.StatusCode == http.StatusRequestTimeout ||
 			statusErr.StatusCode == http.StatusTooManyRequests
+	}
+	var rangeMismatch *rangeMismatchError
+	if errors.As(err, &rangeMismatch) {
+		// 断点已删档重置，下一次尝试从头完整下载
+		return true
 	}
 	// attemptCtx 超时（DeadlineExceeded 且外部 ctx 未触发）= 单次尝试超时
 	return errors.Is(err, context.DeadlineExceeded) ||

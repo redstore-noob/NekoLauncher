@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"nekolauncher/internal/tools"
 )
 
 // MinecraftRuleEvaluator 版本 JSON 库/参数条目的 rules 评估器
@@ -140,16 +142,11 @@ func matchesArchitecture(expected string) bool {
 		(expected == "arm64" && actual == "aarch64")
 }
 
-// operatingSystemVersionDescription 当前系统描述（对应 C# RuntimeInformation.OSDescription，
-// Go 标准库无直接等价物：Windows 侧通过 RtlGetVersion 拼装，其余平台使用
-// runtime.Version()。Mojang 规则几乎只对 Windows 版本号做 "\\d+" 匹配）。
-var operatingSystemVersionDescription = loadOSDescription
-
-func loadOSDescription() string {
-	if isWindows() {
-		if description := windowsOSDescription(); description != "" {
-			return description
-		}
-	}
-	return runtime.Version()
+// operatingSystemVersionDescription 当前系统描述，供 os.version 规则的正则匹配。
+//
+// 实现放在 tools 包：下载侧（装哪些库）与启动侧（缺哪些库算致命）必须用同一份
+// 判定，否则会出现"装得上、启不来"（macOS 上 1.5.2/1.6.4 的 lwjgl os.version
+// 规则就是这么炸的）。
+func operatingSystemVersionDescription() string {
+	return tools.OSVersionDescription()
 }

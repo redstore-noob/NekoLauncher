@@ -21,10 +21,13 @@ type StatusFunc func(string)
 
 // VerifyAndRepair 校验并补全指定版本的游戏文件。沿 inheritsFrom 链逐级检查：
 // 版本 JSON、客户端 JAR、库文件。缺失时重新下载。
+// hasCustomResolution 必须与启动侧一致（窗口宽高是否有效），否则
+// 被 has_custom_resolution feature 规则门控的库会误报缺失/漏检。
 // 返回补全的文件数；0 表示无需补全。
 func (v *GameFileVerifier) VerifyAndRepair(
 	ctx context.Context,
 	minecraftDirectory, versionID string,
+	hasCustomResolution bool,
 	status StatusFunc,
 ) (int, error) {
 	root := filepath.Clean(minecraftDirectory)
@@ -94,7 +97,7 @@ func (v *GameFileVerifier) VerifyAndRepair(
 			if librariesRaw, ok := rootElement["libraries"]; ok {
 				var libraries []libraryJSON
 				if json.Unmarshal(librariesRaw, &libraries) == nil {
-					missingLibs := verifyLibraries(root, libraries)
+					missingLibs := verifyLibraries(root, libraries, hasCustomResolution)
 
 					// NeoForge / Forge 特判：
 					// a) 缺失库中含 SRG 客户端（新流程安装器生成的 JSON 会声明该库）；
@@ -163,6 +166,31 @@ func (v *GameFileVerifier) VerifyAndRepair(
 					if err := v.installer.Install(ctx, currentID, metadataURL, root, nil); err != nil {
 						return repaired, err
 					}
+					repaired++
+				}
+			}
+		}
+
+		// 4. 日志配置（log4j2）缺失或哈希不符 → 补全 assets/log_configs/<id>。
+		// 旧版本实例（本功能之前安装的）走的正是这条路径，不补的话控制台日志
+		// 会退回 log4j 默认配置。
+		if parseErr == nil {
+			var metadata VersionJSON
+			if json.Unmarshal(jsonBytes, &metadata) == nil && createLoggingPlan(&metadata, root) != nil {
+				downloaded, err := EnsureLoggingConfig(ctx, root, &metadata, status)
+				if err != nil {
+					reportStatus(status, fmt.Sprintf("补全日志配置失败：%v", err))
+				} else if downloaded {
+					repaired++
+				}
+			} else if clientVersion := ClientVersionOf(jsonBytes); clientVersion != "" {
+				// 已被扁平化的实例：本地 JSON 里没有 logging 段（原版 JSON 也删了），
+				// 但 clientVersion 指得出对应的原版版本，用它取回声明再补文件
+				downloaded, err := EnsureLoggingConfigFromMetadataURL(
+					ctx, root, v.getMetadataURL(ctx, clientVersion), status)
+				if err != nil {
+					reportStatus(status, fmt.Sprintf("补全日志配置失败：%v", err))
+				} else if downloaded {
 					repaired++
 				}
 			}
@@ -351,10 +379,13 @@ func isSrgClientJar(path string) bool {
 // verifyLibraries 校验库文件列表，返回缺失的库文件路径。
 // 按当前系统与 feature 规则过滤（避免把其他平台的库误判为缺失），
 // 优先使用 downloads.artifact.path，并检查 natives classifier（含旧版本 name 回退）。
-func verifyLibraries(root string, libraries []libraryJSON) []string {
+func verifyLibraries(root string, libraries []libraryJSON, hasCustomResolution bool) []string {
 	var missing []string
 	librariesDir := filepath.Join(root, "libraries")
+	// 与启动侧 CreateDefaultFeatures 对齐：仅 has_custom_resolution 由窗口参数决定，
+	// 其余 feature 恒为 false
 	features := DefaultFeatures()
+	features["has_custom_resolution"] = hasCustomResolution
 
 	for _, library := range libraries {
 		// 只检查当前系统适用的库（与安装器/启动器使用同一套规则）

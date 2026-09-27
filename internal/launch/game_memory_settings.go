@@ -9,7 +9,7 @@ import (
 
 	"github.com/shirou/gopsutil/v4/mem"
 
-	"nyalauncher/internal/config"
+	"nekolauncher/internal/config"
 )
 
 // SystemMemorySnapshot 物理内存快照（单位 MB）。

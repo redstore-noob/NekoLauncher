@@ -1,4 +1,4 @@
-name: NyaLauncher CI
+name: NekoLauncher CI
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 env:
-  APP_NAME: NyaLauncher
+  APP_NAME: NekoLauncher
   GO_VERSION: '1.27'
   NODE_VERSION: '22'
 
@@ -31,8 +31,44 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      - name: Cross-compile check
+        # 只跑 vet/test 发现不了跨平台编译错误：平台专属符号（syscall.NewLazyDLL、
+        # x/sys/windows/registry、SysProcAttr.HideWindow 等）写在共用文件里时，
+        # 在本平台能编过、到别的平台直接失败。这里显式三平台编译兜住。
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./...
+          GOOS=darwin  GOARCH=arm64 go build ./...
+          GOOS=linux   GOARCH=amd64 go build ./...
+
       - name: go test
         run: go test ./...
+
+  frontend:
+    name: Frontend checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type-check, lint & unit tests
+        # vitest 起步阶段只覆盖纯函数（lib/*、页面内容完整性），但 tsc 会一并检查测试文件，
+        # 所以这一步同时兜住"测试文件与源码类型不同步"。
+        # eslint 用 --max-warnings 0：prettier 的换行建议也算失败，避免格式债累积。
+        working-directory: frontend
+        run: |
+          npx tsc --noEmit
+          npx eslint src --max-warnings 0
+          npm test
 
   build:
     name: Build (${{ matrix.os }})
@@ -77,29 +113,29 @@ jobs:
         run: |
           wails build -platform windows/amd64 -webview2 embed
           # 额外产出 NSIS/便携 zip：压缩 build/bin 下除安装器外的主要内容
-          7z a -tzip "NyaLauncher-windows-amd64-portable.zip" \
-            "./build/bin/NyaLauncher.exe"
+          7z a -tzip "NekoLauncher-windows-amd64-portable.zip" \
+            "./build/bin/NekoLauncher.exe"
 
       - name: Build (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           wails build -platform linux/amd64
-          chmod +x build/bin/NyaLauncher
+          chmod +x build/bin/NekoLauncher
           # ---- AppImage 打包 ----
           # 注意：linuxdeploy 校验图标必须为标准尺寸（历史上 63x63 图标被打回），
           # 这里用 ImageMagick 从 appicon 生成 256x256 标准图标并按 basename 部署。
-          convert build/appicon.png -resize 256x256 nya-launcher.png
+          convert build/appicon.png -resize 256x256 neko-launcher.png
           mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps
-          cp build/bin/NyaLauncher AppDir/usr/bin/
-          cp nya-launcher.png AppDir/usr/share/icons/hicolor/256x256/apps/
-          cat > AppDir/nya-launcher.desktop <<'EOF'
+          cp build/bin/NekoLauncher AppDir/usr/bin/
+          cp neko-launcher.png AppDir/usr/share/icons/hicolor/256x256/apps/
+          cat > AppDir/neko-launcher.desktop <<'EOF'
           [Desktop Entry]
           Type=Application
-          Name=NyaLauncher
+          Name=NekoLauncher
           Comment=Minecraft Java 版启动器
-          Exec=NyaLauncher
-          Icon=nya-launcher
+          Exec=NekoLauncher
+          Icon=neko-launcher
           Categories=Game;
           Terminal=false
           EOF
@@ -109,11 +145,11 @@ jobs:
           # AppImage 运行需要 FUSE；runner 上用 --appimage-extract-and-run 兜底
           sudo mv linuxdeploy.AppImage /usr/local/bin/
           linuxdeploy.AppImage --appimage-extract-and-run \
-            --appdir AppDir --desktop-file=nya-launcher.desktop \
-            --icon-file=nya-launcher.png --output appimage
-          mv NyaLauncher*.AppImage "NyaLauncher-linux-amd64.AppImage"
+            --appdir AppDir --desktop-file=neko-launcher.desktop \
+            --icon-file=neko-launcher.png --output appimage
+          mv NekoLauncher*.AppImage "NekoLauncher-linux-amd64.AppImage"
           # 同时提供裸二进制 tar.gz（无 FUSE 环境兜底）
-          tar -czf "NyaLauncher-linux-amd64.tar.gz" -C build/bin NyaLauncher
+          tar -czf "NekoLauncher-linux-amd64.tar.gz" -C build/bin NekoLauncher
 
       - name: Build (macOS)
         if: runner.os == 'MacOS'
@@ -122,7 +158,7 @@ jobs:
           wails build -platform darwin/universal
           # 未签名 app 打成 zip；签名/公证需要 Apple 开发者证书，暂不配置
           cd build/bin
-          zip -r "../../NyaLauncher-darwin-universal.zip" NyaLauncher.app
+          zip -r "../../NekoLauncher-darwin-universal.zip" NekoLauncher.app
 
       - name: Collect artifacts
         shell: bash
@@ -130,19 +166,19 @@ jobs:
           mkdir -p dist
           # 各平台把产物集中到 dist/
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cp build/bin/NyaLauncher.exe dist/ 2>/dev/null || true
-            cp NyaLauncher-windows-amd64-portable.zip dist/ 2>/dev/null || true
+            cp build/bin/NekoLauncher.exe dist/ 2>/dev/null || true
+            cp NekoLauncher-windows-amd64-portable.zip dist/ 2>/dev/null || true
           elif [ "$RUNNER_OS" = "Linux" ]; then
-            cp NyaLauncher-linux-amd64.AppImage dist/ 2>/dev/null || true
-            cp NyaLauncher-linux-amd64.tar.gz dist/ 2>/dev/null || true
+            cp NekoLauncher-linux-amd64.AppImage dist/ 2>/dev/null || true
+            cp NekoLauncher-linux-amd64.tar.gz dist/ 2>/dev/null || true
           else
-            cp NyaLauncher-darwin-universal.zip dist/ 2>/dev/null || true
+            cp NekoLauncher-darwin-universal.zip dist/ 2>/dev/null || true
           fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: NyaLauncher-${{ matrix.os }}
+          name: NekoLauncher-${{ matrix.os }}
           path: dist/*
 
   release:

@@ -6,7 +6,8 @@ package instance
 import (
 	"strings"
 
-	"nyalauncher/internal/config"
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/tools"
 )
 
 // GameVersionIsolationResolve 解析指定实例的目录布局：外部实例（PCL/MultiMC 等目录）
@@ -29,7 +30,7 @@ func GameVersionIsolationResolve(snapshot GameInstanceSnapshot, versionID string
 		snapshot.SourcePath,
 		versionID,
 		profile.IsVersionIsolationEnabled,
-		boolPtr(config.DefaultVersionIsolation()),
+		tools.BoolPtr(config.DefaultVersionIsolation()),
 	)
 }
 
@@ -56,5 +57,3 @@ func GameVersionIsolationGetContentDirectory(snapshot GameInstanceSnapshot, vers
 func GameVersionIsolationIsVersionDirectorySource(sourcePath string) bool {
 	return IsVersionDirectorySource(sourcePath)
 }
-
-func boolPtr(value bool) *bool { return &value }

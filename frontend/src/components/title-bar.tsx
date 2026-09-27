@@ -1,28 +1,23 @@
 /*
-MIT License
-
-Copyright (c) 2024 Next UI
-Copyright (c) 2026 烟花
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-*/
+ * Copyright 2024 Next UI
+ * Copyright 2026 烟花
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 import React, { useState, useEffect } from "react";
+import { Button, Tooltip } from "@heroui/react";
+
+import { useI18n } from "../i18n";
 
 interface TitleBarProps {
   title?: string;
@@ -30,9 +25,10 @@ interface TitleBarProps {
 }
 
 export const TitleBar: React.FC<TitleBarProps> = ({
-                                                    title = "",
-                                                    className = ""
-                                                  }) => {
+  title = "",
+  className = "",
+}) => {
+  const { t } = useI18n();
   const [isMax, setIsMax] = useState(false);
 
   //窗口控制函数
@@ -48,6 +44,7 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       //更新状态
       if (window.runtime?.WindowIsMaximised) {
         const max = await window.runtime.WindowIsMaximised();
+
         setIsMax(max);
       }
     }
@@ -59,16 +56,41 @@ export const TitleBar: React.FC<TitleBarProps> = ({
     }
   };
 
-  //检查初始最大化状态
+  //检查初始最大化状态，并在窗口尺寸变化时重新同步——
+  //Win+Up、拖拽贴边、双击标题栏等途径改变最大化状态时，按钮图标/提示才能跟上
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
     const checkMaximized = async () => {
       if (window.runtime?.WindowIsMaximised) {
         const max = await window.runtime.WindowIsMaximised();
+
         setIsMax(max);
       }
     };
-    checkMaximized();
+
+    void checkMaximized();
+
+    // resize 连发时防抖，只在稳定后查询一次
+    const onResize = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void checkMaximized(), 150);
+    };
+
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", onResize);
+    };
   }, []);
+
+  //双击标题栏空白区切换最大化（与系统行为一致；按钮区域不触发）
+  const onTitleBarDoubleClick = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest("button")) return;
+
+    void maximize();
+  };
 
   return (
     <div
@@ -82,11 +104,16 @@ export const TitleBar: React.FC<TitleBarProps> = ({
         select-none
         ${className}
       `}
-      style={{ '--wails-draggable': 'drag' } as React.CSSProperties}
+      style={{ "--wails-draggable": "drag" } as React.CSSProperties}
+      onDoubleClick={onTitleBarDoubleClick}
     >
-
       <div className="flex items-center gap-2">
-        <span className="text-xl"></span>
+        <img
+          alt=""
+          className="h-[18px] w-[18px] flex-shrink-0 select-none"
+          draggable={false}
+          src="/favicon.ico"
+        />
         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
           {title}
         </span>
@@ -98,52 +125,92 @@ export const TitleBar: React.FC<TitleBarProps> = ({
       {/*窗口控制按钮*/}
       <div
         className="flex items-center gap-1"
-        style={{ '--wails-draggable': 'no-drag' } as React.CSSProperties}
+        style={{ "--wails-draggable": "no-drag" } as React.CSSProperties}
       >
-        <div
-          className="flex items-center gap-2"
-          style={{ '--wails-draggable': 'no-drag' } as React.CSSProperties}
-        >
-          {/*最小化*/}
-          <button
+        {/*最小化*/}
+        <Tooltip closeDelay={0} content={t("最小化")} delay={300}>
+          <Button
+            isIconOnly
+            aria-label={t("最小化")}
+            className="h-8 min-w-8 w-8 rounded bg-transparent hover:bg-default-200/70 dark:hover:bg-default-100/20"
+            variant="light"
             onClick={minimize}
-            className="w-8 h-8 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors"
-            title="最小化"
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+            <svg fill="none" height="10" viewBox="0 0 10 10" width="10">
               <path d="M0 5H10" stroke="currentColor" strokeWidth="1.2" />
             </svg>
-          </button>
+          </Button>
+        </Tooltip>
 
-          {/*最大化/还原*/}
-          <button
+        {/*最大化/还原*/}
+        <Tooltip
+          closeDelay={0}
+          content={isMax ? t("还原") : t("最大化")}
+          delay={300}
+        >
+          <Button
+            isIconOnly
+            aria-label={isMax ? t("还原") : t("最大化")}
+            className="h-8 min-w-8 w-8 rounded bg-transparent hover:bg-default-200/70 dark:hover:bg-default-100/20"
+            variant="light"
             onClick={maximize}
-            className="w-8 h-8 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 rounded transition-colors"
-            title={isMax ? "还原" : "最大化"}
           >
             {isMax ? (
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                <rect x="1.5" y="1.5" width="7" height="7" stroke="currentColor" strokeWidth="1.2" fill="none" />
-                <rect x="3.5" y="3.5" width="5" height="5" stroke="currentColor" strokeWidth="1.2" fill="none" />
+              <svg fill="none" height="10" viewBox="0 0 10 10" width="10">
+                <rect
+                  fill="none"
+                  height="7"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  width="7"
+                  x="1.5"
+                  y="1.5"
+                />
+                <rect
+                  fill="none"
+                  height="5"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  width="5"
+                  x="3.5"
+                  y="3.5"
+                />
               </svg>
             ) : (
-              <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-                <rect x="1" y="1" width="8" height="8" stroke="currentColor" strokeWidth="1.2" fill="none" />
+              <svg fill="none" height="10" viewBox="0 0 10 10" width="10">
+                <rect
+                  fill="none"
+                  height="8"
+                  stroke="currentColor"
+                  strokeWidth="1.2"
+                  width="8"
+                  x="1"
+                  y="1"
+                />
               </svg>
             )}
-          </button>
+          </Button>
+        </Tooltip>
 
-          {/*关闭*/}
-          <button
+        {/*关闭*/}
+        <Tooltip closeDelay={0} content={t("关闭")} delay={300}>
+          <Button
+            isIconOnly
+            aria-label={t("关闭")}
+            className="h-8 min-w-8 w-8 rounded bg-transparent data-[hover=true]:bg-red-600 data-[hover=true]:text-white"
+            variant="light"
             onClick={quit}
-            className="w-8 h-8 flex items-center justify-center hover:bg-red-600 hover:text-white rounded transition-colors"
-            title="关闭"
           >
-            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-              <path d="M1 1L9 9M1 9L9 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+            <svg fill="none" height="10" viewBox="0 0 10 10" width="10">
+              <path
+                d="M1 1L9 9M1 9L9 1"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeWidth="1.2"
+              />
             </svg>
-          </button>
-        </div>
+          </Button>
+        </Tooltip>
       </div>
     </div>
   );

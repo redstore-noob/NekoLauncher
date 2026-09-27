@@ -7,11 +7,54 @@ import (
 	"regexp"
 	"strings"
 
-	"nyalauncher/internal/auth"
+	"nekolauncher/internal/auth"
+	"nekolauncher/internal/tools"
 )
 
 // placeholderPattern 版本参数占位符：${name}。
 var placeholderPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
+
+// nullablePlaceholders 允许解析为空串的占位符。
+//
+// 它们表示"当前账号不具备该字段"：离线账号与皮肤站账号没有 clientId / xuid，
+// 代码里就是显式填空串。而 1.18+ 的版本档案把这两个参数写成 "--clientId" 与
+// "${clientid}" 两个**独立元素**（不是同一个 value 数组），于是空值会留下一个空参数——
+// 既可能被游戏当成位置参数，也会被最终命令的参数校验直接拒绝启动
+// （离线账号在 1.18+ 上就是这样被挡下的）。
+//
+// 所以这类占位符解析为空时，连同前面的标志一起省略，保证"标志 + 值"成对出现或成对消失。
+// user_type 一并列入：游戏对它的默认行为与空串一致，省略不改变语义。
+var nullablePlaceholders = map[string]bool{
+	"clientid":  true,
+	"auth_xuid": true,
+	"user_type": true,
+}
+
+// isNullablePlaceholder 判断元素是否恰好就是一个可空占位符（整段即占位符本身）。
+func isNullablePlaceholder(source string) bool {
+	matches := placeholderPattern.FindAllStringSubmatch(source, -1)
+	if len(matches) != 1 || strings.TrimSpace(source) != matches[0][0] {
+		return false
+	}
+	return nullablePlaceholders[matches[0][1]]
+}
+
+// isFlagArgument 形如 "--clientId" 的标志参数（单个 "-" 不算）。
+func isFlagArgument(argument string) bool {
+	return len(argument) > 1 && argument[0] == '-'
+}
+
+// appendResolvedArgument 追加一个已解析的参数；可空占位符解析为空时，连同刚追加的标志
+// 一起省略，避免留下一个悬空的空参数，或一个失去取值的标志。
+func appendResolvedArgument(target *[]string, source, resolved string) {
+	if resolved != "" || !isNullablePlaceholder(source) {
+		*target = append(*target, resolved)
+		return
+	}
+	if count := len(*target); count > 0 && isFlagArgument((*target)[count-1]) {
+		*target = (*target)[:count-1]
+	}
+}
 
 // MinecraftArgumentBuilder 启动参数装配器（对应 C# Internal/MinecraftArgumentBuilder）。
 type MinecraftArgumentBuilder struct{}
@@ -44,6 +87,12 @@ func (MinecraftArgumentBuilder) Build(
 	assetsDirectory := filepath.Join(minecraftDirectory, "assets")
 	librariesDirectory := filepath.Join(minecraftDirectory, "libraries")
 	gameAssetsDirectory := getLegacyGameAssetsDirectory(assetsDirectory, profile.AssetsId)
+	// 日志配置（log4j2）路径：版本 JSON 的 logging.client.file.id 落在
+	// assets/log_configs/<id>（与官方启动器一致），用于解析 ${path} 占位符
+	logConfigPath := ""
+	if id := strings.TrimSpace(profile.LoggingFileId); id != "" {
+		logConfigPath = filepath.Join(assetsDirectory, "log_configs", id)
+	}
 	classpathValue := strings.Join(classpath, string(filepath.ListSeparator))
 	var authPlayerName, authUuid, authAccessToken, authSession, clientId, authXuid, userType string
 	switch kind := options.Account.AccountKind(); kind {
@@ -125,6 +174,7 @@ func (MinecraftArgumentBuilder) Build(
 		"library_directory":   librariesDirectory,
 		"resolution_width":    fmt.Sprintf("%d", options.WindowWidth),
 		"resolution_height":   fmt.Sprintf("%d", options.WindowHeight),
+		"path":                logConfigPath,
 	}
 
 	features := MinecraftRuleEvaluator.CreateDefaultFeatures(
@@ -142,8 +192,22 @@ func (MinecraftArgumentBuilder) Build(
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, replaced)
+		appendResolvedArgument(&result, argument, replaced)
 	}
+
+	// 日志配置：版本 JSON 的 logging.client.argument（原版为
+	// "-Dlog4j.configurationFile=${path}"）要由启动器补进 JVM 参数——
+	// 它不在 arguments.jvm 里，官方启动器同样是自己加的。放在 JVM 段最前，
+	// 与官方一致。配置没下到本地时跳过：指着一个不存在的文件会让 log4j 报错，
+	// 而用默认配置照样能进游戏（文件由安装/校验流程负责补全）。
+	if argument := strings.TrimSpace(profile.LoggingArgument); argument != "" {
+		if logConfigPath == "" || tools.FileExists(logConfigPath) {
+			if resolved, err := replacePlaceholders(argument, placeholders); err == nil && resolved != "" {
+				result = append(result, resolved)
+			}
+		}
+	}
+
 	if !userSpecifiesXms {
 		result = append(result, fmt.Sprintf("-Xms%dM", options.MinimumMemoryMb))
 	}
@@ -193,7 +257,7 @@ func (MinecraftArgumentBuilder) Build(
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, replaced)
+		appendResolvedArgument(&result, argument, replaced)
 	}
 
 	// NeoForge / Forge 的 FML 在 production 模式下要求 system property "libraryDirectory"
@@ -223,7 +287,7 @@ func (MinecraftArgumentBuilder) Build(
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, replaced)
+		appendResolvedArgument(&result, argument, replaced)
 	}
 
 	if len(profile.GameArguments) > 0 {
@@ -240,7 +304,7 @@ func (MinecraftArgumentBuilder) Build(
 			if err != nil {
 				return nil, err
 			}
-			result = append(result, replaced)
+			appendResolvedArgument(&result, argument, replaced)
 		}
 	} else {
 		return nil, newLaunchError("版本配置没有可用的游戏启动参数。")
@@ -251,9 +315,16 @@ func (MinecraftArgumentBuilder) Build(
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, replaced)
+		appendResolvedArgument(&result, argument, replaced)
 	}
-	result = append(result, appendGameArguments...)
+	// 插件追加游戏参数：与其余插件参数列表一样做占位符替换后追加
+	for _, argument := range appendGameArguments {
+		replaced, err := replacePlaceholders(argument, placeholders)
+		if err != nil {
+			return nil, err
+		}
+		appendResolvedArgument(&result, argument, replaced)
+	}
 	return result, nil
 }
 
@@ -290,7 +361,7 @@ func appendModernArguments(
 			if err != nil {
 				return err
 			}
-			*target = append(*target, replaced)
+			appendResolvedArgument(target, text, replaced)
 			continue
 		}
 
@@ -311,7 +382,7 @@ func appendModernArguments(
 			if err != nil {
 				return err
 			}
-			*target = append(*target, replaced)
+			appendResolvedArgument(target, singleValue, replaced)
 			continue
 		}
 		var multipleValues []string
@@ -321,7 +392,7 @@ func appendModernArguments(
 				if err != nil {
 					return err
 				}
-				*target = append(*target, replaced)
+				appendResolvedArgument(target, value, replaced)
 			}
 		}
 	}
@@ -421,7 +492,7 @@ func containsClasspathArgument(arguments []string) bool {
 
 func getLegacyGameAssetsDirectory(assetsDirectory, assetsId string) string {
 	virtualDirectory := filepath.Join(assetsDirectory, "virtual", assetsId)
-	if directoryExists(virtualDirectory) {
+	if tools.DirectoryExists(virtualDirectory) {
 		return virtualDirectory
 	}
 	return assetsDirectory

@@ -8,13 +8,14 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
-	"nyalauncher/internal/config"
-	"nyalauncher/internal/logs"
-	"nyalauncher/internal/tools"
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/logs"
+	"nekolauncher/internal/tools"
 )
 
-// selectedVersionConfigKey config.json 中保存选中版本的字段名。
+// selectedVersionConfigKey launcher.yaml 中保存选中版本的字段名。
 const selectedVersionConfigKey = "selectedGameInstance"
 
 var (
@@ -35,6 +36,30 @@ func CurrentSnapshot() GameInstanceSnapshot {
 	gate.Lock()
 	defer gate.Unlock()
 	return current
+}
+
+// readyWaitTimeout 等待首次扫描完成的最长时间：扫描通常毫秒级完成，
+// 该上限只为极端慢盘兜底，超时后返回加载态快照由调用方决定报错。
+const readyWaitTimeout = 10 * time.Second
+
+// readyPollInterval 轮询快照状态的间隔。
+const readyPollInterval = 25 * time.Millisecond
+
+// WaitForReady 阻塞直到实例快照离开加载态（或超时）。
+// 首次扫描在 Startup 异步执行，启动 / 选中入口用它消除"界面已就绪而
+// 存储仍在扫描"的竞态窗口（旧版直接拒绝并提示"仍在扫描"）。
+// 超时或已就绪时返回当前快照；调用方应以返回值的 IsLoading 为准。
+func WaitForReady(timeout time.Duration) GameInstanceSnapshot {
+	deadline := time.Now().Add(timeout)
+	for {
+		gate.Lock()
+		snapshot := current
+		gate.Unlock()
+		if !snapshot.IsLoading || time.Now().After(deadline) {
+			return snapshot
+		}
+		time.Sleep(readyPollInterval)
+	}
 }
 
 // SubscribeChanged 订阅快照变更事件（对应 C# Changed 事件）；返回取消订阅函数。
@@ -58,7 +83,7 @@ func ResolveConfiguredSourcePath() string {
 	if strings.TrimSpace(fromConfig) != "" {
 		return fromConfig
 	}
-	if fromEnvironment := os.Getenv("NYALAUNCHER_MINECRAFT_DIR"); fromEnvironment != "" {
+	if fromEnvironment := os.Getenv("NEKOLAUNCHER_MINECRAFT_DIR"); fromEnvironment != "" {
 		return fromEnvironment
 	}
 	return EnsureDefaultDirectory()
@@ -123,11 +148,14 @@ func scanWithCancel(ctx context.Context, sourcePath string, previous GameInstanc
 	}
 }
 
-// Select 选中指定版本并写回配置；扫描中 / 出错 / 版本不存在时返回 false。
+// Select 选中指定版本并写回配置；版本不存在时返回 false。
+// 首次扫描尚未完成时先等待其就绪（旧版在加载态直接拒绝，导致前端
+// "界面已列出版本、实际选中被静默丢弃"的不一致）。
 func Select(versionID string) bool {
 	if strings.TrimSpace(versionID) == "" {
 		return false
 	}
+	WaitForReady(readyWaitTimeout)
 
 	gate.Lock()
 	outcome, published := applySelect(versionID)
@@ -208,12 +236,16 @@ func scan(sourcePath string, previous GameInstanceSnapshot) (GameInstanceSnapsho
 		return GameInstanceSnapshot{}, err
 	}
 
-	versions := GetInstalledVersionIds(location.MinecraftDirectory)
+	versions, versionsReadable := GetInstalledVersionIdsChecked(location.MinecraftDirectory)
 
 	// 版本文件夹可能被用户在启动器外手动删除（或改名后残留旧配置）。
 	// 扫描出实际存在的版本后立即清理该目录下已消失版本的实例配置，
-	// 防止其隔离、内存等设置残留在 config.json 中被后续启动逻辑误读。
-	config.PruneMissingVersions(location.MinecraftDirectory, versions)
+	// 防止其隔离、内存等设置残留在 launcher.yaml 中被后续启动逻辑误读。
+	// 只有确认"读到的是一个完整的版本列表"才清理：读取失败时列表为空，
+	// 当成空集会一次性抹掉该目录下所有实例的配置。
+	if versionsReadable {
+		config.PruneMissingVersions(location.MinecraftDirectory, versions)
+	}
 
 	selected := resolveSelectedVersion(versions, previous, location)
 	return createStandardSnapshot(sourcePath, location, versions, selected), nil

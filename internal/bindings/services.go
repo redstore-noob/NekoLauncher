@@ -8,16 +8,20 @@ import (
 	"context"
 	"sync"
 	"sync/atomic"
+	"time"
 
-	"nyalauncher/internal/auth"
-	"nyalauncher/internal/config"
-	"nyalauncher/internal/download"
-	"nyalauncher/internal/instance"
-	"nyalauncher/internal/launch"
-	"nyalauncher/internal/logs"
-	"nyalauncher/internal/music"
+	"nekolauncher/internal/auth"
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/download"
+	"nekolauncher/internal/instance"
+	"nekolauncher/internal/launch"
+	"nekolauncher/internal/logs"
+	"nekolauncher/internal/mcserver"
+	"nekolauncher/internal/music"
+	"nekolauncher/internal/network"
 )
 
+// ConfigAPI 配置读写命令集（config 包的绑定门面）。
 type ConfigAPI struct {
 	ctx context.Context
 }
@@ -25,58 +29,89 @@ type ConfigAPI struct {
 // Startup 注入 Wails runtime ctx（main.go OnStartup 调用）。
 func (a *ConfigAPI) Startup(ctx context.Context) { a.ctx = ctx }
 
+// LauncherAPI 游戏启动相关命令集。
 type LauncherAPI struct {
 	ctx context.Context
 	// service 启动服务（全进程唯一活动启动管线）。
 	service *launch.GameLaunchService
 }
 
+// Startup 注入 Wails runtime ctx。
 func (a *LauncherAPI) Startup(ctx context.Context) { a.ctx = ctx }
 
+// DownloadAPI 下载任务相关命令集。
 type DownloadAPI struct {
 	ctx context.Context
 	// service 下载任务状态机（进度经 OnChanged 桥接为 download:progress 事件）。
 	service *download.GameDownloadService
 }
 
+// Startup 注入 Wails runtime ctx。
 func (a *DownloadAPI) Startup(ctx context.Context) { a.ctx = ctx }
 
+// AccountAPI 账号管理相关命令集。
 type AccountAPI struct {
 	ctx context.Context
 	// microsoft Microsoft 设备码认证器；authlib 皮肤站认证器。
 	microsoft *auth.MicrosoftDeviceCodeAuthenticator
 	authlib   *auth.AuthlibAuthenticator
-	// loginMu / loginCancel 当前微软设备码登录的取消句柄（见 api_account_ext.go）。
+	// browserAuth 内嵌浏览器 OAuth 认证器（复用 microsoft 的令牌交换链路）。
+	browserAuth *auth.MicrosoftBrowserAuthenticator
+	// loginMu / loginCancel 当前微软登录（设备码或内嵌浏览器）的取消句柄
+	// （见 api_account_ext.go）。以指针包装保存，便于 done 时判断句柄是否
+	// 仍属于本次登录（指针可比较，func 不可）。
 	loginMu     sync.Mutex
-	loginCancel context.CancelFunc
+	loginCancel *microsoftLoginHandle
+	// browserMu / browserState / browserReturnTo 内嵌浏览器登录的进度状态
+	// （见 api_account_browser.go）。SPA 会在登录页跳转往返间重载，
+	// 进度必须由后端持有，前端靠事件 + 轮询接力显示。
+	browserMu      sync.Mutex
+	browserState   MicrosoftBrowserLoginState
+	browserReturnTo string
 }
 
-func (a *AccountAPI) Startup(ctx context.Context) { a.ctx = ctx }
+// Startup 注入 Wails runtime ctx，并启动皮肤缓存的后台每日自动刷新。
+func (a *AccountAPI) Startup(ctx context.Context) {
+	a.ctx = ctx
+	go a.runSkinCacheRefreshScheduler()
+}
 
+// InstanceAPI 实例管理相关命令集。
 type InstanceAPI struct {
 	ctx context.Context
 }
 
+// Startup 注入 Wails runtime ctx。
 func (a *InstanceAPI) Startup(ctx context.Context) { a.ctx = ctx }
 
+// WorldAPI 世界（存档）相关命令集。
 type WorldAPI struct {
 	ctx context.Context
 }
 
+// Startup 注入 Wails runtime ctx。
 func (a *WorldAPI) Startup(ctx context.Context) { a.ctx = ctx }
 
+// ContentAPI 实例内容相关命令集。
 type ContentAPI struct {
 	ctx context.Context
+	// launch 启动服务（全进程唯一活动启动管线）：实例级快照/回滚前用它
+	// 确认游戏未在运行，避免把"写了一半"的实例状态定格或替换。
+	launch *launch.GameLaunchService
 }
 
+// Startup 注入 Wails runtime ctx。
 func (a *ContentAPI) Startup(ctx context.Context) { a.ctx = ctx }
 
+// ModpackAPI 整合包相关命令集。
 type ModpackAPI struct {
 	ctx context.Context
 }
 
+// Startup 注入 Wails runtime ctx。
 func (a *ModpackAPI) Startup(ctx context.Context) { a.ctx = ctx }
 
+// MusicAPI 音乐播放器相关命令集。
 type MusicAPI struct {
 	ctx context.Context
 	// library 曲库（扫描 / 排序 / 音量等持久化偏好）。
@@ -89,27 +124,38 @@ type MusicAPI struct {
 	onTrackFinished func()
 }
 
+// Startup 注入 Wails runtime ctx。
 func (a *MusicAPI) Startup(ctx context.Context) { a.ctx = ctx }
 
+// MonitorAPI 内存监控命令集。
 type MonitorAPI struct {
 	ctx context.Context
 }
 
+// Startup 注入 Wails runtime ctx。
 func (a *MonitorAPI) Startup(ctx context.Context) { a.ctx = ctx }
 
+// ServerAPI 服务器状态查询命令集。
 type ServerAPI struct {
 	ctx context.Context
 }
 
+// Startup 注入 Wails runtime ctx。
 func (a *ServerAPI) Startup(ctx context.Context) { a.ctx = ctx }
 
+// SystemAPI 版本信息、日志与系统操作命令集。
 type SystemAPI struct {
 	ctx context.Context
 }
 
-func (a *SystemAPI) Startup(ctx context.Context) { a.ctx = ctx }
+// Startup 注入 Wails runtime ctx，并启动窗口透明/亚克力的 DWM 框架修正
+// （窗口创建后铺满玻璃框架，见 acrylic_windows.go）。
+func (a *SystemAPI) Startup(ctx context.Context) {
+	a.ctx = ctx
+	fixupAcrylicBackdrop()
+}
 
-//Startup 把 ctx 分发给全部 API；并执行一次性启动初始化（日志、下载源、首次实例扫描）。
+// Startup 把 ctx 分发给全部 API；并执行一次性启动初始化（日志、下载源、首次实例扫描）。
 func (a *API) Startup(ctx context.Context) {
 	a.Config.Startup(ctx)
 	a.Launcher.Startup(ctx)
@@ -122,12 +168,34 @@ func (a *API) Startup(ctx context.Context) {
 	a.Music.Startup(ctx)
 	a.Monitor.Startup(ctx)
 	a.Server.Startup(ctx)
+	a.ServerHost.Startup(ctx)
+	a.Online.Startup(ctx)
 	a.System.Startup(ctx)
+	a.Update.Startup(ctx)
 
 	// 一次性启动逻辑（对应 C# App 构造 / OnStartup）
+	// 代理最先应用：后续任何出站请求（更新检查、皮肤缓存、实例扫描的远程
+	// 元数据）都应当拿到用户配置的代理，而不是先直连失败再等下一轮。
+	network.ApplyProxySettings()
 	logs.Init()
 	download.ApplySavedSettings()
+	download.SetDownloadSpeedLimitKbps(download.SpeedLimitKbps())
 	go instance.Refresh(ctx, instance.ResolveConfiguredSourcePath())
+	// 自动备份巡检（10 分钟一轮，是否真的备份由设置里的开关 + 间隔决定）
+	mcserver.StartBackupScheduler(ctx)
+}
+
+// Shutdown 退出前收尾。Wails 只回调 options.OnShutdown，不会逐个调用绑定
+// 结构体的方法，所以需要在这里反向分发。
+//
+// 顺序有讲究：先优雅停掉托管服务器（它们持有世界文件与会话锁），再收联机会话
+// （隧道与外部进程）。停服整体上限 20 秒——超过就强杀，宁可丢一点未落盘的进度，
+// 也不要留下占着 session.lock 的孤儿 Java 进程。
+func (a *API) Shutdown() {
+	for _, note := range mcserver.Default().ShutdownAll(20 * time.Second) {
+		logs.Write("LAUNCH", note)
+	}
+	a.Online.Shutdown(context.Background())
 }
 
 // musicConfigStore 把 music.ConfigStore 适配到 config 包的持久化键值。

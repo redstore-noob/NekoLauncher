@@ -8,19 +8,23 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"nekolauncher/internal/info"
 )
 
 // SharedHTTPClient 项目共享的 HTTP 客户端（15 秒超时，统一 User-Agent）。
 // 用于版本清单、Modrinth 搜索等轻量 GET 请求。
 // 需要无限超时的下载场景（安装器）使用独立实例。
+// 包装器 base 留空：RoundTrip 时才解析 http.DefaultTransport——代理设置
+// （network.ApplyProxySettings）整体替换全局 Transport 后这里立即生效。
 var SharedHTTPClient = createSharedHTTPClient()
 
 func createSharedHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout: 15 * time.Second,
 		Transport: &userAgentTransport{
-			base: http.DefaultTransport,
-			ua:   "NyaLauncher/1.0",
+			base: nil,
+			ua:   "NekoLauncher/" + info.Version(),
 		},
 	}
 }
@@ -31,9 +35,13 @@ type userAgentTransport struct {
 }
 
 func (t *userAgentTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
 	r := req.Clone(req.Context())
 	r.Header.Set("User-Agent", t.ua)
-	return t.base.RoundTrip(r)
+	return base.RoundTrip(r)
 }
 
 // UserHomeDir 用户主目录；不可用时返回空串，调用方需自行回落。

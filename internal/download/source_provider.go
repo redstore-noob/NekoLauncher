@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"nekolauncher/internal/info"
 )
 
 // DownloadSource 一个完整的下载源定义，包含所有需要替换的基础 URL。
@@ -128,14 +130,16 @@ func (p *downloadSourceProvider) ResolveFallback(officialURL string) *string {
 // longDownloadClient 长时下载/请求共用的独立 HTTP 客户端。
 // 不设整体超时（对应 C# Timeout.InfiniteTimeSpan）：超时预算由各调用方
 // 通过 context 精确控制；绝不复用 tools.SharedHTTPClient 的 15s 超时。
+// 包装器 base 留空（RoundTrip 时解析 DefaultTransport），代理设置替换
+// 全局 Transport 后无需重建客户端即生效。
 var longDownloadClient = createLongDownloadClient()
 
 func createLongDownloadClient() *http.Client {
 	return &http.Client{
 		Timeout: 0, // 无限超时，由 context 控制
 		Transport: &userAgentRoundTripper{
-			base: http.DefaultTransport,
-			ua:   "NyaLauncher/1.0",
+			base: nil,
+			ua:   "NekoLauncher/" + info.Version(),
 		},
 	}
 }
@@ -146,9 +150,13 @@ type userAgentRoundTripper struct {
 }
 
 func (t *userAgentRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
 	r := req.Clone(req.Context())
 	r.Header.Set("User-Agent", t.ua)
-	return t.base.RoundTrip(r)
+	return base.RoundTrip(r)
 }
 
 // defaultRequestTimeout 默认请求超时：调用方未显式给超时时使用（与旧 HttpClient.Timeout 一致）。
@@ -172,6 +180,10 @@ func (p *downloadSourceProvider) GetString(ctx context.Context, officialURL stri
 	}
 	fallbackURL := validateHTTPSURLOrNil(p.ResolveFallback(officialURL))
 
+	// 用户取消判定基于外层 ctx：内层 ctx 携带请求超时预算，
+	// 主源超时属于"应回退"的失败而非用户取消——否则最常见的
+	// "主源挂起直至超时"场景永远不会触发回退。
+	parentCtx := ctx
 	ctx, cancel := withTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", primaryURL, nil)
@@ -187,9 +199,11 @@ func (p *downloadSourceProvider) GetString(ctx context.Context, officialURL stri
 		err = readErr
 	}
 
-	if isFallbackEligible(fallbackURL, primaryURL, ctx) {
-		// 回退请求给独立的完整超时预算：主源耗掉的等待时间不该挤占回退
-		fbCtx, fbCancel := withTimeout(context.WithoutCancel(ctx), timeout)
+	if isFallbackEligible(fallbackURL, primaryURL, parentCtx) {
+		// 回退请求给独立的完整超时预算：主源耗掉的等待时间不该挤占回退。
+		// 但必须挂在调用方的 ctx 上（不是 WithoutCancel）——否则回退期间
+		// 用户点取消/关窗口都中断不了，只能等超时跑满。
+		fbCtx, fbCancel := withTimeout(parentCtx, timeout)
 		defer fbCancel()
 		fbReq, fbErr := http.NewRequestWithContext(fbCtx, "GET", *fallbackURL, nil)
 		if fbErr != nil {
@@ -212,6 +226,8 @@ func (p *downloadSourceProvider) GetBytes(ctx context.Context, officialURL strin
 	}
 	fallbackURL := validateHTTPSURLOrNil(p.ResolveFallback(officialURL))
 
+	// 与 GetString 相同：取消判定用外层 ctx，避免主源超时被当成用户取消
+	parentCtx := ctx
 	ctx, cancel := withTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", primaryURL, nil)
@@ -227,8 +243,8 @@ func (p *downloadSourceProvider) GetBytes(ctx context.Context, officialURL strin
 		err = readErr
 	}
 
-	if isFallbackEligible(fallbackURL, primaryURL, ctx) {
-		fbCtx, fbCancel := withTimeout(context.WithoutCancel(ctx), timeout)
+	if isFallbackEligible(fallbackURL, primaryURL, parentCtx) {
+		fbCtx, fbCancel := withTimeout(parentCtx, timeout)
 		defer fbCancel()
 		fbReq, fbErr := http.NewRequestWithContext(fbCtx, "GET", *fallbackURL, nil)
 		if fbErr != nil {

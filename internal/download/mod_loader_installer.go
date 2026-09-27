@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"nekolauncher/internal/tools"
 )
 
 // ModLoaderInstaller Mod Loader 安装器。在原版 Minecraft 已安装的基础上，
@@ -73,7 +75,8 @@ func (m *ModLoaderInstaller) Install(
 	// 2. 扁平化：把 inheritsFrom 继承链合并为实例自包含的版本 JSON，
 	//    并复制客户端 JAR。每个实例从此完全独立——不依赖原版版本目录，
 	//    同一 Minecraft 主版本的多个实例也互不影响。
-	if err := flattenVersionJSON(root, instanceName); err != nil {
+	//    实现经宿主钩子注入 launch.VersionJsonFlattener（host_hooks.go）。
+	if err := FlattenVersionJSON(ctx, root, instanceName); err != nil {
 		return err
 	}
 
@@ -120,6 +123,8 @@ func CreateDefaultInstanceName(loaderType ModLoaderType, loaderVersion, minecraf
 		return fmt.Sprintf("neoforge-%s-%s", loaderVersion, minecraftVersion)
 	case ModLoaderForge:
 		return fmt.Sprintf("forge-%s", loaderVersion)
+	case ModLoaderOptifine:
+		return fmt.Sprintf("OptiFine_%s", loaderVersion)
 	default:
 		return minecraftVersion
 	}
@@ -165,13 +170,19 @@ func (m *ModLoaderInstaller) ensureVanillaInstalled(
 	return true, nil
 }
 
-// installFromInstallerJar 从安装器 JAR 安装 NeoForge / Forge。
+// installFromInstallerJar 从安装器 JAR 安装 NeoForge / Forge / OptiFine。
 //
-// 优先直接运行安装器（java -jar installer.jar --installClient <目录>；
+// NeoForge / Forge：优先直接运行安装器（java -jar installer.jar --installClient <目录>；
 // 旧版安装器用 --install-client，由 runInstaller 自动探测切换）：
 // NeoForge / Forge 的 SRG 重映射客户端（libraries/net/minecraft/client/...-srg.jar）
 // 只由安装器生成，任何 Maven 源都没有该文件；只提取 version.json 会导致
 // 启动时报 "NeoForge installation is corrupted"。
+//
+// OptiFine：安装器是自解包程序（1.21+ 为 xdelta 补丁 + modlauncher 架构，
+// 安装器 JAR 内没有可提取的版本 JSON），同样必须运行安装器
+// （java -cp installer.jar optifine.Installer --installGame <目录>，
+// HMCL 同款调用方式；旧版安装器用 --install）。官网下载页 adloadx 是引导页，
+// 需先解析出 downloadx 直链再下载安装器 JAR。
 //
 // 运行安装器需要本机 Java（走 FindJavaExecutable 全链查找）；失败时直接报错——
 // 提取式安装永远无法生成 SRG 客户端等核心产物，装出来的版本启动必报
@@ -182,12 +193,18 @@ func (m *ModLoaderInstaller) installFromInstallerJar(
 	instanceName, root, minecraftVersion string,
 	progress InstallProgressFunc,
 ) error {
-	// 1. 下载安装器 JAR 到临时文件
+	// 1. 下载安装器 JAR 到临时文件（OptiFine 需先从引导页解析直链）
 	tempJar := filepath.Join(os.TempDir(), fmt.Sprintf("nyalauncher-installer-%d.jar", time.Now().UnixNano()))
-	defer tryDeleteFile(tempJar)
+	defer tools.RemoveFileIfExists(tempJar)
 
 	twoMinutes := 2 * time.Minute
-	jarBytes, err := SourceProvider.GetBytes(ctx, loader.MetadataURL, &twoMinutes)
+	var jarBytes []byte
+	var err error
+	if loader.Type == ModLoaderOptifine {
+		jarBytes, err = downloadOptifineInstaller(ctx, loader.MetadataURL)
+	} else {
+		jarBytes, err = SourceProvider.GetBytes(ctx, loader.MetadataURL, &twoMinutes)
+	}
 	if err != nil {
 		return err
 	}
@@ -208,12 +225,20 @@ func (m *ModLoaderInstaller) installFromInstallerJar(
 	}
 
 	// 2. 优先运行安装器：生成 srg 客户端等核心产物
-	installerError, runErr := m.tryRunInstaller(ctx, tempJar, root, progress)
+	installerError, runErr := m.tryRunInstaller(ctx, tempJar, root, progress, loader.Type)
 	if runErr == nil {
-		// 校验安装器确实生成了运行时客户端产物；缺则说明安装不完整。
-		// NeoForge 26.x（NeoForgeV1）产出 minecraft-client-patched.jar；
-		// Forge 老架构（MCP）产出 client-*-srg.jar。
-		if !hasRuntimeClientArtifact(root, loader.Type, loader.LoaderVersion) {
+		if loader.Type == ModLoaderOptifine {
+			// OptiFine 安装器产物：versions/OptiFine_<mc>_<type>/ 下的版本 JSON
+			if !hasOptifineVersionArtifact(root, preExistingDirs) {
+				return fmt.Errorf(
+					"OptiFine 安装器运行结束，但未生成版本目录（versions/OptiFine_*）。"+
+						"请重试安装，或检查安装器输出确认 Java 版本与网络。%s",
+					installerError)
+			}
+		} else if !hasRuntimeClientArtifact(root, loader.Type, loader.LoaderVersion) {
+			// 校验安装器确实生成了运行时客户端产物；缺则说明安装不完整。
+			// NeoForge 26.x（NeoForgeV1）产出 minecraft-client-patched.jar；
+			// Forge 老架构（MCP）产出 client-*-srg.jar。
 			return fmt.Errorf(
 				"%s 安装器运行结束，但未生成必需的运行时客户端产物"+
 					"（NeoForge: libraries/net/neoforged/minecraft-client-patched/*.jar；"+
@@ -234,9 +259,62 @@ func (m *ModLoaderInstaller) installFromInstallerJar(
 	if detail == "" {
 		detail = runErr.Error()
 	}
+	if loader.Type == ModLoaderOptifine {
+		return fmt.Errorf(
+			"OptiFine 安装器运行失败：%s。OptiFine 必须由安装器完成安装（需要 Java），请检查 Java 与网络后重试。",
+			detail)
+	}
 	return fmt.Errorf(
 		"Loader 安装器运行失败：%s。NeoForge/Forge 必须由安装器完成安装（需要生成 SRG 客户端库），请检查 Java 与网络后重试。",
 		detail)
+}
+
+// downloadOptifineInstaller 下载 OptiFine 安装器 JAR。
+// adLoadURL 是官网引导页（adloadx?f=<file>），页面内含 downloadx 直链（带一次性 token）。
+func downloadOptifineInstaller(ctx context.Context, adLoadURL string) ([]byte, error) {
+	twoMinutes := 2 * time.Minute
+	pageHTML, err := SourceProvider.GetString(ctx, adLoadURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("打开 OptiFine 下载页失败：%w", err)
+	}
+	link := optiFineDownloadLinkRegex.FindString(pageHTML)
+	if link == "" {
+		return nil, fmt.Errorf("无法从 OptiFine 下载页解析出安装器直链（页面结构可能已变化）")
+	}
+	link = strings.ReplaceAll(link, "&amp;", "&")
+	jarBytes, err := SourceProvider.GetBytes(ctx, "https://optifine.net/"+link, &twoMinutes)
+	if err != nil {
+		return nil, fmt.Errorf("下载 OptiFine 安装器失败：%w", err)
+	}
+	return jarBytes, nil
+}
+
+// hasOptifineVersionArtifact 检查安装器是否生成了 OptiFine 版本目录
+// （versions/OptiFine_<mc>_<type>/ 下存在版本 JSON；只认安装器本次新增的目录）。
+func hasOptifineVersionArtifact(minecraftRoot string, preExistingDirs map[string]bool) bool {
+	entries, err := os.ReadDir(filepath.Join(minecraftRoot, "versions"))
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		lower := strings.ToLower(entry.Name())
+		if !strings.Contains(lower, "optifine") || preExistingDirs[lower] {
+			continue
+		}
+		dirEntries, err := os.ReadDir(filepath.Join(minecraftRoot, "versions", entry.Name()))
+		if err != nil {
+			continue
+		}
+		for _, file := range dirEntries {
+			if !file.IsDir() && strings.HasSuffix(strings.ToLower(file.Name()), ".json") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // hasRuntimeClientArtifact 检查安装器是否生成了该 Loader 架构对应的运行时客户端产物：
@@ -320,7 +398,8 @@ func alignInstanceDirectory(root, minecraftVersion, instanceName string, preExis
 			continue
 		}
 		lower := strings.ToLower(name)
-		if !strings.Contains(lower, "neoforge") && !strings.Contains(lower, "forge") {
+		if !strings.Contains(lower, "neoforge") && !strings.Contains(lower, "forge") &&
+			!strings.Contains(lower, "optifine") {
 			continue
 		}
 
@@ -389,7 +468,7 @@ func tryMergeInstallerJSON(targetDir, sourceDir, instanceName string) {
 			}
 			lower := strings.ToLower(entry.Name())
 			if strings.HasSuffix(lower, ".json") || strings.HasSuffix(lower, ".jar") {
-				tryDeleteFile(filepath.Join(sourceDir, entry.Name()))
+				tools.RemoveFileIfExists(filepath.Join(sourceDir, entry.Name()))
 			}
 		}
 		if remaining, err := os.ReadDir(sourceDir); err == nil && len(remaining) == 0 {
@@ -437,16 +516,19 @@ func updateJSONID(sourceJSON, targetJSON, newID string) {
 		return
 	}
 	if targetJSON != sourceJSON {
-		tryDeleteFile(sourceJSON) // 旧 json 文件名清理失败可忽略
+		tools.RemoveFileIfExists(sourceJSON) // 旧 json 文件名清理失败可忽略
 	}
 }
 
-// tryRunInstaller 运行 Loader 安装器（java -jar installer.jar --install-client 目录）。
+// tryRunInstaller 运行 Loader 安装器。
+// NeoForge / Forge：java -jar installer.jar --installClient <目录>（旧版 --install-client）。
+// OptiFine：java -cp installer.jar optifine.Installer --installGame <目录>（旧版 --install）。
 // 成功返回 ("", nil)；java 缺失或安装器失败返回 (原因, err)。
 func (m *ModLoaderInstaller) tryRunInstaller(
 	ctx context.Context,
 	installerJarPath, minecraftRoot string,
 	progress InstallProgressFunc,
+	loaderType ModLoaderType,
 ) (string, error) {
 	// 查找本机可用的 Java：
 	// 1) 启动器托管的运行时目录（<mcDir>/runtime，递归扫描已下载的 JRE）
@@ -469,6 +551,27 @@ func (m *ModLoaderInstaller) tryRunInstaller(
 		})
 	}
 
+	if loaderType == ModLoaderOptifine {
+		// OptiFine 安装器不用 joptsimple，参数不被识别时输出格式不同，
+		// 这里不做 unrecognized 门控，两种参数形态顺序各试一次
+		var lastError string
+		for _, installArg := range []string{"--installGame", "--install"} {
+			args := []string{"-cp", installerJarPath, "optifine.Installer", installArg, minecraftRoot}
+			onceError, _, runErr := runInstallerOnce(ctx, javaExecutable, args)
+			if runErr == nil {
+				return "", nil
+			}
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			lastError = onceError
+		}
+		if lastError == "" {
+			lastError = "安装器运行失败。"
+		}
+		return lastError, fmt.Errorf("installer failed")
+	}
+
 	// 现代 NeoForge/Forge 安装器（joptsimple）改用 camelCase 的 --installClient；
 	// 旧版安装器用 --install-client。先试新语法，遇到 "is not a recognized option"
 	// 自动换组合重试（joptsimple 解析失败在下载前发生，重试代价低）。
@@ -477,8 +580,17 @@ func (m *ModLoaderInstaller) tryRunInstaller(
 	var lastError string
 	for _, installArg := range installArgForms {
 		for _, useMirror := range []bool{true, false} {
-			onceError, unrecognized, runErr := runInstallerOnce(
-				ctx, javaExecutable, installerJarPath, minecraftRoot, installArg, useMirror)
+			args := []string{"-jar", installerJarPath, installArg, minecraftRoot}
+			if useMirror {
+				if mavenBaseURL := SourceProvider.Active().Maven; mavenBaseURL != "" {
+					addMirrorArgument(&args, mavenBaseURL)
+				}
+				if fb := SourceProvider.Fallback(); fb != nil &&
+					!strings.EqualFold(fb.Maven, SourceProvider.Active().Maven) {
+					addMirrorArgument(&args, fb.Maven)
+				}
+			}
+			onceError, unrecognized, runErr := runInstallerOnce(ctx, javaExecutable, args)
 			if runErr == nil {
 				return "", nil
 			}
@@ -499,22 +611,16 @@ func (m *ModLoaderInstaller) tryRunInstaller(
 	return lastError, fmt.Errorf("installer failed")
 }
 
-// runInstallerOnce 单次运行安装器；unrecognized 标记是否因 joptsimple 不可识别选项而失败。
+// runInstallerOnce 按给定参数单次运行安装器；
+// unrecognized 标记是否因 joptsimple 不可识别选项而失败（仅 NeoForge/Forge 使用）。
 func runInstallerOnce(
 	ctx context.Context,
-	javaExecutable, installerJarPath, minecraftRoot, installArg string,
-	useMirror bool,
+	javaExecutable string,
+	args []string,
 ) (errMessage string, unrecognized bool, err error) {
-	args := []string{"-jar", installerJarPath, installArg, minecraftRoot}
-	if useMirror {
-		addMirrorArgument(&args, SourceProvider.Active().Maven)
-		if fb := SourceProvider.Fallback(); fb != nil &&
-			!strings.EqualFold(fb.Maven, SourceProvider.Active().Maven) {
-			addMirrorArgument(&args, fb.Maven)
-		}
-	}
-
 	command := exec.Command(javaExecutable, args...)
+	// java.exe 是控制台程序，安装期间禁止其弹出控制台窗口
+	tools.HideProcessWindow(command)
 	command.Cancel = func() error {
 		// 尽力终止进程树；Windows 上 Go 1.20+ 的 Cancel 只杀主进程，
 		// 安装器子进程残留由 WaitDelay + 超时兜底（见 PORTING_NOTES.md）。
@@ -574,6 +680,11 @@ func runInstallerOnce(
 	started := time.Now()
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- command.Wait() }()
+	// 用一个 ticker 而不是循环里的 time.After：最长 10 分钟、500ms 一跳，
+	// 反复 time.After 会白白新建约 1200 个定时器
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case waitErr := <-waitCh:
@@ -599,7 +710,7 @@ func runInstallerOnce(
 			_ = command.Process.Kill()
 			<-waitCh
 			return "", false, ctx.Err()
-		case <-time.After(500 * time.Millisecond):
+		case <-ticker.C:
 			if time.Since(started) >= installerTimeout {
 				_ = command.Process.Kill()
 				<-waitCh

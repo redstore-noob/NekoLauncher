@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"nekolauncher/internal/tools"
 )
 
 // NativeLibrary 一个待解压的 native 依赖库。
@@ -61,7 +63,7 @@ func (MinecraftLibraryResolver) Resolve(
 			if !ok {
 				continue
 			}
-			if fileExists(artifactPath) {
+			if tools.FileExists(artifactPath) {
 				key := classpathKey(artifactPath)
 				if !seen[key] {
 					seen[key] = true
@@ -80,7 +82,7 @@ func (MinecraftLibraryResolver) Resolve(
 		if !ok {
 			continue
 		}
-		if fileExists(nativePath) {
+		if tools.FileExists(nativePath) {
 			natives = append(natives, NativeLibrary{
 				ArchivePath: nativePath,
 				Exclusions:  descriptor.nativeExclusions(),
@@ -95,7 +97,7 @@ func (MinecraftLibraryResolver) Resolve(
 		"versions",
 		profile.ClientJarVersionId,
 		profile.ClientJarVersionId+".jar")
-	if fileExists(clientJar) {
+	if tools.FileExists(clientJar) {
 		classpath = append(classpath, clientJar)
 	} else {
 		missingFiles = append(missingFiles, clientJar)
@@ -143,7 +145,7 @@ func (MinecraftLibraryResolver) ExtractNatives(
 	if strings.TrimSpace(minecraftDirectory) != "" {
 		baseDirectory = filepath.Join(minecraftDirectory, ".nya-natives")
 	} else {
-		baseDirectory = filepath.Join(os.TempDir(), "NyaLauncher", "natives")
+		baseDirectory = filepath.Join(os.TempDir(), "NekoLauncher", "natives")
 	}
 	cleanupStaleNativeDirectories(baseDirectory)
 	nativeDirectory := filepath.Join(baseDirectory, fmt.Sprintf("%s-%s", safeVersionId.String(), randomHexIdentifier()))
@@ -171,7 +173,7 @@ func TryDeleteDirectory(directory string) {
 // cleanupStaleNativeDirectories 清理超过 7 天未被修改的旧 natives 解压目录，
 // 防止启动器被强制终止或断电时 .nya-natives 下无限累积 GUID 目录。
 func cleanupStaleNativeDirectories(baseDirectory string) {
-	if !directoryExists(baseDirectory) {
+	if !tools.DirectoryExists(baseDirectory) {
 		return
 	}
 	cutoff := time.Now().Add(-7 * 24 * time.Hour)
@@ -317,13 +319,13 @@ func (l *libraryJSON) tryNativePath() (string, bool) {
 		return "", false
 	}
 
-	// ${arch} 占位符按当前进程位数展开
+	// ${arch} 占位符按当前进程位数展开。
+	// 只出现于老版本（1.7.10/1.8.9 的 twitch-platform 等），它们的 classifiers
+	// 只有 natives-windows-32 / natives-windows-64：arm64 必须同样映射成 "64"，
+	// 与下载侧（minecraft_version_installer / game_file_verifier）保持一致，
+	// 否则 arm64 上会去找根本不存在的 natives-windows-arm64。
 	var architecture string
 	switch runtime.GOARCH {
-	case "arm64":
-		architecture = "arm64"
-	case "amd64":
-		architecture = "64"
 	case "386":
 		architecture = "32"
 	default:

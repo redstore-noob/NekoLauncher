@@ -1,0 +1,61 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    NekoSolo 安装器（stub）：NekoSolo 安装包的主体程序。
+    导出管线（NekoLauncher 内的 internal/solo）会把载荷 zip 追加到本程序构建产物的
+    尾部并写 32 字节尾标，因此本程序本身不包含任何整合包内容。
+    构建方式：dotnet build -c Release（或仓库根目录的 NekoSolo/publish.ps1），
+    产物需复制到 NekoSolo/build/NekoSolo.Installer.exe 供启动器导出时查找。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RootNamespace>NekoSolo.Installer</RootNamespace>
+    <AssemblyName>NekoSolo.Installer</AssemblyName>
+    <Version>1.0.0</Version>
+    <Product>NekoSolo Installer</Product>
+    <Description>NekoSolo 一键安装器：启动器 + Java + 整合包</Description>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <GenerateBindingRedirectsOutputType>true</GenerateBindingRedirectsOutputType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MaterialDesignThemes" Version="5.1.0" GeneratePathProperty="true" />
+    <!-- 显式声明传递依赖以便 GeneratePathProperty 定位 DLL 用于嵌入 -->
+    <PackageReference Include="MaterialDesignColors" Version="3.1.0" GeneratePathProperty="true" />
+    <PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.39" GeneratePathProperty="true" />
+    <!-- 无 VS Targeting Pack 的机器上也能用 dotnet build 构建 net48 -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="System.Runtime.Serialization" />
+  </ItemGroup>
+
+  <!--
+    单文件分发：把 MaterialDesign 及其运行时依赖作为嵌入式资源打进 exe。
+    安装包 = 本程序 + 载荷 + 尾标，旁边不会有任何 DLL；运行时探测失败
+    （App 静态构造器里注册的 AssemblyResolve）从嵌入资源自解压加载，见 App.xaml.cs。
+    升级这些包时需同步核对其 lib 目标框架目录与 App.xaml.cs 的白名单。
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="$(PkgMaterialDesignThemes)\lib\net462\MaterialDesignThemes.Wpf.dll">
+      <Link>deps\MaterialDesignThemes.Wpf.dll</Link>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(PkgMaterialDesignColors)\lib\net462\MaterialDesignColors.dll">
+      <Link>deps\MaterialDesignColors.dll</Link>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(PkgMicrosoft_Xaml_Behaviors_Wpf)\lib\net45\Microsoft.Xaml.Behaviors.dll">
+      <Link>deps\Microsoft.Xaml.Behaviors.dll</Link>
+      <Visible>false</Visible>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>
+

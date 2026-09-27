@@ -21,12 +21,18 @@ const (
 type MusicSortMode string
 
 const (
-	SortFileName           MusicSortMode = "FileName"
-	SortFileNameDesc       MusicSortMode = "FileNameDesc"
-	SortDateModified       MusicSortMode = "DateModified"
-	SortDateModifiedDesc   MusicSortMode = "DateModifiedDesc"
-	SortFileSize           MusicSortMode = "FileSize"
-	SortFileSizeDesc       MusicSortMode = "FileSizeDesc"
+	// SortFileName 按文件名升序。
+	SortFileName MusicSortMode = "FileName"
+	// SortFileNameDesc 按文件名降序。
+	SortFileNameDesc MusicSortMode = "FileNameDesc"
+	// SortDateModified 按修改时间升序。
+	SortDateModified MusicSortMode = "DateModified"
+	// SortDateModifiedDesc 按修改时间降序。
+	SortDateModifiedDesc MusicSortMode = "DateModifiedDesc"
+	// SortFileSize 按文件大小升序。
+	SortFileSize MusicSortMode = "FileSize"
+	// SortFileSizeDesc 按文件大小降序。
+	SortFileSizeDesc MusicSortMode = "FileSizeDesc"
 )
 
 // MusicLibrary 音乐库管理：扫描文件夹、管理播放列表、持久化设置。

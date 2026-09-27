@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,21 +18,24 @@ import (
 	"time"
 )
 
-// DefaultMicrosoftClientId 默认使用 NyaLauncher 自建的 Azure 应用注册
+// DefaultMicrosoftClientId 默认使用 NekoLauncher 自建的 Azure 应用注册
 // （多租户 + 个人 MSA，公共客户端）。需注意：自建 Client ID 必须通过
 // aka.ms/mce-reviewappid 提交 Mojang 审核，放行前链路最后一步
 // Minecraft Services 会返回 403 Invalid app registration。
-// 可通过构造函数或环境变量 NYALAUNCHER_MSA_CLIENT_ID 覆盖。
+// 可通过构造函数或环境变量 NEKOLAUNCHER_MSA_CLIENT_ID 覆盖。
 const DefaultMicrosoftClientId = "427f0a7c-9edd-40ba-a0ec-f189f8328418"
 
 const microsoftScope = "XboxLive.signin offline_access"
 
 // MicrosoftClientIdOverride 允许通过环境变量覆盖 client_id（例如自建 Azure 应用时）。
 func MicrosoftClientIdOverride() string {
-	return strings.TrimSpace(os.Getenv("NYALAUNCHER_MSA_CLIENT_ID"))
+	return strings.TrimSpace(os.Getenv("NEKOLAUNCHER_MSA_CLIENT_ID"))
 }
 
-const (
+// 认证链路各阶段端点。写成包级变量（而非常量）只为单元测试可替换：
+// 测试用 httptest 假服务器顶掉这些端点，从而在不访问真实网络的前提下覆盖
+// 设备码轮询、刷新与 XBL/XSTS/Minecraft 交换的全部成功/失败分支。
+var (
 	deviceCodeEndpoint      = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode"
 	tokenEndpoint           = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
 	xboxLiveAuthenticateURL = "https://user.auth.xboxlive.com/user/authenticate"
@@ -38,6 +43,18 @@ const (
 	minecraftLoginURL       = "https://api.minecraftservices.com/authentication/login_with_xbox"
 	minecraftProfileURL     = "https://api.minecraftservices.com/minecraft/profile"
 )
+
+// deviceCodePollWait 等待下一轮设备码轮询。抽成包级变量只为单元测试可替换：
+// 测试据此断言语义（尤其是 slow_down 的 +5 秒退避）而不必真的等 5 秒。
+// 生产行为与原先内联的 select { ctx.Done / time.After } 完全一致。
+var deviceCodePollWait = func(ctx context.Context, interval time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(interval):
+		return nil
+	}
+}
 
 // MicrosoftAuthenticator 正版（Microsoft 账号）认证器，负责完成完整的
 // Microsoft → Xbox → Minecraft 登录链路，以及令牌的刷新与有效性校验。
@@ -58,12 +75,17 @@ var MicrosoftAuthentication SharedMicrosoftAuthentication
 
 type SharedMicrosoftAuthentication struct{}
 
+// Authenticate 通过设备码流程完成正版登录（委托 DefaultMicrosoftAuthenticator）。
 func (SharedMicrosoftAuthentication) Authenticate(ctx context.Context, handler func(DeviceCodeInfo, context.Context)) (MicrosoftAccount, error) {
 	return DefaultMicrosoftAuthenticator.Authenticate(ctx, handler)
 }
+
+// Refresh 使用刷新令牌无感刷新账号令牌（委托 DefaultMicrosoftAuthenticator）。
 func (SharedMicrosoftAuthentication) Refresh(ctx context.Context, account MicrosoftAccount) (MicrosoftAccount, error) {
 	return DefaultMicrosoftAuthenticator.Refresh(ctx, account)
 }
+
+// Validate 校验账号令牌，过期时自动刷新（委托 DefaultMicrosoftAuthenticator）。
 func (SharedMicrosoftAuthentication) Validate(ctx context.Context, account MicrosoftAccount) (MicrosoftAccount, error) {
 	return DefaultMicrosoftAuthenticator.Validate(ctx, account)
 }
@@ -116,7 +138,7 @@ func (a *MicrosoftDeviceCodeAuthenticator) Authenticate(
 		return MicrosoftAccount{}, err
 	}
 
-	return a.exchangeForMinecraftAccount(ctx, accessToken, refreshToken)
+	return a.exchangeForMinecraftAccount(ctx, accessToken, refreshToken, nil)
 }
 
 // Refresh 使用 refresh_token 换取新的完整账号。
@@ -136,7 +158,7 @@ func (a *MicrosoftDeviceCodeAuthenticator) Refresh(
 		return MicrosoftAccount{}, err
 	}
 
-	result, err := a.exchangeForMinecraftAccount(ctx, accessToken, refreshToken)
+	result, err := a.exchangeForMinecraftAccount(ctx, accessToken, refreshToken, nil)
 	if err != nil {
 		// 令牌 POST 已成功，服务端可能已轮换 refresh_token（旧值随时作废）。
 		// 即使后续 XBL/XSTS/档案交换失败，也必须让调用方拿到新令牌持久化，
@@ -252,10 +274,9 @@ func (a *MicrosoftDeviceCodeAuthenticator) pollForToken(
 		if err := ctx.Err(); err != nil {
 			return "", "", err
 		}
-		select {
-		case <-ctx.Done():
-			return "", "", ctx.Err()
-		case <-time.After(time.Duration(deviceCode.PollIntervalSeconds) * time.Second):
+		if err := deviceCodePollWait(ctx,
+			time.Duration(deviceCode.PollIntervalSeconds)*time.Second); err != nil {
+			return "", "", err
 		}
 
 		form := url.Values{
@@ -265,6 +286,15 @@ func (a *MicrosoftDeviceCodeAuthenticator) pollForToken(
 		}
 		_, body, err := a.postForm(ctx, tokenEndpoint, form)
 		if err != nil {
+			// 瞬时网络错误（超时/连接重置/DNS 抖动）不应终止整个设备码登录：
+			// 用户正在浏览器等待输入验证码，直接重试下一轮；外部 ctx 取消才退出
+			if ctx.Err() != nil {
+				return "", "", ctx.Err()
+			}
+			var netErr net.Error
+			if errors.As(err, &netErr) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				continue
+			}
 			return "", "", newMicrosoftAuthErrorWrap("设备码轮询失败", err)
 		}
 		token, err := deserializeToken(body)
@@ -273,7 +303,7 @@ func (a *MicrosoftDeviceCodeAuthenticator) pollForToken(
 		}
 
 		if strings.TrimSpace(token.AccessToken) != "" {
-			return token.AccessToken, fallbackString(token.RefreshToken), nil
+			return token.AccessToken, token.RefreshToken, nil
 		}
 
 		switch token.Error {
@@ -325,8 +355,14 @@ func (a *MicrosoftDeviceCodeAuthenticator) requestTokenByRefreshToken(
 	}
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 || strings.TrimSpace(token.AccessToken) == "" {
+		detail := strings.TrimSpace(token.ErrorDescription)
+		if detail != "" {
+			detail += "\n" + body
+		} else {
+			detail = body
+		}
 		return "", "", newMicrosoftAuthErrorCode(
-			fmt.Sprintf("刷新令牌失败（HTTP %d）：%s", response.StatusCode, fallbackString(token.ErrorDescription)+body),
+			fmt.Sprintf("刷新令牌失败（HTTP %d）：%s", response.StatusCode, detail),
 			token.Error)
 	}
 
@@ -523,21 +559,33 @@ func (a *MicrosoftDeviceCodeAuthenticator) fetchMinecraftProfile(
 }
 
 // exchangeForMinecraftAccount 将 Microsoft 令牌逐步交换为完整的正版账号。
+// onStep 可选，在每个链路阶段完成时回调（步骤常量见 LoginStep*）；
+// 传 nil 表示调用方不关心进度（设备码登录）。
 func (a *MicrosoftDeviceCodeAuthenticator) exchangeForMinecraftAccount(
 	ctx context.Context,
 	microsoftAccessToken, refreshToken string,
+	onStep func(step int),
 ) (MicrosoftAccount, error) {
 	xblToken, uhs, err := a.authenticateWithXboxLive(ctx, microsoftAccessToken)
 	if err != nil {
 		return MicrosoftAccount{}, err
 	}
+	if onStep != nil {
+		onStep(LoginStepXboxLive)
+	}
 	xstsToken, xstsXuid, err := a.authenticateWithXsts(ctx, xblToken)
 	if err != nil {
 		return MicrosoftAccount{}, err
 	}
+	if onStep != nil {
+		onStep(LoginStepXsts)
+	}
 	minecraftToken, expiresInSeconds, err := a.loginWithMinecraft(ctx, uhs, xstsToken)
 	if err != nil {
 		return MicrosoftAccount{}, err
+	}
+	if onStep != nil {
+		onStep(LoginStepMinecraft)
 	}
 
 	// xuid（Xbox 用户 ID）优先取 XSTS 响应中的 xui[0].xid，

@@ -5,8 +5,8 @@ package bindings
 // DownloadSettings / DownloadPauseGate / ContentInstallService。
 
 import (
-	"nyalauncher/internal/download"
-	"nyalauncher/internal/models"
+	"nekolauncher/internal/download"
+	"nekolauncher/internal/models"
 )
 
 // ---- 下载任务 ----
@@ -60,53 +60,12 @@ func (a *DownloadAPI) GetModLoaderVersions(loaderType download.ModLoaderType, mi
 	return download.GetModLoaderVersions(callCtx(a.ctx), loaderType, minecraftVersion)
 }
 
-// GetFabricVersions Fabric Loader 版本列表。
-func (a *DownloadAPI) GetFabricVersions(minecraftVersion string) ([]download.ModLoaderVersion, error) {
-	return download.GetFabricVersions(callCtx(a.ctx), minecraftVersion)
-}
-
-// GetQuiltVersions Quilt Loader 版本列表。
-func (a *DownloadAPI) GetQuiltVersions(minecraftVersion string) ([]download.ModLoaderVersion, error) {
-	return download.GetQuiltVersions(callCtx(a.ctx), minecraftVersion)
-}
-
-// GetNeoForgeVersions NeoForge 版本列表。
-func (a *DownloadAPI) GetNeoForgeVersions(minecraftVersion string) ([]download.ModLoaderVersion, error) {
-	return download.GetNeoForgeVersions(callCtx(a.ctx), minecraftVersion)
-}
-
-// GetForgeVersions Forge 版本列表。
-func (a *DownloadAPI) GetForgeVersions(minecraftVersion string) ([]download.ModLoaderVersion, error) {
-	return download.GetForgeVersions(callCtx(a.ctx), minecraftVersion)
-}
-
-// NormalizeBmclNeoForgeVersion 规范化 BMCL 源的 NeoForge 版本号。
-func (a *DownloadAPI) NormalizeBmclNeoForgeVersion(version string) string {
-	return download.NormalizeBmclNeoForgeVersion(version)
-}
-
 // CreateDefaultInstanceName 生成 Loader 实例默认名称。
 func (a *DownloadAPI) CreateDefaultInstanceName(loaderType download.ModLoaderType, loaderVersion, minecraftVersion string) string {
 	return download.CreateDefaultInstanceName(loaderType, loaderVersion, minecraftVersion)
 }
 
 // ---- Java 运行时 ----
-
-// GetJavaRuntimeDirectory 托管 Java 运行时目录。
-func (a *DownloadAPI) GetJavaRuntimeDirectory() string { return download.GetRuntimeDirectory() }
-
-// GetJavaPlatformDisplayName 当前平台的 Java 下载标识。
-func (a *DownloadAPI) GetJavaPlatformDisplayName() string { return download.GetPlatformDisplayName() }
-
-// ParseJavaVendor 从名称解析 Java 发行方。
-func (a *DownloadAPI) ParseJavaVendor(name string) (download.JavaVendor, bool) {
-	return download.ParseJavaVendor(name)
-}
-
-// GetJavaVendorDisplayName 发行方显示名。
-func (a *DownloadAPI) GetJavaVendorDisplayName(vendor download.JavaVendor) string {
-	return download.JavaVendorDisplayName(vendor)
-}
 
 // GetInstalledJavaRuntimes 已安装的托管 Java 运行时。
 func (a *DownloadAPI) GetInstalledJavaRuntimes() []download.InstalledJavaRuntime {
@@ -124,10 +83,19 @@ func (a *DownloadAPI) QueryAvailableJavaVersions(vendor download.JavaVendor) ([]
 }
 
 // InstallJavaRuntime 下载并安装指定 JDK；进度经 download:javaProgress 事件推送。
+// 前端订阅方期望 {Percentage, Detail} 字段，这里从 JavaRuntimeInstallProgress
+// （Phase/CompletedBytes/TotalBytes）映射，避免进度恒为 0、状态文本为空。
 func (a *DownloadAPI) InstallJavaRuntime(candidate download.JavaDownloadCandidate) (*download.InstalledJavaRuntime, error) {
 	var installer download.JavaRuntimeInstaller
 	return installer.InstallCandidate(callCtx(a.ctx), candidate, func(progress download.JavaRuntimeInstallProgress) {
-		emit(a.ctx, "download:javaProgress", progress)
+		percentage := 0.0
+		if progress.TotalBytes > 0 {
+			percentage = float64(progress.CompletedBytes) / float64(progress.TotalBytes) * 100
+		}
+		emit(a.ctx, "download:javaProgress", map[string]any{
+			"Percentage": percentage,
+			"Detail":     progress.Phase,
+		})
 	})
 }
 
@@ -160,8 +128,17 @@ func (a *DownloadAPI) GetParallelDownloads() int { return download.ParallelDownl
 // SaveParallelDownloads 保存并行下载线程数。
 func (a *DownloadAPI) SaveParallelDownloads(count int) { download.SaveParallelDownloads(count) }
 
-// ApplyDownloadSettings 应用已保存的下载源设置（启动时自动调用，留作手动刷新）。
-func (a *DownloadAPI) ApplyDownloadSettings() { download.ApplySavedSettings() }
+// GetSpeedLimitKbps 全局下载限速（KB/s，0 = 不限速）。
+func (a *DownloadAPI) GetSpeedLimitKbps() int { return download.SpeedLimitKbps() }
+
+// SaveSpeedLimitKbps 保存全局下载限速并立即生效（0 = 不限速）。
+func (a *DownloadAPI) SaveSpeedLimitKbps(kbps int) { download.SaveSpeedLimitKbps(kbps) }
+
+// GetSourceLatencies 并发测量全部内置下载源延迟（HEAD 版本清单，5 秒超时）；
+// 失败的源 LatencyMs=-1。网络状态小组件使用。
+func (a *DownloadAPI) GetSourceLatencies() []download.SourceLatency {
+	return download.MeasureSourceLatencies(callCtx(a.ctx))
+}
 
 // ---- 内容下载（Mod / 资源包 / 光影 / 整合包） ----
 
@@ -179,14 +156,6 @@ func (a *DownloadAPI) DownloadFileToInstance(
 // DownloadFileToPath 下载文件到任意路径。
 func (a *DownloadAPI) DownloadFileToPath(downloadURL, targetPath string) error {
 	return download.DownloadFileToPath(callCtx(a.ctx), downloadURL, targetPath,
-		func(downloaded, total int64) {
-			emit(a.ctx, "download:contentProgress", map[string]int64{"downloaded": downloaded, "total": total})
-		})
-}
-
-// DownloadModpackFile 从整合包声明的直链下载单个文件。
-func (a *DownloadAPI) DownloadModpackFile(downloadURL, fileName, targetPath string) error {
-	return download.DownloadModpackFile(callCtx(a.ctx), downloadURL, fileName, targetPath,
 		func(downloaded, total int64) {
 			emit(a.ctx, "download:contentProgress", map[string]int64{"downloaded": downloaded, "total": total})
 		})

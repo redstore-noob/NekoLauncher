@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sort"
 
-	"nyalauncher/internal/models"
+	"nekolauncher/internal/models"
 )
 
 // ManifestGet 获取 Minecraft 版本清单的服务。通过 SourceProvider 自动选择下载源。

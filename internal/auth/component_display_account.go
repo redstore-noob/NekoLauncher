@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"strings"
 
-	"nyalauncher/internal/config"
+	"nekolauncher/internal/config"
 )
 
-// ConfigKey 组件展示账号覆盖在 config.json 中的键。
+// ConfigKey 组件展示账号覆盖在 accounts.yaml 中的键。
 const componentDisplayConfigKey = "componentDisplayAccounts"
 
 // ResolveComponentDisplayAccount 解析组件应展示的账号：优先取覆盖账号（存在时），

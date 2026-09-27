@@ -2,7 +2,7 @@ package auth
 
 import "time"
 
-// LaunchAccount 一个可选用的启动账号（持久化于 config.json 的 accounts 键）。
+// LaunchAccount 一个可选用的启动账号（持久化于 accounts.yaml 的 accounts 键）。
 type LaunchAccount struct {
 	// Type "offline" | "microsoft" | "authlib" | 未来其它提供方。
 	Type string

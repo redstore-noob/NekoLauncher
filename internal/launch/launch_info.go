@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"nyalauncher/internal/auth"
+	"nekolauncher/internal/auth"
 )
 
 // MinecraftAccount 可供 Minecraft 启动使用的统一账号抽象。
@@ -47,6 +47,7 @@ func MustOfflineAccount(username string) *OfflineAccount {
 	return account
 }
 
+// 以下方法实现 MinecraftAccount（auth 包）接口：离线账号无令牌，访问令牌固定为 "0"。
 func (a *OfflineAccount) AccountKind() string        { return "offline" }
 func (a *OfflineAccount) AccountUsername() string    { return a.username }
 func (a *OfflineAccount) AccountUuid() string        { return a.uuid }
@@ -75,7 +76,7 @@ type MinecraftLaunchOptions struct {
 	VersionId string
 	// Account 启动使用的账号；可为离线账号或正版（Microsoft）账号。
 	Account MinecraftAccount
-	// JavaExecutable 可选的 Java 可执行文件。为空时依次检查 NYALAUNCHER_JAVA、
+	// JavaExecutable 可选的 Java 可执行文件。为空时依次检查 NEKOLAUNCHER_JAVA、
 	// JAVA_HOME 和 PATH。
 	JavaExecutable string
 	// JavaRuntimeDirectory 可选的 Minecraft runtime 根目录；启动器会递归查找并
@@ -89,8 +90,24 @@ type MinecraftLaunchOptions struct {
 	LauncherVersion         string
 	AdditionalJvmArguments  []string
 	AdditionalGameArguments []string
+	// ProcessPriority 游戏进程优先级（"low"/"belownormal"/"abovenormal"/"high"，
+	// 空串与 "normal" 表示不调整）；进程启动后尽力设置，失败仅记录日志。
+	ProcessPriority string
+	// WrapperCommand 包装命令模板（含 %command% 占位）；空串表示直接启动 Java。
+	WrapperCommand string
+	// EnvironmentVariables 注入游戏进程的额外环境变量（用户实例/全局设置）；
+	// 与插件 Transform 的环境变量合并，用户设置优先。
+	EnvironmentVariables map[string]string
+	// LaunchFullscreen 以全屏启动（buildLaunchOptions 已转成 --fullscreen 参数，
+	// 此字段仅供记录，不直接参与进程构造）。
+	LaunchFullscreen bool
 	// Transform 已启用插件贡献的启动变换（Java 路径覆盖、类路径与参数前后插入、
 	// 环境变量等）。nil 等价于空变换，即不改变原有启动行为。
+	//
+	// 现状（可行性复检结论）：这条链路**还没有接线**——插件贡献目前只能通过
+	// 版本档案里的额外 JVM / 游戏参数生效，没有任何地方会填充 Transform，
+	// 启动时解析出来的永远是空变换。保留字段是为了不改动启动管线的公开签名，
+	// 但不要以为它能用（要接线需先有"插件贡献清单 → Transform"的转换层）。
 	Transform *MinecraftLaunchTransform
 	// LogCallback 启动过程中的文本日志回调（如 Java 自动下载阶段的进度提示）；可为空。
 	LogCallback func(string)
@@ -119,6 +136,11 @@ type MinecraftLaunchPlan struct {
 	// RemovedEnvironmentVariables 需要从子进程环境中移除的变量名
 	//（对应 C# 字典中值为 null 的项）。
 	RemovedEnvironmentVariables map[string]bool
+	// WrapperCommand 包装命令拆分结果（%command% 已移除，替换逻辑在进程构造时做）；
+	// 空切片表示不使用包装命令。
+	WrapperCommand []string
+	// ProcessPriority 游戏进程优先级；空串或 "normal" 表示不调整。
+	ProcessPriority string
 }
 
 // MinecraftLaunchResult Minecraft 实例启动后的结果。

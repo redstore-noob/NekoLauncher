@@ -3,7 +3,7 @@
 // 因此 ResolveInstanceVisual 所需的外部实例识别通过钩子注入（见各自 PORTING_NOTES.md）。
 package instance
 
-import "nyalauncher/internal/content"
+import "nekolauncher/internal/content"
 
 func init() {
 	content.ExternalInstanceResolver = func(sourcePath string) (content.ExternalInstanceLayout, bool) {

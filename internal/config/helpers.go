@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"nyalauncher/internal/logs"
+	"nekolauncher/internal/logs"
 )
 
 // logsWriteError 写一条 ERROR 日志（失败不向上传播，与 C# Console.WriteLine 语义对齐）。

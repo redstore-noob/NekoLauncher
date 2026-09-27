@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
-	"nyalauncher/internal/download/modrinth"
+	"nekolauncher/internal/download/modrinth"
 )
 
 // ModLoaderType 支持的 Mod Loader 类型。
@@ -20,6 +21,7 @@ const (
 	ModLoaderQuilt
 	ModLoaderNeoForge
 	ModLoaderForge
+	ModLoaderOptifine
 )
 
 // String 枚举名（与 C# 枚举名一致，用于持久化与显示）。
@@ -33,6 +35,8 @@ func (t ModLoaderType) String() string {
 		return "NeoForge"
 	case ModLoaderForge:
 		return "Forge"
+	case ModLoaderOptifine:
+		return "OptiFine"
 	default:
 		return "Vanilla"
 	}
@@ -51,6 +55,8 @@ func ParseModLoaderType(name string) (ModLoaderType, bool) {
 		return ModLoaderNeoForge, true
 	case "forge":
 		return ModLoaderForge, true
+	case "optifine":
+		return ModLoaderOptifine, true
 	default:
 		return ModLoaderVanilla, false
 	}
@@ -84,6 +90,8 @@ func (v ModLoaderVersion) DisplayName() string {
 		return fmt.Sprintf("NeoForge %s", v.LoaderVersion)
 	case ModLoaderForge:
 		return fmt.Sprintf("Forge %s", v.LoaderVersion)
+	case ModLoaderOptifine:
+		return fmt.Sprintf("OptiFine %s", v.LoaderVersion)
 	default:
 		return v.LoaderVersion
 	}
@@ -104,6 +112,19 @@ const neoForgeBmclListURL = "https://bmclapi2.bangbang93.com/neoforge/list/%s"
 const neoForgeBmclInstallerURL = "https://bmclapi2.bangbang93.com/neoforge/version/%s/download/installer.jar"
 
 const forgePromotionsURL = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
+
+// optiFineDownloadsURL OptiFine 官网下载页（HTML）。OptiFine 没有 meta API，
+// 版本列表靠解析页面上的 adloadx 链接获得（BMCLAPI 未提供 OptiFine 列表端点）。
+const optiFineDownloadsURL = "https://optifine.net/downloads"
+
+// optiFineAdLoadURLFormat OptiFine 安装器下载引导页（输入文件名，页面内含 downloadx 直链）。
+const optiFineAdLoadURLFormat = "https://optifine.net/adloadx?f=%s"
+
+// optiFineDownloadLinkRegex 从 adloadx 页面提取真实下载直链（downloadx?f=...&x=token）。
+var optiFineDownloadLinkRegex = regexp.MustCompile(`downloadx\?f=[A-Za-z0-9._=&;-]+`)
+
+// optiFineFileLinkRegex 从下载页提取安装器文件名（OptiFine_1.21.11_HD_U_J9.jar / preview_OptiFine_...jar）。
+var optiFineFileLinkRegex = regexp.MustCompile(`(?:preview_)?OptiFine_[0-9][A-Za-z0-9._-]*?\.jar`)
 
 // fabricLoaderEntry Fabric/Quilt meta API 响应条目。
 type fabricLoaderEntry struct {
@@ -378,6 +399,57 @@ func GetForgeVersions(ctx context.Context, minecraftVersion string) ([]ModLoader
 	return results, nil
 }
 
+// GetOptifineVersions 获取指定 Minecraft 版本可用的 OptiFine 版本列表。
+// OptiFine 没有 meta API：解析官网下载页上的 adloadx 链接
+// （OptiFine_1.21.11_HD_U_J9.jar / preview_OptiFine_26.1.2_HD_U_K1_pre2.jar），
+// 按文件名中的 Minecraft 版本号过滤；preview 前缀标记为非稳定。
+func GetOptifineVersions(ctx context.Context, minecraftVersion string) ([]ModLoaderVersion, error) {
+	if strings.TrimSpace(minecraftVersion) == "" {
+		return nil, fmt.Errorf("minecraftVersion 不能为空")
+	}
+
+	ctx, cancel := shortTimeout(ctx)
+	defer cancel()
+	pageHTML, err := SourceProvider.GetString(ctx, optiFineDownloadsURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	seen := map[string]bool{}
+	result := []ModLoaderVersion{}
+	for _, fileName := range optiFineFileLinkRegex.FindAllString(pageHTML, -1) {
+		if seen[fileName] {
+			continue
+		}
+		seen[fileName] = true
+
+		isPreview := strings.HasPrefix(fileName, "preview_")
+		baseName := strings.TrimPrefix(fileName, "preview_") // OptiFine_<mc>_<type>.jar
+		nameNoExt := strings.TrimSuffix(baseName, ".jar")
+		// 文件名形状 OptiFine_<mcVersion>_<type>，type 自身可含下划线（HD_U_J9 / HD_U_K1_pre2）
+		rest := strings.TrimPrefix(nameNoExt, "OptiFine_")
+		underscore := strings.Index(rest, "_")
+		if underscore <= 0 {
+			continue
+		}
+		mcVersion := rest[:underscore]
+		optiFineType := rest[underscore+1:]
+		if !strings.EqualFold(mcVersion, minecraftVersion) {
+			continue
+		}
+		result = append(result, ModLoaderVersion{
+			Type:          ModLoaderOptifine,
+			LoaderVersion: mcVersion + "_" + optiFineType,
+			IsStable:      !isPreview,
+			// MetadataURL 指向 adloadx 引导页；安装时需再解析出 downloadx 直链
+			// （见 mod_loader_installer.go installOptifineFromInstallerJar）
+			MetadataURL:                 fmt.Sprintf(optiFineAdLoadURLFormat, fileName),
+			RequiresInstallerExtraction: true,
+		})
+	}
+	return result, nil
+}
+
 // GetModLoaderVersions 获取指定 Loader 类型在指定 Minecraft 版本下的可用版本列表。
 func GetModLoaderVersions(ctx context.Context, loaderType ModLoaderType, minecraftVersion string) ([]ModLoaderVersion, error) {
 	switch loaderType {
@@ -389,6 +461,8 @@ func GetModLoaderVersions(ctx context.Context, loaderType ModLoaderType, minecra
 		return GetNeoForgeVersions(ctx, minecraftVersion)
 	case ModLoaderForge:
 		return GetForgeVersions(ctx, minecraftVersion)
+	case ModLoaderOptifine:
+		return GetOptifineVersions(ctx, minecraftVersion)
 	default:
 		return []ModLoaderVersion{}, nil
 	}

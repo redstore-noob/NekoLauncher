@@ -1,5 +1,7 @@
 package launch
 
+import "time"
+
 // 本文件定义 internal/launch 对 internal/instance（C# GameInstanceStore /
 // GameInstanceLayoutResolver / GameVersionIsolation）的最小依赖接口。
 // 这四类实例管理功能由另一个工作流移植到 internal/instance；移植完成后由宿主
@@ -12,6 +14,8 @@ type GameInstanceSnapshot struct {
 	ErrorMessage       string
 	SelectedVersionId  string
 	MinecraftDirectory string
+	// VersionIds 已安装版本列表：显式版本启动（插件 API）用它校验版本存在性。
+	VersionIds []string
 	// SourcePath 实例来源路径（用于外部启动器实例识别与版本隔离解析）。
 	SourcePath string
 }
@@ -27,6 +31,23 @@ type ExternalInstanceInfo struct {
 // InstanceSnapshotProvider 宿主注入：返回当前选中的实例快照
 // （对应 C# GameInstanceStore.Current）。为 nil 时启动前置校验直接失败。
 var InstanceSnapshotProvider func() GameInstanceSnapshot
+
+// InstanceSnapshotWaiter 宿主注入：阻塞至快照离开加载态（或超时）后返回快照。
+// 对应 C# 启动流程对首次扫描完成的等待；为 nil 时回退 InstanceSnapshotProvider。
+var InstanceSnapshotWaiter func(timeout time.Duration) GameInstanceSnapshot
+
+// launchReadyWaitTimeout 启动前等待首次实例扫描完成的最长时长：
+// 扫描通常毫秒级完成，该上限只为极端慢盘兜底。
+const launchReadyWaitTimeout = 10 * time.Second
+
+// waitForInstanceSnapshot 供启动前置校验使用：优先等待存储就绪，
+// 钩子缺省时回退 currentInstanceSnapshot（未接线的"尚未就绪"视图）。
+func waitForInstanceSnapshot() GameInstanceSnapshot {
+	if InstanceSnapshotWaiter != nil {
+		return InstanceSnapshotWaiter(launchReadyWaitTimeout)
+	}
+	return currentInstanceSnapshot()
+}
 
 // ExternalInstanceResolver 宿主注入：解析实例来源路径是否为外部启动器实例
 // （对应 C# GameInstanceLayoutResolver.TryResolveExternalInstance）。

@@ -11,7 +11,7 @@ package bindings
 import (
 	"time"
 
-	"nyalauncher/internal/music"
+	"nekolauncher/internal/music"
 )
 
 // ---- 曲库 ----
@@ -91,30 +91,14 @@ func (a *MusicAPI) SeekPlayback(positionMs int64) {
 
 // ---- 播放状态 ----
 
-// GetPlaybackState 播放状态（Stopped / Playing / Paused）。
-func (a *MusicAPI) GetPlaybackState() music.PlaybackState { return music.Shared.State() }
-
 // GetCurrentTrack 当前曲目（无则 nil）。
 func (a *MusicAPI) GetCurrentTrack() *music.MusicTrack { return music.Shared.CurrentTrack() }
-
-// GetMusicLastError 最近一次播放失败原因。
-func (a *MusicAPI) GetMusicLastError() string { return music.Shared.LastError() }
 
 // GetPlaylist 播放列表。
 func (a *MusicAPI) GetPlaylist() []music.MusicTrack { return music.Shared.Playlist() }
 
 // SetPlaylist 设置播放列表（自动切歌 / 上下曲基于该列表）。
 func (a *MusicAPI) SetPlaylist(tracks []music.MusicTrack) { music.Shared.SetPlaylist(tracks) }
-
-// GetPlaybackPosition 当前播放位置（ms；由前端回传）。
-func (a *MusicAPI) GetPlaybackPosition() int64 {
-	return a.positionNs.Load() / int64(time.Millisecond)
-}
-
-// GetPlaybackDuration 当前曲目总时长（ms；由前端回传）。
-func (a *MusicAPI) GetPlaybackDuration() int64 {
-	return a.durationNs.Load() / int64(time.Millisecond)
-}
 
 // ---- 前端音频回传命令 ----
 

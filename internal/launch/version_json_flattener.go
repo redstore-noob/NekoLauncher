@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"nekolauncher/internal/tools"
 )
 
 // VersionFlattenResult 扁平化结果：是否发生了合并、被合并掉的依赖版本 id 列表。
@@ -105,12 +107,12 @@ func (versionJsonFlattenerNamespace) Flatten(
 	// 依赖目录里找不到 JAR（且实例也没有）时放弃扁平化，保持继承结构
 	versionDirectory := filepath.Join(minecraftDirectory, "versions", versionId)
 	targetJar := filepath.Join(versionDirectory, versionId+".jar")
-	if !fileExists(targetJar) {
+	if !tools.FileExists(targetJar) {
 		if jarProviderId == "" {
 			return nil, fmt.Errorf("无法扁平化 %s：继承链中没有任何版本声明客户端 JAR。", versionId)
 		}
 		sourceJar := filepath.Join(minecraftDirectory, "versions", jarProviderId, jarProviderId+".jar")
-		if !fileExists(sourceJar) {
+		if !tools.FileExists(sourceJar) {
 			return nil, fmt.Errorf(
 				"无法扁平化 %s：依赖版本 %s 的客户端 JAR 缺失（%s）。请先启动或修复该实例后重试。",
 				versionId, jarProviderId, sourceJar)
@@ -166,7 +168,7 @@ func (versionJsonFlattenerNamespace) Flatten(
 // 用于扁平化后判断依赖版本目录能否安全删除。
 func (versionJsonFlattenerNamespace) IsVersionReferenced(minecraftDirectory, versionId string) bool {
 	versionsDirectory := filepath.Join(minecraftDirectory, "versions")
-	if !directoryExists(versionsDirectory) {
+	if !tools.DirectoryExists(versionsDirectory) {
 		return false
 	}
 
@@ -184,7 +186,7 @@ func (versionJsonFlattenerNamespace) IsVersionReferenced(minecraftDirectory, ver
 		}
 
 		jsonPath := filepath.Join(versionsDirectory, id, id+".json")
-		if !fileExists(jsonPath) {
+		if !tools.FileExists(jsonPath) {
 			continue
 		}
 		data, err := os.ReadFile(jsonPath)
@@ -229,7 +231,7 @@ func loadFlattenChain(
 		}
 
 		jsonPath := versionJsonPath(minecraftDirectory, currentId)
-		if !fileExists(jsonPath) {
+		if !tools.FileExists(jsonPath) {
 			return nil, fmt.Errorf("找不到版本配置：%s", jsonPath)
 		}
 		data, err := os.ReadFile(jsonPath)
@@ -290,8 +292,10 @@ func mergeFlattenChain(requestedVersionId string, chain []versionChainEntry) (*o
 	}
 	merged.set("id", mustMarshalString(declaredId))
 
-	// assetIndex / javaVersion：对象整体沿链覆盖
-	for _, propertyName := range []string{"assetIndex", "javaVersion"} {
+	// assetIndex / javaVersion / logging：对象整体沿链覆盖。
+	// logging 必须保留：log4j 的配置声明只在原版 JSON 里，扁平化后实例不再有
+	// inheritsFrom，丢掉它控制台日志就会退回 log4j 默认配置。
+	for _, propertyName := range []string{"assetIndex", "javaVersion", "logging"} {
 		if value := lastChainValue(chain, propertyName); value != nil {
 			merged.set(propertyName, value)
 		}

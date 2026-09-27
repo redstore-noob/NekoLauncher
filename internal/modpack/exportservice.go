@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	"nyalauncher/internal/tools"
+	"nekolauncher/internal/tools"
 )
 
 // ModpackExportFormat 整合包导出格式。
@@ -32,6 +32,8 @@ const (
 	FormatModrinth ModpackExportFormat = iota
 	// FormatMultiMc MultiMC / PrismLauncher .zip：mmc-pack.json + instance.cfg + overrides。
 	FormatMultiMc
+	// FormatCurseForge CurseForge .zip：manifest.json（projectID/fileID 声明）+ overrides。
+	FormatCurseForge
 )
 
 // 内容分类常量（同时用作包内相对路径的顶层目录名）。
@@ -120,6 +122,9 @@ type ModpackExportOptions struct {
 	// ResolveModrinthLinks 是否把 mod 哈希提交到 Modrinth 换取直链（离线/失败时回退进 overrides）。
 	// Go 零值为 false；C# 默认 true——需要默认开启时使用 NewExportOptions 或显式置 true。
 	ResolveModrinthLinks bool
+	// CurseForgeAPIKey CurseForge 导出时的用户 API Key（指纹反查 projectID/fileID）；
+	// 为空时全部 mod 直接进 overrides，整合包仍然可用。
+	CurseForgeAPIKey string
 }
 
 // NewExportOptions 返回带 C# 默认值的导出参数。
@@ -194,7 +199,7 @@ func CollectContent(contentDirectory string) []ModpackContentItem {
 	}
 
 	// 根文件：options.txt
-	if fileExists(filepath.Join(contentDirectory, "options.txt")) {
+	if tools.FileExists(filepath.Join(contentDirectory, "options.txt")) {
 		add(CategoryRoot, "options.txt", "options.txt", false)
 	}
 
@@ -235,6 +240,11 @@ func CollectContent(contentDirectory string) []ModpackContentItem {
 		if err == nil {
 			for _, entry := range entries {
 				if !entry.IsDir() {
+					continue
+				}
+				// 启动器的临时目录（导入 .nya-import-*、回滚恢复 .nya-restore-*）
+				// 与存档同级：它们不是世界的存档，别打进整合包
+				if strings.HasPrefix(entry.Name(), ".") {
 					continue
 				}
 				relative, err := filepath.Rel(contentDirectory, filepath.Join(savesDirectory, entry.Name()))
@@ -327,7 +337,20 @@ func Export(
 	// Modrinth：mods 尝试按 sha1 匹配直链；未命中的留在 overrides
 	declaredByPath := map[string]ModrinthFileMatch{}
 	declaredFiles := 0
-	if options.Format == FormatModrinth && options.ResolveModrinthLinks {
+	// CurseForge：mods 按指纹匹配 files 声明（projectID/fileID）；未命中的留在 overrides
+	cfFilesByPath := map[string]curseForgeFileRef{}
+	var cfMatched []curseForgeFingerprintMatch
+	if options.Format == FormatCurseForge {
+		var resolveErr error
+		cfFilesByPath, cfMatched, resolveErr = resolveCurseForgeModRefs(ctx, options, contentDirectory, selected, &warnings, progress)
+		if resolveErr != nil {
+			if ctx.Err() != nil {
+				return result, ctx.Err()
+			}
+			return result, resolveErr
+		}
+		declaredFiles = len(cfFilesByPath)
+	} else if options.Format == FormatModrinth && options.ResolveModrinthLinks {
 		var modPaths []string
 		for _, item := range selected {
 			if item.Category == CategoryMods && !item.IsDirectory {
@@ -371,9 +394,9 @@ func Export(
 	}
 	// GUID 后缀防止并发导出到同一路径时相互截断临时文件
 	temporaryPath := fmt.Sprintf("%s.%s.nya-pack-tmp", outputPath, newModpackGUID())
-	defer func() { tryRemove(temporaryPath) }()
+	defer func() { tools.RemoveFileIfExists(temporaryPath) }()
 
-	if err := writeArchive(ctx, temporaryPath, options, packVersion, declaredByPath, payloadFiles, &totalOverrides, &warnings, phase, progress); err != nil {
+	if err := writeArchive(ctx, temporaryPath, options, packVersion, declaredByPath, cfFilesByPath, cfMatched, payloadFiles, &totalOverrides, &warnings, phase, progress); err != nil {
 		return result, err
 	}
 
@@ -398,19 +421,21 @@ type payloadEntry struct {
 	sourcePath  string
 }
 
-// writeArchive 构建压缩包主体：index / mmc-pack + instance.cfg → 图标 → overrides。
+// writeArchive 构建压缩包主体：index / manifest → 图标 → overrides。
 func writeArchive(
 	ctx context.Context,
 	temporaryPath string,
 	options ModpackExportOptions,
 	packVersion string,
 	declaredByPath map[string]ModrinthFileMatch,
+	cfFilesByPath map[string]curseForgeFileRef,
+	cfMatched []curseForgeFingerprintMatch,
 	payloadFiles []payloadEntry,
 	totalOverrides *int,
 	warnings *[]string,
 	phase string,
 	progress func(ModpackExportProgress),
-) error {
+) (err error) {
 	file, err := os.OpenFile(temporaryPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -418,9 +443,16 @@ func writeArchive(
 	defer file.Close()
 
 	archive := zip.NewWriter(file)
-	defer archive.Close()
+	// 中央目录在 Close 时才写：磁盘写满/配额不足只在这里暴露。错误必须带出去，
+	// 否则调用方会把截断的整合包改名成目标文件、报成功。
+	defer func() {
+		if closeErr := archive.Close(); err == nil {
+			err = closeErr
+		}
+	}()
 
-	if options.Format == FormatModrinth {
+	switch options.Format {
+	case FormatModrinth:
 		indexJSON, err := marshalModpackJSON(buildModrinthIndex(options, packVersion, declaredByPath))
 		if err != nil {
 			return err
@@ -428,7 +460,18 @@ func writeArchive(
 		if err := writeTextEntry(archive, "modrinth.index.json", indexJSON); err != nil {
 			return err
 		}
-	} else {
+	case FormatCurseForge:
+		manifestJSON, err := marshalModpackJSON(buildCurseForgeManifest(options, packVersion, cfFilesByPath))
+		if err != nil {
+			return err
+		}
+		if err := writeTextEntry(archive, "manifest.json", manifestJSON); err != nil {
+			return err
+		}
+		if err := writeTextEntry(archive, "modlist.html", buildCurseForgeModlist(cfMatched)); err != nil {
+			return err
+		}
+	default:
 		componentsJSON, err := marshalModpackJSON(buildMultiMcComponents(options, packVersion))
 		if err != nil {
 			return err
@@ -441,16 +484,23 @@ func writeArchive(
 		}
 	}
 
-	if strings.TrimSpace(options.IconPngPath) != "" && fileExists(options.IconPngPath) {
-		// Modrinth 规范不含图标：写入 overrides/icon.png（不干扰游戏）；
+	if strings.TrimSpace(options.IconPngPath) != "" && tools.FileExists(options.IconPngPath) {
+		// Modrinth/CurseForge 规范不含图标：写入 overrides/icon.png（不干扰游戏）；
 		// MultiMC 的图标约定为包根 icon.png
 		iconEntry := "icon.png"
-		if options.Format == FormatModrinth {
+		if options.Format != FormatMultiMc {
 			iconEntry = "overrides/icon.png"
 		}
 		if err := copyFileEntry(ctx, archive, iconEntry, options.IconPngPath); err != nil {
 			return err
 		}
+	}
+
+	// 实例文件在包内的根目录：Modrinth 用 overrides/（mrpack 规范），
+	// MultiMC/Prism 用 .minecraft/（其导入器与多实例布局都按此查找）。
+	overrideRoot := "overrides"
+	if options.Format == FormatMultiMc {
+		overrideRoot = ".minecraft"
 	}
 
 	for index, payload := range payloadFiles {
@@ -465,9 +515,15 @@ func writeArchive(
 		if _, declared := declaredByPath[normalized]; declared {
 			continue // 已声明为 Modrinth 直链文件，不再重复进 overrides
 		}
+		if _, declaredCF := cfFilesByPath[strings.ToLower(normalized)]; declaredCF {
+			continue // 已声明为 CurseForge files 条目，不再重复进 overrides
+		}
 
-		// 两种格式的 overrides/ 语义一致（mrpack 规范 / MultiMC 导入约定）
-		entryPath := "overrides/" + normalized
+		// overrides/ 是 mrpack 规范的约定；MultiMC/Prism 的多实例包把游戏文件
+		// 放在 .minecraft/ 下。两者不能混用：本仓库自己的外部实例解析
+		// （instance.resolveExternalContentDirectory）认的是 minecraft/.minecraft，
+		// 把内容塞进 overrides/ 只会让解压后的实例"看起来有 mods、实际一个都读不到"。
+		entryPath := filepath.ToSlash(filepath.Join(overrideRoot, payload.archivePath))
 		if err := copyFileEntry(ctx, archive, entryPath, payload.sourcePath); err != nil {
 			if ctx.Err() != nil {
 				return err
@@ -621,7 +677,7 @@ func buildMultiMcComponents(options ModpackExportOptions, packVersion string) mu
 	components := []multiMcComponent{{
 		CachedName:    strPtr("Minecraft"),
 		CachedVersion: &minecraft,
-		Important:     boolPtr(true),
+		Important:     tools.BoolPtr(true),
 		Uid:           "net.minecraft",
 		Version:       minecraft,
 	}}
@@ -752,8 +808,7 @@ func marshalModpackJSON(value any) (string, error) {
 	return strings.TrimRight(buffer.String(), "\n"), nil
 }
 
-func strPtr(value string) *string    { return &value }
-func boolPtr(value bool) *bool       { return &value }
+func strPtr(value string) *string { return &value }
 
 // ---------------------------------------------------------------------------
 // 文件/哈希工具
@@ -875,19 +930,6 @@ func directorySize(directory string) int64 {
 		}
 	}
 	return total
-}
-
-// tryRemove 删除文件；失败可忽略（残留的临时包可被下次导出覆盖）。
-func tryRemove(path string) {
-	if info, err := os.Stat(path); err == nil && !info.IsDir() {
-		_ = os.Remove(path)
-	}
-}
-
-// fileExists 判断常规文件是否存在。
-func fileExists(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.Mode().IsRegular()
 }
 
 // newModpackGUID 生成不带连字符的小写 GUID。

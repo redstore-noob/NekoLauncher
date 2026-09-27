@@ -5,6 +5,10 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
+
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/tools"
 )
 
 // isProcessRunning 判断当前是否有运行中的游戏进程。
@@ -34,12 +38,18 @@ func (s *GameLaunchService) TryStopGame() LaunchResult {
 	s.gate.Unlock()
 
 	s.appendLog("已请求停止游戏进程…", "LAUNCH")
-	if err := process.Process.Kill(); err != nil {
+	// 优先整棵进程树强杀：Java 启动器/崩溃上报等子进程不会被
+	// 单独 Kill 主进程波及，只杀主进程会留下孤儿 Java 进程。
+	// taskkill 不可用（非 Windows/命令失败）时退回主进程 Kill。
+	killErr := error(nil)
+	if forceKillWithTaskkill(process.Process.Pid) {
+		s.appendLog("已通过 taskkill 结束游戏进程树。", "LAUNCH")
+	} else if killErr = process.Process.Kill(); killErr != nil {
 		s.gate.Lock()
 		s.stopRequested = false
 		s.gate.Unlock()
-		s.appendLog(fmt.Sprintf("停止游戏进程失败：%v", err), "LAUNCH")
-		return FailedLaunch(fmt.Sprintf("停止游戏失败：%v", err))
+		s.appendLog(fmt.Sprintf("停止游戏进程失败：%v", killErr), "LAUNCH")
+		return FailedLaunch(fmt.Sprintf("停止游戏失败：%v", killErr))
 	}
 
 	// Kill 成功不代表进程必然退出（显卡驱动挂起、安全软件拦截都会让
@@ -48,7 +58,13 @@ func (s *GameLaunchService) TryStopGame() LaunchResult {
 }
 
 // observeProcess 等待游戏退出并发布收尾快照（对应 C# CompleteProcessExit）。
-func (s *GameLaunchService) observeProcess(result *MinecraftLaunchResult, launchId int64) {
+// minecraftDirectory 与 startedAt 用于退出时结算本次游玩时长（累计进实例档案）。
+func (s *GameLaunchService) observeProcess(
+	result *MinecraftLaunchResult,
+	launchId int64,
+	minecraftDirectory string,
+	startedAt time.Time,
+) {
 	go func() {
 		exitErr, ok := <-result.Exit()
 		if !ok {
@@ -65,6 +81,14 @@ func (s *GameLaunchService) observeProcess(result *MinecraftLaunchResult, launch
 		s.gate.Unlock()
 		if !sameLaunch {
 			return
+		}
+
+		// 结算游玩时长：手动停止/崩溃退出同样计入（玩家实际游玩了这么久）
+		exitedAt := time.Now()
+		if seconds := int64(exitedAt.Sub(startedAt).Seconds()); seconds > 0 {
+			if config.AddPlaytime(minecraftDirectory, result.VersionId, seconds, exitedAt) {
+				s.appendLog(fmt.Sprintf("本次游玩时长已累计：%s。", formatPlaytime(seconds)), "LAUNCH")
+			}
 		}
 
 		exitCode := 0
@@ -117,6 +141,15 @@ func asExitError(err error, target **exec.ExitError) bool {
 	return false
 }
 
+// formatPlaytime 时长的人话格式：不足 1 小时按"X 分钟"，超过则"X 小时 Y 分钟"。
+func formatPlaytime(seconds int64) string {
+	minutes := seconds / 60
+	if minutes < 60 {
+		return fmt.Sprintf("%d 分钟", minutes)
+	}
+	return fmt.Sprintf("%d 小时 %d 分钟", minutes/60, minutes%60)
+}
+
 // forceKillWithTaskkill taskkill 强制结束整棵进程树（/T /F）。返回 false 表示
 // 命令执行失败；无论结果如何，调用方都应继续观察进程的实际退出状态。
 func forceKillWithTaskkill(processId int) bool {
@@ -124,6 +157,8 @@ func forceKillWithTaskkill(processId int) bool {
 		return false
 	}
 	command := exec.Command("taskkill.exe", "/PID", fmt.Sprintf("%d", processId), "/T", "/F")
+	// taskkill 是控制台程序，禁止其闪现 cmd 窗口
+	tools.HideProcessWindow(command)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return false

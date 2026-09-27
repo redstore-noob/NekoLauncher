@@ -3,16 +3,24 @@ package bindings
 // MonitorAPI / ServerAPI / SystemAPI：内存监控、服务器状态查询、版本与日志。
 
 import (
-	"nyalauncher/internal/info"
-	"nyalauncher/internal/logs"
-	"nyalauncher/internal/monitoring"
-	"nyalauncher/internal/network"
+	"nekolauncher/internal/info"
+	"nekolauncher/internal/logs"
+	"nekolauncher/internal/monitoring"
+	"nekolauncher/internal/network"
 )
 
 // ---- MonitorAPI ----
 
 // GetMemorySnapshot 内存快照：启动器 / JVM 内存与 Java 进程数。
 func (a *MonitorAPI) GetMemorySnapshot() monitoring.MemorySnapshot { return monitoring.Snapshot() }
+
+// GetSystemUsage 全系统占用：CPU / GPU / 内存百分比（性能监控小组件使用）。
+func (a *MonitorAPI) GetSystemUsage() monitoring.SystemUsage { return monitoring.SystemUsageNow() }
+
+// GetDiskUsage 指定路径所在分区的磁盘占用（磁盘空间小组件使用）。
+func (a *MonitorAPI) GetDiskUsage(path string) (monitoring.DiskUsage, error) {
+	return monitoring.UsageOf(path)
+}
 
 // ---- ServerAPI ----
 
@@ -21,14 +29,10 @@ func (a *ServerAPI) PingServer(host string, port int) (network.MinecraftServerSt
 	return network.Ping(host, port)
 }
 
-// ParseServerAddress 解析 "host" / "host:port" 形式的服务器地址。
-func (a *ServerAPI) ParseServerAddress(input string) (string, int, error) {
-	return network.ParseAddress(input)
-}
-
-// GetUnreachableStatus 构造不可达状态（Motd 为原因）。
-func (a *ServerAPI) GetUnreachableStatus(reason string) network.MinecraftServerStatus {
-	return network.Unreachable(reason)
+// ParseServerAddress 解析 "host" / "host:port" / "[ipv6]:port" 形式的服务器地址。
+// 返回结构体而非 (host, port, err)：Wails 桥只支持 1 个返回值 + error。
+func (a *ServerAPI) ParseServerAddress(input string) (network.ServerAddress, error) {
+	return network.ParseServerAddress(input)
 }
 
 // ---- SystemAPI ----
@@ -36,7 +40,7 @@ func (a *ServerAPI) GetUnreachableStatus(reason string) network.MinecraftServerS
 // GetAppVersion 纯版本字符串，如 "1.0.0-preview4"。
 func (a *SystemAPI) GetAppVersion() string { return info.Version() }
 
-// GetFormattedVersion 格式化版本号，如 "NyaLauncher版本号:1.0.0-preview4"。
+// GetFormattedVersion 格式化版本号，如 "NekoLauncher版本号:1.0.0-preview4"。
 func (a *SystemAPI) GetFormattedVersion() string { return info.FormatVersionString() }
 
 // AddLog 写入一条日志；type 为 "ERROR" 时同时返回 error 语义（false）。
@@ -49,3 +53,11 @@ func (a *SystemAPI) WriteLog(typ, infoText string) bool { return logs.Write(typ,
 
 // ClearLogs 清空日志目录，返回删除的文件数。
 func (a *SystemAPI) ClearLogs() int { return logs.ClearLogs() }
+
+// GetCurrentLog 读取本次运行的日志全文（运行日志查看器使用）。
+func (a *SystemAPI) GetCurrentLog() (string, error) { return logs.ReadCurrent() }
+
+// ExportCurrentLog 把本次运行的日志导出到指定路径。
+func (a *SystemAPI) ExportCurrentLog(destination string) error {
+	return logs.ExportCurrent(destination)
+}

@@ -10,6 +10,9 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/tools"
 )
 
 // JavaRuntimeLocator Java 运行时定位器的抽象接口。
@@ -20,7 +23,7 @@ type JavaRuntimeLocator interface {
 	// configuredPath 用户显式配置的 java 路径（最高优先）；
 	// requiredMajorVersion Minecraft 版本要求的最低 Java 主版本；为 nil 时不校验版本；
 	// runtimeDirectory Minecraft runtime 根目录（会递归扫描其中的 java）；
-	// 为空时读取 NYALAUNCHER_JAVA_RUNTIME。
+	// 为空时读取 NEKOLAUNCHER_JAVA_RUNTIME。
 	FindJavaExecutable(configuredPath string, requiredMajorVersion *int, runtimeDirectory string) (string, error)
 	// FindExactMatchJava 在不进行"最低版本"回退的前提下，查找主版本精确匹配
 	// requiredMajorVersion 的 Java。找不到时返回空串（不报错），
@@ -38,7 +41,7 @@ type javaCandidate struct {
 }
 
 // DefaultJavaRuntimeLocator 默认的 Java 运行时定位器实现。
-// 按优先级依次从"显式配置、NYALAUNCHER_JAVA、Minecraft runtime、JAVA_HOME、PATH"
+// 按优先级依次从"显式配置、NEKOLAUNCHER_JAVA、Minecraft runtime、JAVA_HOME、PATH"
 // 寻找 java，在要求版本时通过执行 java -version 探测版本，并按以下优先级选择：
 //  1. 主版本精确匹配 requiredMajorVersion（避免用 Java 25 启动要求 Java 17 的旧加载器，
 //     如 Forge 1.20.x 在 Java 21+ 上会因 JPMS 模块冲突崩溃）；
@@ -73,7 +76,7 @@ func (DefaultJavaRuntimeLocator) FindJavaExecutable(
 		// 展开环境变量（%VAR%/$VAR），去重（同一路径只处理一次），并确认文件存在
 		expandedPath := os.ExpandEnv(candidate.Path)
 		key := strings.ToLower(expandedPath)
-		if visitedPaths[key] || !fileExists(expandedPath) {
+		if visitedPaths[key] || !tools.FileExists(expandedPath) {
 			continue
 		}
 		visitedPaths[key] = true
@@ -104,7 +107,7 @@ func (DefaultJavaRuntimeLocator) FindJavaExecutable(
 			requirement = fmt.Sprintf("该 Minecraft 版本至少需要 Java %d。", *requiredMajorVersion)
 		}
 		return "", newLaunchError(requirement +
-			"未找到可用的 Java 运行时。请在启动器下载页安装 Java，或配置 JAVA_HOME / NYALAUNCHER_JAVA。")
+			"未找到可用的 Java 运行时。请在启动器下载页安装 Java，或配置 JAVA_HOME / NEKOLAUNCHER_JAVA。")
 	}
 
 	requiredVersion := *requiredMajorVersion
@@ -148,7 +151,7 @@ func (DefaultJavaRuntimeLocator) FindJavaExecutable(
 		versionsText = append(versionsText, fmt.Sprintf("%d", version))
 	}
 	return "", newLaunchError(fmt.Sprintf(
-		"该 Minecraft 版本至少需要 Java %d。 已检测到 Java %s。 请在启动器下载页安装兼容的 Java 运行时，或配置 JAVA_HOME / NYALAUNCHER_JAVA。",
+		"该 Minecraft 版本至少需要 Java %d。 已检测到 Java %s。 请在启动器下载页安装兼容的 Java 运行时，或配置 JAVA_HOME / NEKOLAUNCHER_JAVA。",
 		requiredVersion, strings.Join(versionsText, "、")))
 }
 
@@ -166,7 +169,7 @@ func (DefaultJavaRuntimeLocator) FindExactMatchJava(
 		}
 		expandedPath := os.ExpandEnv(candidate.Path)
 		key := strings.ToLower(expandedPath)
-		if visitedPaths[key] || !fileExists(expandedPath) {
+		if visitedPaths[key] || !tools.FileExists(expandedPath) {
 			continue
 		}
 		visitedPaths[key] = true
@@ -201,7 +204,7 @@ func (DefaultJavaRuntimeLocator) FindAllJavaExecutables(runtimeDirectory string)
 		}
 		expandedPath := os.ExpandEnv(candidate.Path)
 		key := strings.ToLower(expandedPath)
-		if visitedPaths[key] || !fileExists(expandedPath) {
+		if visitedPaths[key] || !tools.FileExists(expandedPath) {
 			continue
 		}
 		visitedPaths[key] = true
@@ -221,18 +224,29 @@ func buildJavaCandidates(configuredPath, runtimeDirectory string) []javaCandidat
 		candidates = append(candidates, javaCandidate{Path: configuredPath, IsPreferred: true})
 	}
 
-	// 2. NYALAUNCHER_JAVA 环境变量
-	candidates = append(candidates, javaCandidate{Path: os.Getenv("NYALAUNCHER_JAVA"), IsPreferred: true})
+	// 2. NEKOLAUNCHER_JAVA 环境变量
+	candidates = append(candidates, javaCandidate{Path: os.Getenv("NEKOLAUNCHER_JAVA"), IsPreferred: true})
 
-	// 3. Minecraft runtime 目录：优先使用参数，其次读取 NYALAUNCHER_JAVA_RUNTIME，
+	// 3. 启动器中已保存的全部 Java（设置页手动添加 / 自动检索的结果）。
+	//    标记为非首选：不抢占显式配置，但参与"精确主版本匹配"与
+	//    "满足最低要求的最低版本"挑选——否则主 Java 版本不合适时，
+	//    列表里明明存着的合适 Java 永远不会被选中。
+	for _, item := range config.GetJavaPaths() {
+		if strings.TrimSpace(item.JavaPath) == "" {
+			continue
+		}
+		candidates = append(candidates, javaCandidate{Path: item.JavaPath})
+	}
+
+	// 4. Minecraft runtime 目录：优先使用参数，其次读取 NEKOLAUNCHER_JAVA_RUNTIME，
 	//    递归扫描其中所有名为 java/java.exe 的可执行文件
 	configuredRuntime := runtimeDirectory
 	if strings.TrimSpace(configuredRuntime) == "" {
-		configuredRuntime = os.Getenv("NYALAUNCHER_JAVA_RUNTIME")
+		configuredRuntime = os.Getenv("NEKOLAUNCHER_JAVA_RUNTIME")
 	}
 	candidates = append(candidates, enumerateRuntimeJavaExecutables(configuredRuntime)...)
 
-	// 4. JAVA_HOME/bin/java
+	// 5. JAVA_HOME/bin/java
 	javaHome := os.Getenv("JAVA_HOME")
 	if strings.TrimSpace(javaHome) != "" {
 		candidates = append(candidates, javaCandidate{
@@ -240,7 +254,7 @@ func buildJavaCandidates(configuredPath, runtimeDirectory string) []javaCandidat
 		})
 	}
 
-	// 5. PATH 环境变量中的每个目录
+	// 6. PATH 环境变量中的每个目录
 	pathValue := os.Getenv("PATH")
 	if strings.TrimSpace(pathValue) != "" {
 		for _, directory := range filepath.SplitList(pathValue) {
@@ -273,7 +287,7 @@ func enumerateRuntimeJavaExecutables(runtimeDirectory string) []javaCandidate {
 	}
 	// 规范化：展开环境变量、去掉首尾引号
 	expanded := os.ExpandEnv(strings.Trim(strings.TrimSpace(runtimeDirectory), `"`))
-	if !directoryExists(expanded) {
+	if !tools.DirectoryExists(expanded) {
 		return nil
 	}
 	var candidates []javaCandidate
@@ -307,6 +321,8 @@ func tryGetJavaMajorVersion(javaExecutable string) *int {
 	var output strings.Builder
 	command.Stdout = &output
 	command.Stderr = &output
+	// java.exe 是控制台程序，探测时禁止闪现 cmd 窗口
+	tools.HideProcessWindow(command)
 	if err := command.Run(); err != nil {
 		// java -version 通常输出到 stderr 且退出码可能非 0，但仍会打印版本；
 		// 输出为空才算探测失败

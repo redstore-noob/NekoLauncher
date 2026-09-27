@@ -13,8 +13,8 @@ import (
 	"runtime"
 	"strings"
 
-	"nyalauncher/internal/config"
-	"nyalauncher/internal/tools"
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/tools"
 )
 
 // tempSuffix 临时文件后缀：原子写入与仅大小写改名共用。
@@ -66,7 +66,7 @@ func RenameVersion(ctx context.Context, minecraftDirectory, oldVersionID, reques
 	}
 
 	sourceJSONPath := filepath.Join(sourceDirectory, oldVersionID+".json")
-	if !fileExists(sourceJSONPath) {
+	if !tools.FileExists(sourceJSONPath) {
 		return "", fmt.Errorf("原版本 JSON 不存在：%s", sourceJSONPath)
 	}
 
@@ -98,10 +98,24 @@ func validateRenameTargets(sourceDirectory, targetDirectory, newVersionID string
 	}
 
 	targetOccupied := pathExists(targetDirectory)
-	if targetOccupied && !tools.PathsEqual(sourceDirectory, targetDirectory) {
+	// 只改大小写时目标目录当然"存在"（就是自己）：这里必须用折叠大小写的比较，
+	// tools.PathsEqual 在非 Windows 上是区分大小写的，会把这种情况下判成"名字已存在"，
+	// 于是 Linux/macOS 上永远改不了只差大小写的版本名。
+	if targetOccupied && !renameSameTarget(sourceDirectory, targetDirectory) {
 		return fmt.Errorf("版本名称“%s”已存在。", newVersionID)
 	}
 	return nil
+}
+
+// renameSameTarget 两个路径是否指向同一个目标（忽略大小写与末尾分隔符）。
+func renameSameTarget(source, target string) bool {
+	normalized := func(path string) string {
+		trimmed := strings.TrimRight(filepath.Clean(path), `\/`)
+
+		return strings.ToLower(trimmed)
+	}
+
+	return normalized(source) == normalized(target)
 }
 
 // applyJSONMutations 改名成功后修补 json/jar 文件名与全部引用，最后迁移实例配置。
@@ -129,7 +143,10 @@ func applyJSONMutations(
 		}
 		destination := patch.FilePath
 		if samePathOnDisk(patch.FilePath, sourceJSONPath) {
-			destination = renamedJSONPath
+			// 目录已先一步改名：源 JSON 此刻位于 targetDirectory 下且仍是旧文件名。
+			// 修补内容必须写到旧文件名上，否则末尾 os.Rename(旧名→新名) 会用
+			// 未修补的原始 JSON（id 仍为旧值）覆盖掉刚写入的补丁。
+			destination = filepath.Join(targetDirectory, oldVersionID+".json")
 		}
 		if text, err := os.ReadFile(destination); err == nil {
 			content := string(text)
@@ -151,7 +168,7 @@ func applyJSONMutations(
 		return err
 	}
 	sourceJarPath := filepath.Join(targetDirectory, oldVersionID+".jar")
-	if fileExists(sourceJarPath) {
+	if tools.FileExists(sourceJarPath) {
 		if err := os.Rename(sourceJarPath, filepath.Join(targetDirectory, newVersionID+".jar")); err != nil {
 			restoreBackups(backups)
 			return err
@@ -204,7 +221,7 @@ func readMutations(
 
 		directoryName := entry.Name()
 		jsonPath := filepath.Join(versionsDirectory, directoryName, directoryName+".json")
-		if !fileExists(jsonPath) {
+		if !tools.FileExists(jsonPath) {
 			continue
 		}
 
@@ -219,10 +236,13 @@ func readMutations(
 		}
 	}
 
-	// 目标版本 JSON 必须至少产生一条变更（id 字段），否则说明读取失败
+	// 目标版本 JSON 必须至少产生一条变更（id 字段），否则说明读取失败。
+	// 同样用折叠大小写的比较：只改大小写时 patch.FilePath 与 renamedJSONPath
+	// 只在大小写上不同，PathsEqual 在 Linux/macOS 上会判成"没匹配上"，
+	// 于是改名被误报成"无法读取所选版本 JSON"。
 	renamedPatched := false
 	for _, patch := range patches {
-		if tools.PathsEqual(patch.FilePath, renamedJSONPath) {
+		if renameSameTarget(patch.FilePath, renamedJSONPath) {
 			renamedPatched = true
 			break
 		}
@@ -252,7 +272,11 @@ func tryParseJSONObject(path string) (map[string]any, error) {
 func collectJSONChanges(root map[string]any, jsonPath, renamedJSONPath, oldVersionID, newVersionID string) *jsonPatch {
 	modified := false
 
-	if tools.PathsEqual(jsonPath, renamedJSONPath) {
+	// 判定"该 JSON 就是重命名后的那份"必须忽略大小写：
+	// tools.PathsEqual 在 Linux（大小写敏感文件系统）上对仅大小写不同的
+	// 路径返回 false，会导致仅大小写改名时 id 补丁不被收集。
+	// 两个路径都由 versions 目录 + 版本 ID 拼出，EqualFold 即可。
+	if strings.EqualFold(filepath.Clean(jsonPath), filepath.Clean(renamedJSONPath)) {
 		root["id"] = newVersionID
 		modified = true
 	}
@@ -374,7 +398,7 @@ func tryRollbackDirectory(targetDirectory, sourceDirectory, oldVersionID, newVer
 func moveBackIfRenamed(directory, newVersionID, oldVersionID, extension string) {
 	renamedPath := filepath.Join(directory, newVersionID+extension)
 	originalPath := filepath.Join(directory, oldVersionID+extension)
-	if fileExists(renamedPath) && !pathExists(originalPath) {
+	if tools.FileExists(renamedPath) && !pathExists(originalPath) {
 		_ = os.Rename(renamedPath, originalPath)
 	}
 }

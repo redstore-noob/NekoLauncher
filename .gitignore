@@ -27,6 +27,14 @@ debug/
 frontend-vue-backup/node_modules/
 frontend-vue-backup/dist/
 frontend-vue-backup/package.json.md5
-/build/
-/build/
+# 注意：不要整目录忽略 /build/ —— 里面的 appicon.png 与 windows/ 清单是
+# wails build 的必需输入，忽略掉会让 CI/新克隆构建出默认图标。
 /frontend/wailsjs/
+
+# 本地 Go 构建缓存（沙箱/CI 用 GOCACHE 指到工作区时产生）
+/.gocache/
+/.gomodcache/
+
+# NekoSolo 安装器构建产物
+NekoSolo/NekoSolo.Installer/bin/
+NekoSolo/NekoSolo.Installer/obj/

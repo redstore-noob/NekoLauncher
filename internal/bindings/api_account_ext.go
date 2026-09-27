@@ -12,16 +12,22 @@ import (
 // errNoLoginInProgress 当前没有进行中的微软登录。
 var errNoLoginInProgress = errors.New("no microsoft login in progress")
 
+// microsoftLoginHandle 一次登录的取消句柄包装；指针身份用于 done 时
+// 判断存储的句柄是否仍属于本次登录（context.CancelFunc 是函数值不可比较）。
+type microsoftLoginHandle struct {
+	cancel context.CancelFunc
+}
+
 // CancelMicrosoftLogin 取消进行中的微软设备码登录（中断后台轮询）。
 // 无进行中的登录时返回错误，前端可忽略。
 func (a *AccountAPI) CancelMicrosoftLogin() error {
 	a.loginMu.Lock()
-	cancel := a.loginCancel
+	handle := a.loginCancel
 	a.loginMu.Unlock()
-	if cancel == nil {
+	if handle == nil {
 		return errNoLoginInProgress
 	}
-	cancel()
+	handle.cancel()
 	return nil
 }
 
@@ -29,17 +35,21 @@ func (a *AccountAPI) CancelMicrosoftLogin() error {
 // 返回的 done 需在登录结束时调用以清空句柄。
 func (a *AccountAPI) beginMicrosoftLogin() (context.Context, func()) {
 	ctx, cancel := context.WithCancel(callCtx(a.ctx))
+	handle := &microsoftLoginHandle{cancel: cancel}
 	a.loginMu.Lock()
 	if a.loginCancel != nil {
-		a.loginCancel()
+		a.loginCancel.cancel()
 	}
-	a.loginCancel = cancel
+	a.loginCancel = handle
 	a.loginMu.Unlock()
 	done := func() {
 		cancel()
 		a.loginMu.Lock()
-		// 若期间已有新登录覆盖了句柄，这里置 nil 无害（新登录用自己的 cancel）。
-		a.loginCancel = nil
+		// 仅当存储的句柄仍是本次登录时才清空：
+		// 期间若已有新登录覆盖了句柄，不能把新登录的取消入口置空。
+		if a.loginCancel == handle {
+			a.loginCancel = nil
+		}
 		a.loginMu.Unlock()
 	}
 	return ctx, done

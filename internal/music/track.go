@@ -10,8 +10,11 @@ import (
 )
 
 // SupportedExtensions 支持的音频文件扩展名。
+// 只收 WebView 能解码的容器（播放走 /localfile + <audio>）：WMA 在
+// Chromium/WebKit 上都解不了，收进来只会让用户看到"能点却永远播不出声"的曲目，
+// 因此刻意排除。新增格式时记得同步 bindings 的 audioExtWhitelist。
 var SupportedExtensions = []string{
-	".mp3", ".wav", ".ogg", ".flac", ".aac", ".wma", ".m4a", ".opus",
+	".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".opus",
 }
 
 // MusicTrack 音乐文件元数据。

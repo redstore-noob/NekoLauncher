@@ -46,50 +46,44 @@ func (p ModrinthProject) FollowsDisplay() string {
 	return fmt.Sprintf("%d ⭐", p.Follows)
 }
 
-// TypeDisplay 项目类型的中文显示名。
+// TypeDisplay 项目类型的中文显示名（语义见 projecttype.go，与 CurseForge 共用）。
 func (p ModrinthProject) TypeDisplay() string {
-	switch p.ProjectType {
-	case "mod":
-		return "Mod"
-	case "modpack":
-		return "整合包"
-	case "shader":
-		return "光影包"
-	case "resourcepack":
-		return "材质包"
-	default:
-		return p.ProjectType
-	}
+	return ProjectTypeDisplay(p.ProjectType)
 }
 
 // TypeIcon 项目类型对应图标。
 func (p ModrinthProject) TypeIcon() string {
-	switch p.ProjectType {
-	case "mod":
-		return "⬜"
-	case "modpack":
-		return "📦"
-	case "shader":
-		return "☀️"
-	case "resourcepack":
-		return "🎨"
-	default:
-		return "📄"
-	}
+	return ProjectTypeIcon(p.ProjectType)
 }
 
 // ModrinthVersion Modrinth API 返回的 Mod 版本条目。
 type ModrinthVersion struct {
-	ID            string                `json:"id"`
-	ProjectID     string                `json:"project_id"`
-	Name          string                `json:"name"`
-	VersionNumber string                `json:"version_number"`
-	Changelog     *string               `json:"changelog"`
-	GameVersions  []string              `json:"game_versions"`
-	Loaders       []string              `json:"loaders"`
-	DatePublished string                `json:"date_published"`
-	Files         []ModrinthVersionFile `json:"files"`
-	Dependencies  []ModrinthDependency  `json:"dependencies"`
+	ID            string   `json:"id"`
+	ProjectID     string   `json:"project_id"`
+	Name          string   `json:"name"`
+	VersionNumber string   `json:"version_number"`
+	Changelog     *string  `json:"changelog"`
+	GameVersions  []string `json:"game_versions"`
+	Loaders       []string `json:"loaders"`
+	DatePublished string   `json:"date_published"`
+	// VersionType 发布类型：release / beta / alpha（接口字段 version_type）。
+	VersionType  string                `json:"version_type"`
+	Files        []ModrinthVersionFile `json:"files"`
+	Dependencies []ModrinthDependency  `json:"dependencies"`
+}
+
+// VersionTypeDisplay 发布类型中文名（与 CurseForge 的 ReleaseTypeDisplay 同口径）。
+func (v *ModrinthVersion) VersionTypeDisplay() string {
+	switch v.VersionType {
+	case "release":
+		return "正式版"
+	case "beta":
+		return "测试版"
+	case "alpha":
+		return "内测版"
+	default:
+		return ""
+	}
 }
 
 // PrimaryFile 主文件：优先 primary 标记，否则取第一个。
@@ -179,6 +173,13 @@ type ModrinthVersionFile struct {
 	Filename string `json:"filename"`
 	Size     int64  `json:"size"`
 	Primary  bool   `json:"primary"`
+	// Hashes 哈希表（sha1 / sha512），下载后校验与将来的更新检测都用得上。
+	Hashes map[string]string `json:"hashes"`
+}
+
+// SHA1 返回文件的 SHA-1（小写），没有则返回空串。
+func (f ModrinthVersionFile) SHA1() string {
+	return strings.ToLower(strings.TrimSpace(f.Hashes["sha1"]))
 }
 
 // SizeDisplay 格式化文件大小。

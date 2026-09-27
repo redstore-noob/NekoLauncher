@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"nekolauncher/internal/tools"
 )
 
 // MinecraftVersionProfile 合并继承链后的最终启动档案
@@ -26,6 +28,12 @@ type MinecraftVersionProfile struct {
 	ClientJarVersionId string
 	// AssetsId 资源索引 id。
 	AssetsId string
+	// LoggingArgument 版本 JSON 的 logging.client.argument 模板
+	// （原版为 -Dlog4j.configurationFile=${path}）；空表示该版本没有 logging 段。
+	LoggingArgument string
+	// LoggingFileId logging.client.file.id（log4j 配置文件名，如 client-1.12.xml）。
+	// 落盘位置固定为 assets/log_configs/<id>，与官方启动器一致。
+	LoggingFileId string
 	// VersionType 版本类型（release / snapshot / …）。
 	VersionType string
 	// RequiredJavaMajorVersion 版本要求的最低 Java 主版本；nil 表示未声明。
@@ -80,7 +88,7 @@ func (MinecraftVersionProfileLoader) Load(
 		}
 
 		jsonPath := versionJsonPath(minecraftDirectory, currentId)
-		if !fileExists(jsonPath) {
+		if !tools.FileExists(jsonPath) {
 			return nil, newLaunchError("找不到版本配置：" + jsonPath)
 		}
 
@@ -115,6 +123,7 @@ func (MinecraftVersionProfileLoader) Load(
 func mergeProfiles(requestedVersionId string, chain []versionChainEntry) (*MinecraftVersionProfile, error) {
 	var mainClass, clientJarVersionId, assetsId, versionType string
 	var legacyArguments, sourceId string
+	var loggingArgument, loggingFileId string
 	var javaMajorVersion *int
 	var jvmArguments, gameArguments, libraries []json.RawMessage
 	libraryIndexes := map[string]int{}
@@ -154,6 +163,26 @@ func mergeProfiles(requestedVersionId string, chain []versionChainEntry) (*Minec
 			if json.Unmarshal(javaVersionRaw, &javaVersion) == nil && javaVersion.MajorVersion != nil {
 				parsed := *javaVersion.MajorVersion
 				javaMajorVersion = &parsed
+			}
+		}
+
+		// logging.client：log4j2 配置（argument 模板 + 文件名），子级覆盖父级
+		if loggingRaw, ok := root["logging"]; ok {
+			var logging struct {
+				Client *struct {
+					Argument string `json:"argument"`
+					File     *struct {
+						ID string `json:"id"`
+					} `json:"file"`
+				} `json:"client"`
+			}
+			if json.Unmarshal(loggingRaw, &logging) == nil && logging.Client != nil {
+				if value := strings.TrimSpace(logging.Client.Argument); value != "" {
+					loggingArgument = value
+				}
+				if logging.Client.File != nil && strings.TrimSpace(logging.Client.File.ID) != "" {
+					loggingFileId = strings.TrimSpace(logging.Client.File.ID)
+				}
 			}
 		}
 
@@ -215,6 +244,8 @@ func mergeProfiles(requestedVersionId string, chain []versionChainEntry) (*Minec
 		JvmArguments:             jvmArguments,
 		GameArguments:            gameArguments,
 		Libraries:                libraries,
+		LoggingArgument:          loggingArgument,
+		LoggingFileId:            loggingFileId,
 	}
 	// loader JSON 未声明 id 时回退到请求的实例名，避免沿用父（原版）版本的 id
 	if strings.TrimSpace(sourceId) == "" {

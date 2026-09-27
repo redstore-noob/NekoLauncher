@@ -1,5 +1,6 @@
-// 存档的导出、备份与删除操作。移植自 NyaLauncher.Core/Content/GameSaveService.cs。
-// 存档在磁盘上是一个目录，导出/备份都会将该目录打包为 .zip（丢弃会话锁文件）。
+// 存档的导出与删除操作。移植自 NyaLauncher.Core/Content/GameSaveService.cs。
+// 存档在磁盘上是一个目录，导出会将该目录打包为 .zip（丢弃会话锁文件）。
+// 同目录的历史备份（{存档名}-backup_*.zip）仍是本导出格式，可直接导入。
 package content
 
 import (
@@ -9,9 +10,11 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
-	"time"
+
+	"nekolauncher/internal/tools"
 )
 
 // sessionLockName 导出时丢弃的会话锁文件名。
@@ -30,7 +33,7 @@ func ExportSave(ctx context.Context, saveDirectory, destinationZipPath string) (
 	}
 
 	temporary := destinationZipPath + ".nya-pack"
-	defer func() { tryDeleteFile(temporary) }()
+	defer func() { tools.RemoveFileIfExists(temporary) }()
 
 	normalized := trimEndingSep(mustAbsPath(saveDirectory))
 	saveName := filepath.Base(normalized)
@@ -46,40 +49,199 @@ func ExportSave(ctx context.Context, saveDirectory, destinationZipPath string) (
 		return "", err
 	}
 	if err := os.Rename(temporary, destinationZipPath); err != nil {
-		return "", err
-	}
-	// Windows 上 os.Rename 不覆盖已存在文件；失败时改为覆盖式移动
-	if _, err := os.Stat(destinationZipPath); err != nil {
-		data, readErr := os.ReadFile(temporary)
-		if readErr != nil {
-			return "", readErr
-		}
-		if err := os.WriteFile(destinationZipPath, data, 0o644); err != nil {
+		// Windows 上 os.Rename 不覆盖已存在文件；失败时改为流式覆盖写入
+		//（大存档可达数百 MB，不能整文件读入内存）
+		if err := overwriteByCopy(temporary, destinationZipPath); err != nil {
 			return "", err
 		}
 	}
 	return destinationZipPath, nil
 }
 
-// BackupSave 在存档同级目录生成 {存档名}-备份-{时间戳}.zip。
-func BackupSave(ctx context.Context, saveDirectory string) (string, error) {
-	if strings.TrimSpace(saveDirectory) == "" {
+// overwriteByCopy 把 source 流式复制到 target（覆盖已存在的 target）。
+func overwriteByCopy(source, target string) error {
+	sourceFile, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	targetFile, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(targetFile, sourceFile)
+	closeErr := targetFile.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
+}
+
+// ImportSave 把存档压缩包解压到 savesDirectory，返回落盘的存档目录路径。
+// 压缩包可以是 ExportSave 的产物（包内顶层为存档目录名），也可以
+// 是直接压缩存档内容的扁平包；同名目录已存在时自动追加 -N 避免覆盖。
+func ImportSave(ctx context.Context, archiveZipPath, savesDirectory string) (string, error) {
+	if strings.TrimSpace(archiveZipPath) == "" ||
+		strings.TrimSpace(savesDirectory) == "" {
 		return "", fmt.Errorf("参数无效")
 	}
-	info, err := os.Stat(saveDirectory)
-	if err != nil || !info.IsDir() {
-		return "", fmt.Errorf("存档目录不存在：%s", saveDirectory)
+	info, err := os.Stat(archiveZipPath)
+	if err != nil || info.IsDir() {
+		return "", fmt.Errorf("存档压缩包不存在：%s", archiveZipPath)
+	}
+	if err := os.MkdirAll(savesDirectory, 0o755); err != nil {
+		return "", err
 	}
 
-	normalized := trimEndingSep(mustAbsPath(saveDirectory))
-	parent := filepath.Dir(normalized)
-	saveName := filepath.Base(normalized)
+	reader, err := zip.OpenReader(archiveZipPath)
+	if err != nil {
+		return "", fmt.Errorf("不是有效的存档压缩包：%w", err)
+	}
+	defer reader.Close()
 
-	// 毫秒级时间戳：同秒内连续备份两次不应互相覆盖
-	stamp := time.Now().Format("20060102-150405.000")
-	stamp = strings.Replace(stamp, ".", "", 1)
-	destination := filepath.Join(parent, fmt.Sprintf("%s-备份-%s.zip", saveName, stamp))
-	return ExportSave(ctx, normalized, destination)
+	staging, err := os.MkdirTemp(savesDirectory, ".nya-import-")
+	if err != nil {
+		return "", err
+	}
+	// 成功时根目录会先改名出暂存区，这里只清理剩下的空壳
+	defer func() { _ = os.RemoveAll(staging) }()
+
+	stagingAbsolute, err := filepath.Abs(staging)
+	if err != nil {
+		return "", err
+	}
+	if err := extractSaveArchive(ctx, reader.File, stagingAbsolute); err != nil {
+		return "", err
+	}
+
+	root := staging
+	if entries, err := os.ReadDir(staging); err == nil &&
+		len(entries) == 1 && entries[0].IsDir() {
+		root = filepath.Join(staging, entries[0].Name())
+	}
+
+	name := filepath.Base(root)
+	if root == staging {
+		// 扁平包：以压缩包文件名作为存档目录名
+		name = strings.TrimSuffix(
+			filepath.Base(archiveZipPath),
+			filepath.Ext(archiveZipPath),
+		)
+	}
+	name = sanitizeSaveName(name)
+	if name == "" {
+		name = "imported-world"
+	}
+
+	destination := uniqueSavePath(savesDirectory, name)
+	if err := os.Rename(root, destination); err != nil {
+		return "", err
+	}
+	return destination, nil
+}
+
+// sanitizeSaveName 替换存档目录名里的路径分隔符与 Windows 非法字符，防止越界。
+func sanitizeSaveName(name string) string {
+	name = strings.Map(func(r rune) rune {
+		switch r {
+		case '\\', '/', ':', '*', '?', '"', '<', '>', '|':
+			return '_'
+		}
+		return r
+	}, strings.TrimSpace(name))
+
+	return strings.Trim(name, ". ")
+}
+
+// uniqueSavePath 在 parent 下为 name 找一个不冲突的目录路径（已存在则追加 -N）。
+func uniqueSavePath(parent, name string) string {
+	candidate := filepath.Join(parent, name)
+	for index := 1; ; index++ {
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+		candidate = filepath.Join(parent, fmt.Sprintf("%s-%d", name, index))
+	}
+}
+
+// extractSaveArchive 把压缩包条目解压到 target（调用方保证为绝对路径）。
+func extractSaveArchive(ctx context.Context, entries []*zip.File, target string) error {
+	prefix := target + string(filepath.Separator)
+
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		cleaned, err := cleanSaveArchivePath(entry.Name)
+		if err != nil {
+			return err
+		}
+		if cleaned == "" {
+			continue
+		}
+		destination := filepath.Join(target, filepath.FromSlash(cleaned))
+		if destination != target && !strings.HasPrefix(destination, prefix) {
+			return fmt.Errorf("压缩包内路径越出目标目录：%q", entry.Name)
+		}
+		if entry.FileInfo().IsDir() {
+			if err := os.MkdirAll(destination, 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+		if !entry.FileInfo().Mode().IsRegular() {
+			continue
+		}
+		if err := extractSaveEntry(entry, destination); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// cleanSaveArchivePath 归一化包内路径为斜杠形式，并挡掉绝对路径、盘符与 ".."。
+func cleanSaveArchivePath(name string) (string, error) {
+	normalized := strings.ReplaceAll(strings.TrimSpace(name), "\\", "/")
+	if normalized == "" {
+		return "", nil
+	}
+	if strings.HasPrefix(normalized, "/") {
+		return "", fmt.Errorf("压缩包内路径不是相对路径：%q", name)
+	}
+	// zip 里同样可能写出 "C:/..." 这类带盘符的路径
+	if len(normalized) >= 2 && normalized[1] == ':' {
+		return "", fmt.Errorf("压缩包内路径含盘符：%q", name)
+	}
+	cleaned := path.Clean(normalized)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("压缩包内路径越出根目录：%q", name)
+	}
+	if cleaned == "." {
+		return "", nil
+	}
+	return cleaned, nil
+}
+
+// extractSaveEntry 解压单个文件（统一按 0644 落盘）。
+func extractSaveEntry(entry *zip.File, destination string) error {
+	reader, err := entry.Open()
+	if err != nil {
+		return fmt.Errorf("读取 %s 失败：%w", entry.Name, err)
+	}
+	defer reader.Close()
+
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(file, reader); err != nil {
+		file.Close()
+		return fmt.Errorf("解压 %s 失败：%w", entry.Name, err)
+	}
+	return file.Close()
 }
 
 // DeleteSave 递归删除存档目录；目录已不存在视为成功。
@@ -95,7 +257,7 @@ func DeleteSave(saveDirectory string) error {
 }
 
 // createSaveArchive 递归打包存档目录到 archivePath（先写临时文件由调用方改名）。
-func createSaveArchive(ctx context.Context, sourceDirectory, rootEntryName, archivePath string) error {
+func createSaveArchive(ctx context.Context, sourceDirectory, rootEntryName, archivePath string) (err error) {
 	file, err := os.OpenFile(archivePath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
@@ -103,7 +265,13 @@ func createSaveArchive(ctx context.Context, sourceDirectory, rootEntryName, arch
 	defer file.Close()
 
 	archive := zip.NewWriter(file)
-	defer archive.Close()
+	// 中央目录在 Close 时才写：磁盘写满/配额不足只在这里暴露。错误必须带出去，
+	// 否则调用方会把截断的 zip 改名成目标文件、报成功。
+	defer func() {
+		if closeErr := archive.Close(); err == nil {
+			err = closeErr
+		}
+	}()
 
 	return filepath.WalkDir(sourceDirectory, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -142,15 +310,14 @@ func createSaveArchive(ctx context.Context, sourceDirectory, rootEntryName, arch
 		if err != nil {
 			return err
 		}
-		defer source.Close()
-		_, err = io.Copy(entryWriter, source)
-		return err
+		// 不用 defer：WalkDir 回调里 defer 会把句柄攒到遍历结束才释放
+		if _, err := io.Copy(entryWriter, source); err != nil {
+			source.Close()
+
+			return err
+		}
+
+		return source.Close()
 	})
 }
 
-// tryDeleteFile 删除文件，失败可忽略：残留的 .nya-pack 可被下次导出覆盖。
-func tryDeleteFile(path string) {
-	if info, err := os.Stat(path); err == nil && !info.IsDir() {
-		_ = os.Remove(path)
-	}
-}

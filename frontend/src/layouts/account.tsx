@@ -1,0 +1,1411 @@
+/*
+ * 账户管理页 —— 移植自旧版 views/settings/AccountView.tsx +
+ * components/overlay/AccountLoginOverlay.tsx（对应 Avalonia AccountManagePage）。
+ * 账号列表/默认账号/删除 + 三种添加流程（离线 / 微软设备码 / 皮肤站）+
+ * 玩家外观（正版上传皮肤与披风激活、离线自定义皮肤与内置皮肤库）。
+ * 界面为毛玻璃卡片 + Fluent 图标风格（与音乐/下载页统一）。
+ * 注意：Wails WebView2 不支持 window.confirm/alert，所有确认交互均用两步按钮或弹层实现。
+ */
+import type { auth, bindings } from "../../wailsjs/go/models";
+
+import React, { useEffect, useRef, useState } from "react";
+import {
+  Button,
+  Input,
+  Modal,
+  ModalContent,
+  Select,
+  SelectItem,
+} from "@heroui/react";
+// 图标统一用 Fluent UI System Icons（20px 系）
+import {
+  Person20Regular,
+  PersonAdd20Regular,
+  Key20Regular,
+  Globe20Regular,
+  Delete20Regular,
+  Star20Regular,
+  ArrowUpload20Regular,
+  FolderOpen20Regular,
+  PaintBrush20Regular,
+  Shirt20Regular,
+} from "@fluentui/react-icons";
+import { AnimatePresence, motion } from "framer-motion";
+
+import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
+import SwitchTransition, {
+  useSwitchDirection,
+} from "../components/screen-transition";
+import SegmentedTabs from "../components/segmented-tabs";
+import { listItemVariants, popoverMotionProps } from "../lib/motion";
+import SkinPreviewPanel from "../components/account/SkinPreviewPanel";
+import {
+  GetAccounts,
+  GetAccountStableKey,
+  RemoveAccount,
+  MoveAccountToTop,
+  GetAvatarUrl,
+  HasOfflineName,
+  CreateOfflineAccount,
+  LoginMicrosoft,
+  LoginMicrosoftBrowser,
+  CancelMicrosoftLogin,
+  AddAccount,
+  UpdateMicrosoftAccount,
+  ResolveAuthlibServer,
+  AuthlibLogin,
+  UpdateAuthlibAccount,
+  GetAuthlibClientToken,
+  UploadSkin,
+  SetOfflineSkin,
+  GetOfflineSkinCatalog,
+  GetMinecraftProfile,
+  SetActiveCape,
+} from "../../wailsjs/go/bindings/AccountAPI";
+import { SelectFile } from "../../wailsjs/go/bindings/SystemAPI";
+import { asArray } from "../lib/guards";
+import {
+  EventsOn,
+  EventsOff,
+  BrowserOpenURL,
+  ClipboardSetText,
+} from "../../wailsjs/runtime/runtime";
+import { t } from "../i18n";
+
+type LaunchAccount = auth.LaunchAccount;
+type CapeTexture = bindings.MinecraftProfileTexture;
+type SkinChoice = bindings.OfflineSkinChoice;
+
+function typeLabel(account: LaunchAccount): string {
+  switch (account.Type) {
+    case "microsoft":
+      return t("正版账户");
+    case "offline":
+      return t("离线账户");
+    case "authlib":
+      return t("皮肤站账户");
+    default:
+      return t("第三方账户");
+  }
+}
+
+// 账号类型徽章配色（主色 / 次色 / 中性）
+function typeChipClass(type: string): string {
+  switch (type) {
+    case "microsoft":
+      return "bg-primary/15 text-primary";
+    case "authlib":
+      return "bg-secondary/15 text-secondary-600 dark:text-secondary-400";
+    default:
+      return "bg-default-100 text-gray-500";
+  }
+}
+
+function accountDetail(account: LaunchAccount): string {
+  switch (account.Type) {
+    case "microsoft":
+      if (account.Microsoft) {
+        const raw =
+          typeof account.Microsoft.ExpiresAt === "number" &&
+          account.Microsoft.ExpiresAt > 1e15
+            ? account.Microsoft.ExpiresAt / 1e6
+            : (account.Microsoft.ExpiresAt ?? 0);
+        const expired = new Date(raw).getTime() <= Date.now();
+
+        return expired
+          ? t("令牌已过期，启动游戏时会自动刷新")
+          : t("令牌有效期至 {0}", {
+              "0": formatTime(account.Microsoft.ExpiresAt),
+            });
+      }
+
+      return typeLabel(account);
+    case "authlib":
+      if (account.Authlib) {
+        return account.Authlib.ServerName
+          ? account.Authlib.ServerName
+          : account.Authlib.ApiRoot || "";
+      }
+
+      return typeLabel(account);
+    default:
+      return t("默认皮肤：{0}", { "0": account.OfflineSkinId || "steve" });
+  }
+}
+
+function formatTime(value: unknown): string {
+  const date = new Date(
+    typeof value === "number" && value > 1e15 ? value / 1e6 : (value as string),
+  );
+
+  if (Number.isNaN(date.getTime())) return String(value ?? "");
+  const pad = (n: number) => String(n).padStart(2, "0");
+
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  );
+}
+
+interface AccountRow {
+  account: LaunchAccount;
+  stableKey: string;
+  avatar: string;
+}
+
+const AccountPage: React.FC = () => {
+  const [rows, setRows] = useState<AccountRow[]>([]);
+  const [selectedKey, setSelectedKey] = useState("");
+  const [status, setStatus] = useState("");
+  const [avatarMap, setAvatarMap] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const [confirmingDeleteKey, setConfirmingDeleteKey] = useState("");
+
+  // ---- 添加账号弹层 ----
+  const [addOpen, setAddOpen] = useState(false);
+  const [addTab, setAddTab] = useState("offline");
+  // 添加账号分段标签的切换方向
+  const addTabDirection = useSwitchDirection(
+    ["offline", "microsoft", "authlib"].indexOf(addTab),
+  );
+  const [addHint, setAddHint] = useState("");
+  // 离线
+  const [offlineName, setOfflineName] = useState("Player_01");
+  // 设备码
+  const [deviceCode, setDeviceCode] = useState("");
+  const [msBusy, setMsBusy] = useState(false);
+  const msActive = useRef(false);
+  // 内嵌浏览器登录（主窗口跳微软登录页，授权后自动跳回）
+  const [browserStarting, setBrowserStarting] = useState(false);
+  // 皮肤站
+  const [extServer, setExtServer] = useState("");
+  const [extUsername, setExtUsername] = useState("");
+  const [extPassword, setExtPassword] = useState("");
+  const [extBusy, setExtBusy] = useState(false);
+  const [extProfiles, setExtProfiles] = useState<
+    Array<{ Id: string; Name: string }>
+  >([]);
+  const pendingExt = useRef<{
+    server: auth.AuthlibServerInfo;
+    login: auth.AuthlibLoginResult;
+    username: string;
+  } | null>(null);
+
+  // ---- 披风 / 皮肤库 / 皮肤模型弹层 ----
+  const [capeOpen, setCapeOpen] = useState(false);
+  const [capeLoading, setCapeLoading] = useState(false);
+  const [capeBusy, setCapeBusy] = useState(false);
+  const [capeError, setCapeError] = useState("");
+  const [capeList, setCapeList] = useState<CapeTexture[]>([]);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [catalog, setCatalog] = useState<SkinChoice[]>([]);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [modelBusy, setModelBusy] = useState(false);
+  const pendingSkinPath = useRef("");
+
+  const selected = rows.find((r) => r.stableKey === selectedKey) ?? null;
+
+  const reload = async () => {
+    try {
+      const list = asArray<LaunchAccount>(await GetAccounts());
+      const withKeys = await Promise.all(
+        list.map(async (account) => ({
+          account,
+          stableKey: await GetAccountStableKey(account as never),
+          avatar: "",
+        })),
+      );
+
+      setRows(() =>
+        withKeys.map((row) => ({
+          ...row,
+          avatar: avatarMap[row.stableKey] ?? "",
+        })),
+      );
+      setSelectedKey(
+        withKeys.some((r) => r.stableKey === selectedKey)
+          ? selectedKey
+          : (withKeys[0]?.stableKey ?? ""),
+      );
+      setStatus(withKeys.length === 0 ? t("暂无账号") : "");
+      // 异步加载真实皮肤头像（失败保留字母占位）
+      withKeys.forEach(({ stableKey }) => {
+        GetAvatarUrl(stableKey)
+          .then((uri) => {
+            if (uri)
+              setAvatarMap((m) =>
+                m[stableKey] === uri ? m : { ...m, [stableKey]: uri },
+              );
+          })
+          .catch(() => {
+            /* 字母占位 */
+          });
+      });
+    } catch (ex) {
+      setStatus(
+        t("读取账号列表失败：{0}", { "0": (ex as Error)?.message ?? ex }),
+      );
+    }
+    // avatarMap 闭包仅在刷新瞬间参与，头像并入由下方 effect 处理
+  };
+
+  useEffect(() => {
+    reload();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 内嵌微软登录在 Go 侧直接入库（SPA 经登录页跳转往返后原调用方已丢失），
+  // 结束后这里只负责刷新列表。全局进度浮层负责展示。
+  useEffect(
+    () =>
+      EventsOn("auth:microsoftLoggedIn", () => {
+        void reload();
+      }),
+    [], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  // 头像加载完成后并入行数据
+  useEffect(() => {
+    setRows((prev) => {
+      let changed = false;
+      const next = prev.map((row) => {
+        const uri = avatarMap[row.stableKey];
+
+        if (uri && row.avatar !== uri) {
+          changed = true;
+
+          return { ...row, avatar: uri };
+        }
+
+        return row;
+      });
+
+      return changed ? next : prev;
+    });
+  }, [avatarMap]);
+
+  // 切换选中账号后退出「确认删除」状态
+  useEffect(() => {
+    setConfirmingDeleteKey("");
+  }, [selectedKey]);
+
+  // ---- 账号操作 ----
+
+  const setDefault = async (row: AccountRow) => {
+    try {
+      await MoveAccountToTop(row.account as never);
+      setStatus(t("已设为默认：{0}", { "0": row.account.DisplayName }));
+      await reload();
+    } catch (ex) {
+      setStatus(
+        t("设置默认账号失败：{0}", { "0": (ex as Error)?.message ?? ex }),
+      );
+    }
+  };
+
+  const removeAccount = async (row: AccountRow) => {
+    // 两步确认（WebView2 不支持 window.confirm）；每个账号各自确认
+    if (confirmingDeleteKey !== row.stableKey) {
+      setConfirmingDeleteKey(row.stableKey);
+
+      return;
+    }
+    setConfirmingDeleteKey("");
+    try {
+      await RemoveAccount(row.account as never);
+      setStatus(t("已删除账号：{0}", { "0": row.account.DisplayName }));
+      setSelectedKey("");
+      await reload();
+    } catch (ex) {
+      setStatus(t("删除账号失败：{0}", { "0": (ex as Error)?.message ?? ex }));
+    }
+  };
+
+  // ---- 添加：离线 ----
+
+  const addOffline = async () => {
+    const name = offlineName.trim();
+
+    if (!name) {
+      setAddHint(t("请输入离线用户名"));
+
+      return;
+    }
+    try {
+      if (await HasOfflineName(name)) {
+        setAddHint(t("已存在同名离线账号：{0}", { "0": name }));
+
+        return;
+      }
+      await CreateOfflineAccount(name);
+      setAddOpen(false);
+      setStatus(t("已添加离线账号：{0}", { "0": name }));
+      await reload();
+    } catch (ex) {
+      setAddHint(
+        t("创建离线账号失败：{0}", { "0": (ex as Error)?.message ?? ex }),
+      );
+    }
+  };
+
+  // ---- 添加：微软设备码 ----
+
+  const onDeviceCodeEvent = (info: {
+    UserCode?: string;
+    VerificationUri?: string;
+  }) => {
+    setDeviceCode(info?.UserCode ?? "");
+    ClipboardSetText(info?.UserCode ?? "").catch(() => {
+      /* ignore */
+    });
+    if (info?.VerificationUri) {
+      BrowserOpenURL(
+        `https://www.microsoft.com/link?user_code=${info.UserCode ?? ""}`,
+      );
+    }
+  };
+
+  const startMicrosoftLogin = () => {
+    setAddTab("microsoft");
+    setMsBusy(true);
+    setDeviceCode("");
+    setAddHint("");
+    msActive.current = true;
+    EventsOn("auth:deviceCode", onDeviceCodeEvent);
+
+    LoginMicrosoft()
+      .then(async (msAccount) => {
+        msActive.current = false;
+        EventsOff("auth:deviceCode");
+        // 同一微软账号（按档案 UUID）已存在则更新凭据并置顶（视为重新登录）
+        const accounts = asArray<LaunchAccount>(await GetAccounts());
+        const existing = accounts.find(
+          (a) =>
+            a.Type === "microsoft" &&
+            a.Microsoft?.Uuid &&
+            a.Microsoft.Uuid === msAccount.Uuid,
+        );
+
+        if (existing) {
+          await UpdateMicrosoftAccount(existing, msAccount as never);
+          await MoveAccountToTop(existing);
+        } else {
+          const entry: LaunchAccount = {
+            Type: "microsoft",
+            DisplayName: msAccount.Username,
+            OfflineName: "",
+            OfflineSkinId: "",
+            Microsoft: msAccount,
+          } as never;
+
+          await AddAccount(entry as never);
+        }
+        setMsBusy(false);
+        setAddOpen(false);
+        setStatus(t("正版账号登录成功：{0}", { "0": msAccount.Username }));
+        await reload();
+      })
+      .catch((ex) => {
+        const cancelled = !msActive.current;
+
+        msActive.current = false;
+        EventsOff("auth:deviceCode");
+        setMsBusy(false);
+        if (!cancelled)
+          setAddHint(
+            t("微软账号登录失败：{0}", { "0": (ex as Error)?.message ?? ex }),
+          );
+      });
+  };
+
+  const cancelMicrosoftLogin = async () => {
+    msActive.current = false;
+    EventsOff("auth:deviceCode");
+    try {
+      await CancelMicrosoftLogin();
+    } catch {
+      /* 后端已结束轮询时忽略 */
+    }
+    setMsBusy(false);
+  };
+
+  // ---- 添加：微软内嵌浏览器登录 ----
+  // 主窗口直接导航到微软登录页（不弹系统浏览器），授权后自动跳回启动器；
+  // 进度由全局浮层展示，这里只负责发起。
+  const startMicrosoftBrowserLogin = async () => {
+    if (browserStarting) return;
+    setBrowserStarting(true);
+    setAddHint("");
+    try {
+      await LoginMicrosoftBrowser(window.location.origin);
+      setAddHint(t("正在打开微软登录页，请在页面中完成授权…"));
+    } catch (ex) {
+      setAddHint(
+        t("内嵌登录启动失败：{0}", { "0": (ex as Error)?.message ?? ex }),
+      );
+    }
+    setBrowserStarting(false);
+  };
+
+  // ---- 添加：皮肤站 ----
+
+  const addExternal = async (
+    profile: { Id: string; Name: string },
+    username: string,
+  ) => {
+    const pending = pendingExt.current;
+
+    if (!pending) return;
+    const credential: auth.AuthlibCredential = {
+      Username: username,
+      ProfileName: profile.Name,
+      ProfileUuid: profile.Id,
+      AccessToken: pending.login.AccessToken,
+      ApiRoot: pending.server.ApiRoot,
+      ServerName: pending.server.ServerName ?? "",
+    } as never;
+
+    // 皮肤站账号身份 = 角色 UUID + API 根：同一 UUID 在不同皮肤站是不同账号
+    const accounts = asArray<LaunchAccount>(await GetAccounts());
+    const existing = accounts.find(
+      (a) =>
+        a.Type === "authlib" &&
+        a.Authlib &&
+        (a.Authlib.ProfileUuid || "").toLowerCase() ===
+          (profile.Id || "").toLowerCase() &&
+        (a.Authlib.ApiRoot || "").replace(/\/+$/, "").toLowerCase() ===
+          (pending.server.ApiRoot || "").replace(/\/+$/, "").toLowerCase(),
+    );
+
+    if (existing) {
+      await UpdateAuthlibAccount(existing, credential);
+      await MoveAccountToTop(existing);
+    } else {
+      const entry: LaunchAccount = {
+        Type: "authlib",
+        DisplayName: profile.Name,
+        OfflineName: "",
+        OfflineSkinId: "",
+        Authlib: credential,
+      } as never;
+
+      await AddAccount(entry as never);
+    }
+    pendingExt.current = null;
+    setExtProfiles([]);
+    setAddOpen(false);
+    setStatus(t("已添加皮肤站账号：{0}", { "0": profile.Name }));
+    await reload();
+  };
+
+  const loginExternal = async () => {
+    const serverText = extServer.trim();
+    const username = extUsername.trim();
+
+    if (!serverText) {
+      setAddHint(t("请输入皮肤站地址"));
+
+      return;
+    }
+    if (!username || !extPassword) {
+      setAddHint(t("请输入皮肤站账号与密码"));
+
+      return;
+    }
+    setExtBusy(true);
+    try {
+      setAddHint(t("正在解析皮肤站…"));
+      const server = (await ResolveAuthlibServer(
+        serverText,
+      )) as auth.AuthlibServerInfo;
+
+      setAddHint(t("正在登录 {0}…", { "0": server.ServerName || "皮肤站" }));
+      const clientToken = await GetAuthlibClientToken();
+      const login = (await AuthlibLogin(
+        server.ApiRoot,
+        username,
+        extPassword,
+        clientToken,
+      )) as auth.AuthlibLoginResult;
+
+      if (!login.Profiles || login.Profiles.length === 0) {
+        setAddHint(t("该账号在此皮肤站没有角色档案，请先在皮肤站创建角色。"));
+
+        return;
+      }
+      pendingExt.current = { server, login, username };
+      if (login.Profiles.length === 1) {
+        await addExternal(login.Profiles[0], username);
+      } else {
+        setExtProfiles(login.Profiles);
+        setAddHint(
+          t("该账号有 {0} 个角色", {
+            "0": login.Profiles.length,
+          }),
+        );
+      }
+    } catch (ex) {
+      setAddHint(t("登录失败：{0}", { "0": (ex as Error)?.message ?? ex }));
+    } finally {
+      setExtBusy(false);
+    }
+  };
+
+  const openAddModal = () => {
+    setAddHint("");
+    setExtProfiles([]);
+    setDeviceCode("");
+    setAddTab("offline");
+    setAddOpen(true);
+  };
+
+  // ---- 外观：皮肤 ----
+
+  const changeMicrosoftSkin = async () => {
+    if (!selected) return;
+    let path = "";
+
+    try {
+      path = await SelectFile(
+        t("选择 Minecraft Java 皮肤"),
+        t("Minecraft 皮肤 PNG"),
+        "*.png",
+      );
+    } catch {
+      /* 取消 */
+    }
+    if (!path) return;
+    // WebView2 不支持 confirm：弹出模型选择弹层
+    pendingSkinPath.current = path;
+    setModelOpen(true);
+  };
+
+  const uploadSkinWithModel = async (variant: "classic" | "slim") => {
+    if (!selected || !pendingSkinPath.current) return;
+    setModelBusy(true);
+    try {
+      await UploadSkin(selected.stableKey, pendingSkinPath.current, variant);
+      setModelOpen(false);
+      setStatus(t("正版皮肤已更新。"));
+      await reload();
+    } catch (ex) {
+      setStatus(t("皮肤上传失败：{0}", { "0": (ex as Error)?.message ?? ex }));
+    } finally {
+      setModelBusy(false);
+      pendingSkinPath.current = "";
+    }
+  };
+
+  const changeOfflineSkinFile = async () => {
+    if (!selected) return;
+    let path = "";
+
+    try {
+      path = await SelectFile(t("选择皮肤贴图（png）"), t("图片文件"), "*.png");
+    } catch {
+      /* 取消 */
+    }
+    if (!path) return;
+    setBusy(true);
+    try {
+      await SetOfflineSkin(selected.stableKey, path);
+      setStatus(
+        t("已设置离线自定义皮肤：{0}", {
+          "0": path.split(/[\\/]/).pop() ?? "",
+        }),
+      );
+      await reload();
+    } catch (ex) {
+      setStatus(t("更换皮肤失败：{0}", { "0": (ex as Error)?.message ?? ex }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openCatalog = async () => {
+    if (!selected) return;
+    try {
+      setCatalog(asArray(await GetOfflineSkinCatalog()));
+      setCatalogOpen(true);
+    } catch (ex) {
+      setStatus(
+        t("读取皮肤库失败：{0}", { "0": (ex as Error)?.message ?? ex }),
+      );
+    }
+  };
+
+  const applyCatalogSkin = async (choice: SkinChoice) => {
+    if (!selected) return;
+    setCatalogOpen(false);
+    setBusy(true);
+    try {
+      await SetOfflineSkin(selected.stableKey, choice.id);
+      setStatus(t("已选择离线默认皮肤：{0}", { "0": choice.displayName }));
+      await reload();
+    } catch (ex) {
+      setStatus(t("更换皮肤失败：{0}", { "0": (ex as Error)?.message ?? ex }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // ---- 外观：披风 ----
+
+  const openCapes = async () => {
+    if (!selected) return;
+    setCapeOpen(true);
+    setCapeLoading(true);
+    setCapeError("");
+    setCapeList([]);
+    try {
+      const profile = await GetMinecraftProfile(selected.stableKey);
+
+      setCapeList(profile?.capes ?? []);
+    } catch (ex) {
+      setCapeError(String((ex as Error)?.message ?? ex));
+    } finally {
+      setCapeLoading(false);
+    }
+  };
+
+  const applyCape = async (cape: CapeTexture, index = 0) => {
+    if (!selected || capeBusy) return;
+    setCapeBusy(true);
+    setCapeError("");
+    try {
+      await SetActiveCape(selected.stableKey, cape.id);
+      setCapeOpen(false);
+      setStatus(
+        t("已激活披风：{0}", {
+          "0": cape.alias?.trim() || `披风 ${index + 1}`,
+        }),
+      );
+    } catch (ex) {
+      setCapeError(String((ex as Error)?.message ?? ex));
+    } finally {
+      setCapeBusy(false);
+    }
+  };
+
+  const disableCape = async () => {
+    if (!selected || capeBusy) return;
+    setCapeBusy(true);
+    setCapeError("");
+    try {
+      await SetActiveCape(selected.stableKey, "");
+      setCapeOpen(false);
+      setStatus(t("已停用披风。"));
+    } catch (ex) {
+      setCapeError(String((ex as Error)?.message ?? ex));
+    } finally {
+      setCapeBusy(false);
+    }
+  };
+
+  // ---- 渲染 ----
+
+  return (
+    <div className="nya-scroll h-full w-full overflow-y-auto">
+      <div className="mx-auto flex max-w-4xl flex-col gap-4 px-6 py-5">
+        {/* 标题区 */}
+        <div className="flex flex-none items-center gap-3">
+          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <h1 className="overflow-hidden text-xl font-bold tracking-tight text-ellipsis whitespace-nowrap">
+              {t("账户管理")}
+            </h1>
+            <span className="truncate text-[11px] text-gray-400">
+              {status ||
+                (rows.length > 0
+                  ? t("已保存 {0} 个账号", { "0": rows.length })
+                  : "")}
+            </span>
+          </div>
+          <Button
+            color="primary"
+            radius="full"
+            size="sm"
+            startContent={<PersonAdd20Regular />}
+            onPress={openAddModal}
+          >
+            {t("添加账号")}
+          </Button>
+        </div>
+
+        {/* 皮肤展示 + 账号列表：左右排列（窗口较窄时自动换行堆叠） */}
+        <div className="flex flex-wrap items-stretch gap-4">
+          {/* 皮肤展示卡：3D 预览当前选中账号（与主页皮肤展示小组件同源渲染） */}
+          <div className="flex w-[300px] flex-none flex-col rounded-2xl border nya-border nya-panel p-4 shadow-sm backdrop-blur-md">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold">{t("皮肤展示")}</div>
+              {selected ? (
+                <span className="truncate text-[11px] text-gray-400">
+                  {t("当前：")}
+                  {selected.account.DisplayName}
+                </span>
+              ) : null}
+            </div>
+            <SkinPreviewPanel
+              accountKey={selected?.stableKey ?? ""}
+              height={260}
+            />
+          </div>
+
+          {/* 账号列表卡 */}
+          <div className="min-w-[320px] flex-1 rounded-2xl border nya-border nya-panel p-2 shadow-sm backdrop-blur-md">
+            {rows.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 py-10 text-center text-gray-400">
+                <div className="flex size-16 items-center justify-center rounded-3xl bg-gradient-to-br from-default-200 to-default-100 dark:from-gray-800 dark:to-gray-800/50 shadow-inner">
+                  <Person20Regular className="w-8 h-8" />
+                </div>
+                <span className="text-[15px] font-semibold text-gray-500 dark:text-gray-400">
+                  {t("暂无账号")}
+                </span>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1">
+                <AnimatePresence initial={false}>
+                  {rows.map((row, idx) => {
+                    const active = selectedKey === row.stableKey;
+
+                    return (
+                      <motion.div
+                        key={row.stableKey}
+                        layout
+                        animate="center"
+                        className="overflow-hidden"
+                        exit="exit"
+                        initial="enter"
+                        variants={listItemVariants}
+                      >
+                        <div
+                          className={`group flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 transition-all ${
+                            active
+                              ? "bg-primary/10"
+                              : "hover:bg-default-100/80 hover:translate-x-0.5"
+                          }`}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setSelectedKey(row.stableKey)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              setSelectedKey(row.stableKey);
+                            }
+                          }}
+                        >
+                          {/* 头像：皮肤双层（基础+帽子）8×8 头部，失败回退首字母 */}
+                          <div
+                            className={`flex size-11 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl shadow-sm ${
+                              active
+                                ? "ring-2 ring-primary/40"
+                                : "bg-default-200 dark:bg-gray-800"
+                            }`}
+                          >
+                            {row.avatar ? (
+                              <img
+                                alt=""
+                                className="w-full h-full object-contain [image-rendering:pixelated]"
+                                src={row.avatar}
+                              />
+                            ) : (
+                              <span className="text-sm font-bold text-gray-500 dark:text-gray-300">
+                                {(row.account.DisplayName || "?")
+                                  .trim()[0]
+                                  ?.toUpperCase() || "?"}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="overflow-hidden text-sm font-semibold text-ellipsis whitespace-nowrap">
+                                {row.account.DisplayName}
+                              </span>
+                              <span
+                                className={`flex-none rounded-full px-2 py-0.5 text-[10px] font-medium ${typeChipClass(row.account.Type)}`}
+                              >
+                                {typeLabel(row.account)}
+                              </span>
+                              {idx === 0 ? (
+                                <span className="flex flex-none items-center gap-0.5 rounded-full bg-warning-500/15 px-2 py-0.5 text-[10px] font-medium text-warning-600 dark:text-warning-400">
+                                  <Star20Regular className="w-3 h-3" />
+
+                                  {t("默认")}
+                                </span>
+                              ) : null}
+                            </div>
+                            <span className="overflow-hidden text-[11px] text-gray-400 text-ellipsis whitespace-nowrap">
+                              {accountDetail(row.account)}
+                            </span>
+                          </div>
+                          {idx !== 0 ? (
+                            <Button
+                              className="flex-none"
+                              radius="full"
+                              size="sm"
+                              variant="flat"
+                              onPress={() => void setDefault(row)}
+                            >
+                              {t("设为默认")}
+                            </Button>
+                          ) : null}
+                          <Button
+                            className="flex-none"
+                            color="danger"
+                            radius="full"
+                            size="sm"
+                            startContent={
+                              confirmingDeleteKey === row.stableKey ? (
+                                <Delete20Regular />
+                              ) : undefined
+                            }
+                            variant={
+                              confirmingDeleteKey === row.stableKey
+                                ? "solid"
+                                : "light"
+                            }
+                            onPress={() => void removeAccount(row)}
+                          >
+                            {confirmingDeleteKey === row.stableKey
+                              ? t("确认删除？")
+                              : t("删除")}
+                          </Button>
+                        </div>
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* 玩家外观卡 */}
+        <div className="rounded-2xl border nya-border nya-panel p-4 shadow-sm backdrop-blur-md">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="text-sm font-semibold">{t("玩家外观")}</div>
+            {selected ? (
+              <span className="truncate text-[11px] text-gray-400">
+                {t("当前：")}
+                {selected.account.DisplayName}
+              </span>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              isDisabled={!selected || busy}
+              radius="full"
+              size="sm"
+              startContent={<ArrowUpload20Regular />}
+              variant="flat"
+              onPress={changeMicrosoftSkin}
+            >
+              {t("上传正版皮肤")}
+            </Button>
+            <Button
+              isDisabled={
+                !selected || busy || selected?.account.Type !== "offline"
+              }
+              radius="full"
+              size="sm"
+              startContent={<FolderOpen20Regular />}
+              variant="flat"
+              onPress={changeOfflineSkinFile}
+            >
+              {t("离线自定义皮肤")}
+            </Button>
+            <Button
+              isDisabled={
+                !selected || busy || selected?.account.Type !== "offline"
+              }
+              radius="full"
+              size="sm"
+              startContent={<PaintBrush20Regular />}
+              variant="flat"
+              onPress={openCatalog}
+            >
+              {t("从皮肤库选择")}
+            </Button>
+            <Button
+              color="primary"
+              isDisabled={
+                !selected || busy || selected?.account.Type !== "microsoft"
+              }
+              radius="full"
+              size="sm"
+              startContent={<Shirt20Regular />}
+              variant="flat"
+              onPress={openCapes}
+            >
+              {t("更换披风")}
+            </Button>
+          </div>
+          {selected?.account.Type === "authlib" ? (
+            <div className="mt-3 text-xs text-gray-400">
+              {t("皮肤站账号请到对应皮肤站的网页端更换皮肤。")}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      {/* 添加账号弹层（离线 / 微软设备码 / 皮肤站） */}
+      {/* isDismissable=false（modalBehaviorProps）：点外部不关闭，防止误触——关闭一律走右上角 X */}
+      <Modal
+        isOpen={addOpen}
+        size="md"
+        onClose={() => {
+          if (!msBusy) setAddOpen(false);
+        }}
+        {...modalBehaviorProps}
+      >
+        <ModalContent>
+          <ModalShell
+            closeGuard={() => !msBusy}
+            title={t("添加账号")}
+            onClose={() => {
+              if (!msBusy) setAddOpen(false);
+            }}
+          >
+            {/* 方式选择：胶囊分段控件（与下载页标签栏同风格，主色滑块切换） */}
+            <SegmentedTabs
+              className="flex items-center gap-1 rounded-full bg-default-100/80 p-1"
+              disabled={msBusy}
+              itemClassName="flex-1 px-2 py-1.5 text-[13px]"
+              items={[
+                {
+                  key: "offline",
+                  label: (
+                    <>
+                      <Person20Regular />
+
+                      {t("离线")}
+                    </>
+                  ),
+                },
+                {
+                  key: "microsoft",
+                  label: (
+                    <>
+                      <Key20Regular />
+
+                      {t("正版登录")}
+                    </>
+                  ),
+                },
+                {
+                  key: "authlib",
+                  label: (
+                    <>
+                      <Globe20Regular />
+
+                      {t("皮肤站")}
+                    </>
+                  ),
+                },
+              ]}
+              layoutId="account-add-method"
+              value={addTab}
+              onChange={(key) => {
+                if (!msBusy) setAddTab(key);
+              }}
+            />
+
+            <SwitchTransition
+              activeKey={addTab}
+              className="flex flex-col"
+              direction={addTabDirection}
+            >
+              {/* 离线 */}
+              {addTab === "offline" && (
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <div className="mb-1 text-[13px] text-gray-600 dark:text-gray-300">
+                      {t("离线用户名")}
+                    </div>
+                    <Input
+                      classNames={{
+                        inputWrapper:
+                          "bg-default-100/80 data-[hover=true]:bg-default-200",
+                      }}
+                      placeholder={t("例如 Player_01")}
+                      radius="lg"
+                      size="sm"
+                      value={offlineName}
+                      onValueChange={setOfflineName}
+                    />
+                  </div>
+                  <Button
+                    color="primary"
+                    radius="full"
+                    size="sm"
+                    onPress={addOffline}
+                  >
+                    {t("创建离线账号")}
+                  </Button>
+                </div>
+              )}
+
+              {/* 正版登录 */}
+              {addTab === "microsoft" && (
+                <div className="flex flex-col gap-3">
+                  {msBusy ? (
+                    <>
+                      <div className="text-sm text-gray-700 dark:text-gray-300">
+                        {deviceCode
+                          ? t("在浏览器打开 microsoft.com/link 并输入验证码：")
+                          : t("正在请求设备码…")}
+                      </div>
+                      {deviceCode ? (
+                        <>
+                          <div className="rounded-2xl bg-primary py-5 text-center text-primary-foreground shadow-md shadow-primary/25">
+                            <div className="text-2xl font-bold tracking-[0.3em] text-white">
+                              {deviceCode}
+                            </div>
+                          </div>
+                          <div className="flex justify-center gap-2">
+                            <Button
+                              radius="full"
+                              size="sm"
+                              variant="flat"
+                              onPress={() =>
+                                BrowserOpenURL(
+                                  `https://www.microsoft.com/link?user_code=${deviceCode}`,
+                                )
+                              }
+                            >
+                              {t("重新打开浏览器")}
+                            </Button>
+                            <Button
+                              color="danger"
+                              radius="full"
+                              size="sm"
+                              variant="flat"
+                              onPress={cancelMicrosoftLogin}
+                            >
+                              {t("取消登录")}
+                            </Button>
+                          </div>
+                        </>
+                      ) : null}
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        color="primary"
+                        isDisabled={browserStarting}
+                        isLoading={browserStarting}
+                        radius="full"
+                        size="sm"
+                        startContent={<Globe20Regular />}
+                        onPress={startMicrosoftBrowserLogin}
+                      >
+                        {t("启动器内登录（推荐）")}
+                      </Button>
+                      <div className="text-xs text-gray-400">
+                        {t(
+                          "在当前窗口打开微软登录页，授权后自动返回，无需外部浏览器。",
+                        )}
+                      </div>
+                      <Button
+                        radius="full"
+                        size="sm"
+                        variant="flat"
+                        onPress={startMicrosoftLogin}
+                      >
+                        {t("使用设备码登录")}
+                      </Button>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* 皮肤站 */}
+              {addTab === "authlib" && (
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <div className="mb-1 text-[13px] text-gray-600 dark:text-gray-300">
+                      {t("皮肤站地址")}
+                    </div>
+                    <Input
+                      classNames={{
+                        inputWrapper:
+                          "bg-default-100/80 data-[hover=true]:bg-default-200",
+                      }}
+                      placeholder="https://littleskin.cn"
+                      radius="lg"
+                      size="sm"
+                      value={extServer}
+                      onValueChange={setExtServer}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <div className="mb-1 text-[13px] text-gray-600 dark:text-gray-300">
+                        {t("用户名")}
+                      </div>
+                      <Input
+                        classNames={{
+                          inputWrapper:
+                            "bg-default-100/80 data-[hover=true]:bg-default-200",
+                        }}
+                        radius="lg"
+                        size="sm"
+                        value={extUsername}
+                        onValueChange={setExtUsername}
+                      />
+                    </div>
+                    <div>
+                      <div className="mb-1 text-[13px] text-gray-600 dark:text-gray-300">
+                        {t("密码")}
+                      </div>
+                      <Input
+                        classNames={{
+                          inputWrapper:
+                            "bg-default-100/80 data-[hover=true]:bg-default-200",
+                        }}
+                        radius="lg"
+                        size="sm"
+                        type="password"
+                        value={extPassword}
+                        onValueChange={setExtPassword}
+                      />
+                    </div>
+                  </div>
+                  {extProfiles.length > 0 ? (
+                    <Select
+                      defaultSelectedKeys={["0"]}
+                      label={t("选择角色")}
+                      popoverProps={{ motionProps: popoverMotionProps }}
+                      radius="lg"
+                      size="sm"
+                      onSelectionChange={(keys) => {
+                        const idx = Number(Array.from(keys)[0] ?? "-1");
+                        const profile = extProfiles[idx];
+
+                        if (profile)
+                          void addExternal(profile, extUsername.trim());
+                      }}
+                    >
+                      {extProfiles.map((p, i) => (
+                        <SelectItem key={String(i)}>{p.Name}</SelectItem>
+                      ))}
+                    </Select>
+                  ) : null}
+                  <Button
+                    color="primary"
+                    isLoading={extBusy}
+                    radius="full"
+                    size="sm"
+                    onPress={loginExternal}
+                  >
+                    {t("登录皮肤站")}
+                  </Button>
+                </div>
+              )}
+            </SwitchTransition>
+
+            {addHint ? (
+              <div className="rounded-xl bg-default-100/80 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 break-all">
+                {addHint}
+              </div>
+            ) : null}
+          </ModalShell>
+        </ModalContent>
+      </Modal>
+
+      {/* 披风选择弹层（正版账号）——同样走 modalBehaviorProps（毛玻璃遮罩 +
+          CSS 入场，见 modal-shell.tsx 说明） */}
+      <Modal
+        isOpen={capeOpen}
+        size="md"
+        onClose={() => {
+          if (!capeBusy) setCapeOpen(false);
+        }}
+        {...modalBehaviorProps}
+      >
+        <ModalContent>
+          <ModalShell
+            closeGuard={() => !capeBusy}
+            title={t("更换披风")}
+            onClose={() => {
+              if (!capeBusy) setCapeOpen(false);
+            }}
+          >
+            {capeLoading ? (
+              <div className="py-8 text-center text-sm text-gray-400">
+                {t("正在读取披风…")}
+              </div>
+            ) : capeList.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 py-8 text-center text-gray-400">
+                <div className="flex size-16 items-center justify-center rounded-3xl bg-gradient-to-br from-default-200 to-default-100 dark:from-gray-800 dark:to-gray-800/50 shadow-inner">
+                  <Shirt20Regular className="w-8 h-8" />
+                </div>
+                <div className="text-sm text-gray-500 dark:text-gray-400">
+                  {capeError || t("该账号暂未拥有披风")}
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="nya-scroll grid grid-cols-3 gap-2.5 max-h-[46vh] overflow-y-auto">
+                  {capeList.map((cape, index) => (
+                    <button
+                      key={cape.id}
+                      className={`flex flex-col items-center gap-2 rounded-xl border border-transparent nya-panel p-3 backdrop-blur-md transition-all hover:border-primary/30 hover:bg-primary/[0.06] disabled:cursor-default disabled:opacity-60 ${
+                        cape.isActive
+                          ? "ring-2 ring-primary/50 bg-primary/10"
+                          : ""
+                      }`}
+                      disabled={capeBusy || cape.isActive}
+                      onClick={() => applyCape(cape, index)}
+                    >
+                      {/* 披风预览：裁剪贴图正面区域 (1,0)-(11,16)，×4 放大（pixelated） */}
+                      <div className="flex w-16 h-16 items-center justify-center overflow-hidden rounded-lg bg-default-100 dark:bg-gray-800">
+                        <div
+                          className="w-10 h-16"
+                          style={{
+                            backgroundImage: `url("${cape.url}")`,
+                            backgroundSize: "256px 128px",
+                            backgroundPosition: "-4px 0px",
+                            imageRendering: "pixelated",
+                          }}
+                        />
+                      </div>
+                      <span className="max-w-full truncate text-xs font-medium text-gray-700 dark:text-gray-300">
+                        {cape.alias?.trim() ||
+                          t("披风 {0}", { "0": index + 1 })}
+                        {cape.isActive ? (
+                          <span className="ml-1 text-[10px] text-primary">
+                            {t("当前使用")}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                {capeError ? (
+                  <div className="text-xs text-danger">{capeError}</div>
+                ) : null}
+                <div className="flex items-center justify-end gap-3 pt-1">
+                  <Button
+                    color="danger"
+                    isDisabled={
+                      capeBusy || !capeList.some((cape) => cape.isActive)
+                    }
+                    radius="full"
+                    size="sm"
+                    variant="flat"
+                    onPress={disableCape}
+                  >
+                    {t("停用披风")}
+                  </Button>
+                </div>
+              </>
+            )}
+          </ModalShell>
+        </ModalContent>
+      </Modal>
+
+      {/* 离线皮肤库弹层（内置皮肤网格） */}
+      <Modal
+        isOpen={catalogOpen}
+        size="md"
+        onClose={() => setCatalogOpen(false)}
+        {...modalBehaviorProps}
+      >
+        <ModalContent>
+          <ModalShell
+            title={t("选择离线默认皮肤")}
+            onClose={() => setCatalogOpen(false)}
+          >
+            <div className="nya-scroll grid grid-cols-3 gap-2.5 max-h-[56vh] overflow-y-auto">
+              {catalog.map((choice) => {
+                const active =
+                  choice.id.toLowerCase() ===
+                  (selected?.account.OfflineSkinId || "steve").toLowerCase();
+
+                return (
+                  <button
+                    key={choice.id}
+                    className={`flex flex-col items-center gap-2 rounded-xl border border-transparent nya-panel p-3 backdrop-blur-md transition-all hover:border-primary/30 hover:bg-primary/[0.06] ${
+                      active ? "ring-2 ring-primary/50 bg-primary/10" : ""
+                    }`}
+                    onClick={() => applyCatalogSkin(choice)}
+                  >
+                    <div className="flex w-16 h-16 items-center justify-center overflow-hidden rounded-lg bg-default-100 dark:bg-gray-800">
+                      {choice.source ? (
+                        <img
+                          alt=""
+                          className="w-full h-full object-contain [image-rendering:pixelated]"
+                          src={choice.source}
+                        />
+                      ) : (
+                        <span className="text-xl font-bold text-gray-500 dark:text-gray-300">
+                          {choice.fallbackText}
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                      {choice.displayName}
+                      {active ? (
+                        <span className="ml-1 text-[10px] text-primary">
+                          {t("当前使用")}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="text-[10px] text-gray-400">
+                      {choice.model === "slim"
+                        ? t("纤细 · Slim")
+                        : t("经典 · Classic")}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </ModalShell>
+        </ModalContent>
+      </Modal>
+
+      {/* 正版皮肤模型选择弹层（WebView2 不支持 confirm，改用弹层） */}
+      <Modal
+        isOpen={modelOpen}
+        size="sm"
+        onClose={() => {
+          if (!modelBusy) setModelOpen(false);
+        }}
+        {...modalBehaviorProps}
+      >
+        <ModalContent>
+          <ModalShell
+            closeGuard={() => !modelBusy}
+            title={t("选择皮肤模型")}
+            onClose={() => {
+              if (!modelBusy) setModelOpen(false);
+            }}
+          >
+            <div className="flex gap-3">
+              <Button
+                className="flex-1"
+                isDisabled={modelBusy}
+                radius="full"
+                variant="flat"
+                onPress={() => uploadSkinWithModel("classic")}
+              >
+                {t("经典 · Steve")}
+              </Button>
+              <Button
+                className="flex-1"
+                color="primary"
+                isDisabled={modelBusy}
+                radius="full"
+                variant="flat"
+                onPress={() => uploadSkinWithModel("slim")}
+              >
+                {t("纤细 · Alex")}
+              </Button>
+            </div>
+          </ModalShell>
+        </ModalContent>
+      </Modal>
+    </div>
+  );
+};
+
+export default AccountPage;

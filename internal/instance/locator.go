@@ -5,6 +5,7 @@
 package instance
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +13,9 @@ import (
 	"sort"
 	"strings"
 
-	"nyalauncher/internal/config"
+	"nekolauncher/internal/config"
+	"nekolauncher/internal/logs"
+	"nekolauncher/internal/tools"
 )
 
 // MinecraftInstallationLocation 描述一次 Minecraft 安装路径解析的结果。
@@ -104,7 +107,7 @@ func ResolveInstallationPath(path string) (MinecraftInstallationLocation, error)
 	directoryName := filepath.Base(fullPath)
 	parent := filepath.Dir(fullPath)
 	if equalFoldOnWindows(filepath.Base(parent), "versions") &&
-		fileExists(filepath.Join(fullPath, directoryName+".json")) {
+		tools.FileExists(filepath.Join(fullPath, directoryName+".json")) {
 		// 版本目录的上一级（versions 的父级）即为 Minecraft 根目录
 		root := filepath.Dir(parent)
 		if root == parent {
@@ -144,41 +147,157 @@ func expandWindowsEnv(path string) string {
 	}
 }
 
+// maxVersionJSONSize 版本描述文件的大小上限：超过视为异常文件（官方 json 通常 < 1 MiB）。
+const maxVersionJSONSize = 1 << 20
+
+// maxInheritsFromDepth inheritsFrom 父链校验的最大回溯深度（同时防环）。
+const maxInheritsFromDepth = 3
+
+// versionJSONMeta 扫描时关心的版本描述文件最小字段集合。
+type versionJSONMeta struct {
+	InheritsFrom string `json:"inheritsFrom"`
+	// Jar 显式指定客户端 jar 的来源版本（官方规范字段，Forge/OptiFine 与
+	// 第三方启动器造的"变体版本"常用：自己的目录里只有 json，jar 借用别的版本）。
+	Jar string `json:"jar"`
+}
+
 // GetInstalledVersionIds 扫描指定 Minecraft 根目录下已安装的版本列表。
-// 只统计"版本文件夹内存在同名 .json 版本描述文件"的完整版本，
-// 可过滤掉下载中断留下的残缺目录。按名称忽略大小写降序排列。
+//
+// 目录约定：versions/<id>/<id>.json —— 整条启动 / 下载 / 改名管线都依赖该布局，
+// 扫描不得产出违反约定的版本 ID。
+//
+// 有效性判定（C# 时代"有 json 即有效"的重写版）：
+//  1. versions/<id>/<id>.json 存在、非空且可解析为 JSON；
+//  2. 满足任一：
+//     - 存在 versions/<id>/<id>.jar（自含客户端的完整版本）；
+//     - json 的 jar 字段指向一个真实存在的客户端 jar；
+//     - json 声明 inheritsFrom 且父版本本身有效（jar 由父版本沿链提供），
+//     父链最多回溯 maxInheritsFromDepth 层并防环。
+//
+// 借此过滤下载中断的残缺目录（只有 json 没有 jar）、损坏的 json、
+// 以及父版本已被删除的孤儿 Loader 实例——这些此前会进入列表但启动必然失败。
+// 被过滤的目录写入 DEBUG 日志便于排查。结果按名称忽略大小写降序排列。
 func GetInstalledVersionIds(minecraftDirectory string) []string {
+	ids, _ := GetInstalledVersionIdsChecked(minecraftDirectory)
+
+	return ids
+}
+
+// GetInstalledVersionIdsChecked 同 GetInstalledVersionIds，但用 ok 区分
+// "versions 目录里确实没有可用版本"（ok=true）与"目录存在却读不出来"
+// （ok=false，目录被占用 / 杀软扫描 / 权限不足）。
+// 调用方必须据此决定是否清理实例配置：把读取失败当成空集会把该目录下
+// 所有实例的隔离、内存、Java 路径等设置一次性抹掉。
+func GetInstalledVersionIdsChecked(minecraftDirectory string) ([]string, bool) {
 	versionsDirectory := filepath.Join(minecraftDirectory, "versions")
 	// 尚未下载任何版本时直接返回空列表
 	if info, err := os.Stat(versionsDirectory); err != nil || !info.IsDir() {
-		return []string{}
+		return []string{}, true
 	}
 
-	// 注意：不隐藏被 inheritsFrom 依赖的原版版本。原版目录由完整安装产生
-	// （含客户端 JAR 与用户数据），是可独立启动的实例；把它从列表里滤掉
-	// 会被用户理解为"安装 Loader 时覆盖了原版实例"，且删除 Loader 实例后
-	// 原版也将无处可见。
-	var allIds []string
 	entries, err := os.ReadDir(versionsDirectory)
 	if err != nil {
-		return []string{}
+		logs.Write("WARN", "读取 versions 目录失败，本次跳过实例配置清理："+err.Error())
+
+		return []string{}, false
 	}
+
+	var ids []string
 	for _, entry := range entries {
 		if !entry.IsDir() || entry.Name() == "" {
 			continue
 		}
 		id := entry.Name()
-		if fileExists(filepath.Join(versionsDirectory, id, id+".json")) {
-			allIds = append(allIds, id)
+		reason := validateVersionInstance(filepath.Join(versionsDirectory, id), id, 0)
+		if reason == "" {
+			ids = append(ids, id)
+			continue
 		}
+		logsWriteScanSkip(id, reason)
 	}
-	sort.Slice(allIds, func(i, j int) bool {
-		return strings.ToLower(allIds[i]) > strings.ToLower(allIds[j])
+
+	sort.Slice(ids, func(i, j int) bool {
+		return strings.ToLower(ids[i]) > strings.ToLower(ids[j])
 	})
-	if allIds == nil {
-		allIds = []string{}
+	if ids == nil {
+		ids = []string{}
 	}
-	return allIds
+	return ids, true
+}
+
+// validateVersionInstance 校验 versions/<id>/ 是否构成一个可启动的实例。
+// 返回空串表示有效；否则返回被过滤的原因（用于日志）。
+func validateVersionInstance(versionDir, id string, depth int) string {
+	jsonPath := filepath.Join(versionDir, id+".json")
+	info, err := os.Stat(jsonPath)
+	if err != nil || info.IsDir() {
+		return "缺少版本描述文件 " + id + ".json"
+	}
+	if info.Size() == 0 {
+		return "版本描述文件为空"
+	}
+	if info.Size() > maxVersionJSONSize {
+		return "版本描述文件异常过大"
+	}
+	raw, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return "版本描述文件不可读"
+	}
+	var meta versionJSONMeta
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return "版本描述文件不是有效 JSON"
+	}
+
+	// 自含客户端 jar 即为完整版本
+	if tools.FileExists(filepath.Join(versionDir, id+".jar")) {
+		return ""
+	}
+
+	// 没有自己的 jar：json 里的 jar 字段指向另一个版本时，客户端 jar 由那个版本提供。
+	// 启动侧（version_profile_loader）认这个字段，扫描侧也必须认——否则这些版本的
+	// 实例会从列表里消失，而扫描末尾的 PruneMissingVersions 还会顺手删掉它们的
+	// 内存/Java/窗口/隔离等全部实例配置。
+	if jar := strings.TrimSpace(meta.Jar); jar != "" && !strings.EqualFold(jar, id) {
+		jarPath := filepath.Join(filepath.Dir(versionDir), jar, jar+".jar")
+		if tools.FileExists(jarPath) {
+			return ""
+		}
+
+		return "json 声明的客户端 jar 不存在：" + jar
+	}
+
+	// 无 jar：声明 inheritsFrom 时客户端由父版本沿链提供
+	parent := strings.TrimSpace(meta.InheritsFrom)
+	if parent == "" {
+		return "缺少客户端 jar 且未声明 inheritsFrom"
+	}
+	if depth >= maxInheritsFromDepth {
+		return "inheritsFrom 链过深"
+	}
+	if strings.EqualFold(parent, id) {
+		return "inheritsFrom 指向自身"
+	}
+	parentDir := filepath.Join(filepath.Dir(versionDir), parent)
+	if dirExistsIn(parentDir) != nil {
+		return "inheritsFrom 父版本目录不存在：" + parent
+	}
+	if reason := validateVersionInstance(parentDir, parent, depth+1); reason != "" {
+		return "inheritsFrom 父版本无效（" + parent + "）：" + reason
+	}
+	return ""
+}
+
+// dirExistsIn path 存在且为目录时返回 nil。
+func dirExistsIn(path string) error {
+	if info, err := os.Stat(path); err != nil || !info.IsDir() {
+		return fmt.Errorf("目录不存在：%s", path)
+	}
+	return nil
+}
+
+// logsWriteScanSkip 记录被扫描过滤的版本目录（失败不影响扫描本身）。
+func logsWriteScanSkip(id, reason string) {
+	logs.Write("DEBUG", fmt.Sprintf("实例扫描跳过 %s：%s", id, reason))
 }
 
 // validateRootDirectory 校验指定路径是否为有效的 Minecraft 根目录（必须包含 versions 文件夹）。

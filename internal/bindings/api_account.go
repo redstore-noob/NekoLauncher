@@ -5,8 +5,8 @@ package bindings
 import (
 	"context"
 
-	"nyalauncher/internal/auth"
-	"nyalauncher/internal/launch"
+	"nekolauncher/internal/auth"
+	"nekolauncher/internal/launch"
 )
 
 // ---- 账号存储（auth.Shared） ----
@@ -36,33 +36,22 @@ func (a *AccountAPI) SelectAccountByStableKey(key string) bool {
 	return auth.Shared.SelectByStableKey(key)
 }
 
-// FindAccountByStableKey 按稳定键查找。
-func (a *AccountAPI) FindAccountByStableKey(key string) *auth.LaunchAccount {
-	return auth.Shared.FindByStableKey(key)
-}
-
-// ReloadAccounts 从磁盘重载。
-func (a *AccountAPI) ReloadAccounts() { auth.Shared.Reload() }
-
-// SaveAccounts 立即持久化。
-func (a *AccountAPI) SaveAccounts() { auth.Shared.Save() }
-
 // HasOfflineName 是否已存在同名离线账号。
 func (a *AccountAPI) HasOfflineName(name string) bool { return auth.Shared.HasOfflineName(name) }
 
 // UpdateMicrosoftAccount 更新正版账号凭据并持久化。
-func (a *AccountAPI) UpdateMicrosoftAccount(account *auth.LaunchAccount, ms *auth.MicrosoftAccount) {
-	auth.Shared.UpdateMicrosoftAccount(account, ms)
+func (a *AccountAPI) UpdateMicrosoftAccount(account *auth.LaunchAccount, ms *auth.MicrosoftAccount) error {
+	return auth.Shared.UpdateMicrosoftAccount(account, ms)
 }
 
 // UpdateAuthlibAccount 更新皮肤站账号凭据并持久化。
-func (a *AccountAPI) UpdateAuthlibAccount(account *auth.LaunchAccount, credential *auth.AuthlibCredential) {
-	auth.Shared.UpdateAuthlibAccount(account, credential)
+func (a *AccountAPI) UpdateAuthlibAccount(account *auth.LaunchAccount, credential *auth.AuthlibCredential) error {
+	return auth.Shared.UpdateAuthlibAccount(account, credential)
 }
 
 // UpdateOfflineSkin 更新离线账号皮肤。
-func (a *AccountAPI) UpdateOfflineSkin(account *auth.LaunchAccount, skinId string) {
-	auth.Shared.UpdateOfflineSkin(account, skinId)
+func (a *AccountAPI) UpdateOfflineSkin(account *auth.LaunchAccount, skinId string) error {
+	return auth.Shared.UpdateOfflineSkin(account, skinId)
 }
 
 // CreateOfflineAccount 创建离线账号（校验游戏名合法性、查重）。
@@ -93,17 +82,6 @@ func (a *AccountAPI) LoginMicrosoft() (auth.MicrosoftAccount, error) {
 	})
 }
 
-// RefreshMicrosoftAccount 用 refresh_token 刷新正版账号。
-// 凭据轮换但档案交换失败时返回 RotatedCredentialsError（含已刷新账号，前端应先保存）。
-func (a *AccountAPI) RefreshMicrosoftAccount(account auth.MicrosoftAccount) (auth.MicrosoftAccount, error) {
-	return a.microsoft.Refresh(callCtx(a.ctx), account)
-}
-
-// ValidateMicrosoftAccount 校验正版账号令牌，过期自动刷新。
-func (a *AccountAPI) ValidateMicrosoftAccount(account auth.MicrosoftAccount) (auth.MicrosoftAccount, error) {
-	return a.microsoft.Validate(callCtx(a.ctx), account)
-}
-
 // ---- 皮肤站（authlib-injector） ----
 
 // ResolveAuthlibServer 解析皮肤站地址并读取元数据。
@@ -117,33 +95,11 @@ func (a *AccountAPI) AuthlibLogin(apiRoot, username, password, clientToken strin
 	return a.authlib.Authenticate(callCtx(a.ctx), apiRoot, username, password, clientToken)
 }
 
-// ValidateOrRefreshAuthlib 启动前令牌保活，返回可用访问令牌（可能已刷新）。
-func (a *AccountAPI) ValidateOrRefreshAuthlib(credential *auth.AuthlibCredential, clientToken string) (string, error) {
-	return a.authlib.ValidateOrRefresh(callCtx(a.ctx), credential, clientToken)
-}
-
 // GetAuthlibClientToken 读取（或首次生成）本安装的 clientToken。
 func (a *AccountAPI) GetAuthlibClientToken() string { return auth.GetOrCreateClientToken() }
 
 // ---- 组件展示账号（组件页身份显示） ----
 
-// ResolveComponentDisplayAccount 组件所属的展示账号。
-func (a *AccountAPI) ResolveComponentDisplayAccount(componentId string) *auth.LaunchAccount {
-	return auth.ResolveComponentDisplayAccount(componentId)
-}
-
-// SetComponentDisplayAccountKey 设置组件展示账号的稳定键。
-func (a *AccountAPI) SetComponentDisplayAccountKey(componentId, accountKey string) {
-	auth.SetComponentDisplayAccountKey(componentId, accountKey)
-}
-
-// ---- 凭据保护（DPAPI 等） ----
-
-// IsSecretProtectionAvailable 当前平台是否支持凭据加密。
-func (a *AccountAPI) IsSecretProtectionAvailable() bool { return auth.IsAvailable() }
-
-// ProtectSecret 加密明文。
-func (a *AccountAPI) ProtectSecret(plaintext string) string { return auth.Protect(plaintext) }
-
-// UnprotectSecret 解密密文。
-func (a *AccountAPI) UnprotectSecret(stored string) string { return auth.Unprotect(stored) }
+// 凭据加解密（auth.Protect / auth.Unprotect）刻意不暴露成 Wails 命令：
+// 它们会把 DPAPI / AES 加解密变成 WebView（含未沙箱的插件 JS）可任意调用的原语，
+// 而前端从来不需要它们——账号的加解密全在 Go 侧完成。

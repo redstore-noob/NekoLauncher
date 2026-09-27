@@ -18,6 +18,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"nekolauncher/internal/info"
+	"nekolauncher/internal/tools"
 )
 
 // JavaRuntimeInstaller Java 运行时安装器。按平台自动选择安装包
@@ -161,9 +164,11 @@ const adoptiumAssetsAPI = "https://api.adoptium.net/v3/assets/latest/%d/hotspot"
 const oracleDownloadBase = "https://download.oracle.com/java/%d/latest/jdk-%d_%s_bin.%s"
 
 // javaClient 独立 HTTP 客户端：30 分钟整体超时（大文件下载），统一 UA。
+// 包装器 base 留空（RoundTrip 时解析 DefaultTransport），代理设置替换
+// 全局 Transport 后无需重建客户端即生效。
 var javaClient = &http.Client{
 	Timeout:   30 * time.Minute,
-	Transport: &userAgentRoundTripper{base: http.DefaultTransport, ua: "NyaLauncher/1.0"},
+	Transport: &userAgentRoundTripper{base: nil, ua: "NekoLauncher/" + info.Version()},
 }
 
 // JavaRuntimeInstaller 安装器实例（C# 为实例类；当前无可变状态，保留结构以便扩展）。
@@ -476,7 +481,7 @@ func (i *JavaRuntimeInstaller) InstallCandidate(
 	}
 	temporaryArchive := filepath.Join(os.TempDir(),
 		fmt.Sprintf("nyalauncher-java-%s-%d-%d.%s", vendorKey, candidate.MajorVersion, time.Now().UnixNano(), extension))
-	defer tryDeleteFile(temporaryArchive)
+	defer tools.RemoveFileIfExists(temporaryArchive)
 
 	reportJavaProgress(progress, fmt.Sprintf("正在下载 %s JDK %d", vendorDisplay, candidate.MajorVersion), 0, candidate.SizeBytes, 0)
 	if err := downloadJavaArchive(ctx, candidate.DownloadURL, temporaryArchive, candidate.SizeBytes, progress); err != nil {
@@ -516,9 +521,10 @@ func (i *JavaRuntimeInstaller) InstallCandidate(
 		}
 	}
 	if err := os.Rename(extractedRoot, targetDirectory); err != nil {
-		// 跨卷移动回退：复制后删除
+		// 跨卷移动回退：复制后删除。两个错误都要报出来——旧运行时在上面
+		// 已经被删掉了，只报 rename 的错误会掩盖真正的原因。
 		if copyErr := copyDirectory(extractedRoot, targetDirectory); copyErr != nil {
-			return nil, err
+			return nil, fmt.Errorf("安装 JDK 失败（rename: %v, copy: %w）", err, copyErr)
 		}
 		tryDeleteDirectory(extractedRoot)
 	}
@@ -707,6 +713,9 @@ func extractJavaArchive(archivePath, destinationDirectory string) error {
 					return err
 				}
 				writer.Close()
+			default:
+				// 符号链接/硬链接等条目一律跳过：运行时不需要，
+				// 且避免解包出指向包外路径的链接
 			}
 		}
 	default:
@@ -793,6 +802,8 @@ func tryGetJavaMajorVersion(javaExecutable string) *int {
 	var stderr, stdout strings.Builder
 	command.Stderr = &stderr
 	command.Stdout = &stdout
+	// java.exe 是控制台程序，探测时禁止闪现 cmd 窗口
+	tools.HideProcessWindow(command)
 	// 先等待退出（超时则强杀），再读取输出，杜绝挂起
 	if err := command.Run(); err != nil && ctx.Err() == nil {
 		return nil
@@ -864,14 +875,32 @@ func copyDirectory(source, target string) error {
 		if d.IsDir() {
 			return os.MkdirAll(destination, 0o755)
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
 		info, err := d.Info()
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(destination, data, info.Mode().Perm())
+		// 流式复制：JDK 单文件可达上百 MB，避免整文件读入内存。
+		// 不用 defer：Walk 回调里 defer 会把句柄一路攒到遍历结束才释放。
+		sourceFile, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		targetFile, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+		if err != nil {
+			sourceFile.Close()
+
+			return err
+		}
+		_, err = io.Copy(targetFile, sourceFile)
+		sourceCloseErr := sourceFile.Close()
+		closeErr := targetFile.Close()
+		if err != nil {
+			return err
+		}
+		if sourceCloseErr != nil {
+			return sourceCloseErr
+		}
+
+		return closeErr
 	})
 }

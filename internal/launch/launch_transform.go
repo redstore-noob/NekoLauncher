@@ -129,10 +129,21 @@ func resolveMinecraftTransform(
 }
 
 // validateFinalArguments 最终 Java 命令参数不允许空串或包含 \0。
+// 报错带上前后参数：空串本身没有内容，只说下标几乎无法定位（历史上这条报错就是这样
+// 把一个"离线账号的 --clientId 解析成空值"的问题藏了很久）。
 func validateFinalArguments(arguments []string) error {
 	for index, argument := range arguments {
-		if argument == "" || strings.ContainsRune(argument, '\x00') {
-			return newLaunchError(fmt.Sprintf("最终 Java 命令在第 %d 项包含非法参数。", index))
+		if argument == "" {
+			previous := ""
+			if index > 0 {
+				previous = arguments[index-1]
+			}
+			return newLaunchError(fmt.Sprintf(
+				"最终 Java 命令出现空参数（下标 %d，前一项 %q）。", index, previous))
+		}
+		if strings.ContainsRune(argument, '\x00') {
+			return newLaunchError(fmt.Sprintf(
+				"最终 Java 命令在下标 %d 处包含非法字符 \\0。", index))
 		}
 	}
 	return nil
@@ -388,16 +399,17 @@ func normalizeEach(paths []string, description string) ([]string, error) {
 	return result, nil
 }
 
+// copyArguments 拷贝参数列表并逐项校验（拒绝空串与空字符）。
+// Go 的 nil 切片语义上就是"没有参数"（与 C# 的 null 不同）：
+// 宿主不设置 Prepend/Append 列表时字段为 nil，这是正常路径，
+// 不能报"启动参数列表不能为 null"，否则任何启动都会失败。
 func copyArguments(arguments []string) ([]string, error) {
-	if arguments == nil {
-		return nil, newLaunchError("启动参数列表不能为 null。")
-	}
-	copied := make([]string, len(arguments))
+	copied := make([]string, 0, len(arguments))
 	for index, argument := range arguments {
 		if argument == "" || strings.ContainsRune(argument, '\x00') {
 			return nil, newLaunchError(fmt.Sprintf("启动参数第 %d 项非法。", index))
 		}
-		copied[index] = argument
+		copied = append(copied, argument)
 	}
 	return copied, nil
 }

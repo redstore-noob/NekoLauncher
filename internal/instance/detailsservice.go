@@ -10,7 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"nyalauncher/internal/content"
+	"nekolauncher/internal/content"
+	"nekolauncher/internal/tools"
 )
 
 // GameVersionDetails 详情页展示用的版本快照；所有集合一经构造不再变化。
@@ -131,7 +132,7 @@ func readVersionInheritanceChain(snapshot GameInstanceSnapshot, versionID string
 		visited[key] = true
 
 		jsonPath := filepath.Join(snapshot.MinecraftDirectory, "versions", cursor, cursor+".json")
-		if !fileExists(jsonPath) {
+		if !tools.FileExists(jsonPath) {
 			break
 		}
 
@@ -388,7 +389,7 @@ func matchesLoaderLibrary(loader, group, artifact string) bool {
 // net.minecraft 组件补全基础版本，其余组件以 "uid:version" 形式加入加载器识别信号。
 func readExternalComponentMetadata(instanceDirectory string, loaderSignals *[]string, baseGameVersion *string) {
 	packPath := filepath.Join(instanceDirectory, "mmc-pack.json")
-	if !fileExists(packPath) {
+	if !tools.FileExists(packPath) {
 		return
 	}
 

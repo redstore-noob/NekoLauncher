@@ -67,6 +67,14 @@ func (g *pauseGate) Resume() {
 // Wait 暂停期间阻塞调用方，直到恢复或 ctx 取消；未暂停时立即返回。
 // 应在下载读取循环的每轮读取前调用。
 func (g *pauseGate) Wait(ctx context.Context) error {
+	if !g.IsPaused() {
+		return nil
+	}
+	// 兜底轮询用同一个 ticker：暂停可能持续几十分钟，循环里反复 time.After
+	// 会一直新建定时器
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
 	for g.IsPaused() {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -79,7 +87,7 @@ func (g *pauseGate) Wait(ctx context.Context) error {
 			// 已恢复或信号被刷新，回到循环顶部重新检查暂停状态
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(1 * time.Second):
+		case <-ticker.C:
 			// 与 C# 的 1s 兜底轮询一致，防止信号竞态导致漏唤醒
 			if err := ctx.Err(); err != nil {
 				return err

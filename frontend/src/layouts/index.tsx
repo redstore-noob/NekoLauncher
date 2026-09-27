@@ -1,52 +1,360 @@
 /*
-MIT License
+ * Copyright 2024 Next UI
+ * Copyright 2026 烟花
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+import React, { useEffect, useRef, useState } from "react";
+import { Button, Checkbox, Modal, ModalContent } from "@heroui/react";
+import { ArrowMinimize20Regular, Power20Regular } from "@fluentui/react-icons";
 
-Copyright (c) 2024 Next UI
-Copyright (c) 2026 烟花
+import { TitleBar } from "../components/title-bar.tsx";
+import DownloadIndicator from "../components/download/DownloadIndicator";
+import ErrorBoundary from "../components/ErrorBoundary";
+import MicrosoftLoginProgress from "../components/microsoft-login-progress";
+import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
+import SwitchTransition, {
+  useSwitchDirection,
+} from "../components/screen-transition";
+import { SetValue } from "../../wailsjs/go/bindings/ConfigAPI";
+import {
+  ExitLauncher,
+  HideLauncher,
+} from "../../wailsjs/go/bindings/SystemAPI";
+import { EventsOn } from "../../wailsjs/runtime/runtime";
+import { onNavigate } from "../lib/navigation";
+import { extractThemeColor } from "../lib/monet";
+import { DEFAULT_PAGE_ID, loadPlugins, PageHost } from "../plugin";
+import { t } from "../i18n";
+import { useThemeColor } from "../theme-color";
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+import { BackgroundProvider, useBackground } from "./background";
+import Sidebar from "./Sidebar";
+import {
+  SimpleModeProvider,
+  useShellPages,
+  useSimpleMode,
+} from "./simple-mode";
+import {
+  SidebarSettingsProvider,
+  useSidebarSettings,
+} from "./sidebar-settings";
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-*/
-import React, { useState } from 'react';
-import Sidebar, { PageKey } from './Sidebar';
-import HomePage from './home';
-import SettingsPage from './settings';
-import { TitleBar } from '../components/title-bar.tsx';
-
-const Layouts: React.FC = () => {
-  const [activeKey, setActiveKey] = useState<PageKey>('home');
+// 底色层：全局背景至少垫一层主题底色，模糊/半透明的背景图叠在它上面混色，
+// 而不是直接和透明窗口外的桌面混。窗口不透明度只作用在这一层——越低桌面
+// 越透出来；背景层自身的"背景不透明度"不再乘窗口不透明度。
+const BaseColorLayer: React.FC = () => {
+  const { windowOpacity } = useBackground();
 
   return (
-    <div className="flex h-screen w-screen bg-white dark:bg-gray-950 text-gray-900 dark:text-gray-100 overflow-hidden">
-      {/*全局标题栏，也就是窗口标题*/}
-      <TitleBar title="NyaLauncher" />
+    <div
+      className="absolute inset-0 z-0 pointer-events-none"
+      style={{
+        backgroundColor: `rgb(var(--nya-shell) / ${windowOpacity / 100})`,
+      }}
+    />
+  );
+};
 
-      {/*标题栏下方的内容区*/}
-      <div className="flex flex-1 w-full pt-10 relative">
+// 背景层：图源/不透明度/模糊均由设置页驱动（layouts/background.tsx）；
+// 负 margin + 放大，避免 blur 在边缘露出透明缝隙；url 为空（纯白/图源未就绪）时不渲染。
+// WE 视频壁纸额外铺一层 <video> 播放原视频，解码失败时回落到底层预览图；
+// WE 网页壁纸铺一层 sandbox iframe（入口经 /wwwallpaper 路由提供）。
+// 底色由 BaseColorLayer 单独垫底，这里只管"背景不透明度"自身的混色。
+const BackgroundLayer: React.FC = () => {
+  const { url, videoUrl, webUrl, webInteractive, blur, opacity, scrim } =
+    useBackground();
+  const [videoFailed, setVideoFailed] = useState(false);
+
+  // 压暗度只管 scrim 罩色强度，模糊只由"背景模糊"滑杆控制，两个滑杆互不影响
+  const totalBlur = blur;
+
+  useEffect(() => {
+    setVideoFailed(false);
+  }, [videoUrl]);
+  if (!url && !videoUrl && !webUrl) return null;
+
+  return (
+    <div
+      className="absolute -inset-4 z-0 overflow-hidden pointer-events-none"
+      style={{
+        filter: totalBlur > 0 ? `blur(${totalBlur}px)` : undefined,
+        opacity: opacity / 100,
+      }}
+    >
+      {url && (
+        <div
+          // key 随图源变化 → 换图时重挂载、重放淡入，避免硬切闪一下
+          key={url}
+          className="absolute inset-0 bg-cover bg-center bg-no-repeat nya-bg-fade"
+          style={{ backgroundImage: `url("${url}")` }}
+        />
+      )}
+      {videoUrl && !videoFailed && (
+        <video
+          key={videoUrl}
+          autoPlay
+          loop
+          muted
+          playsInline
+          className="absolute inset-0 h-full w-full object-cover nya-bg-fade"
+          src={videoUrl}
+          onError={() => setVideoFailed(true)}
+        />
+      )}
+      {webUrl && (
+        // 网页壁纸是创意工坊里的任意 HTML：sandbox 只给 allow-scripts，
+        // 刻意不给 allow-same-origin —— 否则它能拿到启动器源站的 localStorage
+        // 与 window.go 绑定，等于把后端 API 全交给壁纸。
+        // 默认也不接收鼠标事件，避免壁纸吃掉界面点击（设置页可开"允许交互"）。
+        <iframe
+          key={webUrl}
+          className={`absolute inset-0 h-full w-full border-0 nya-bg-fade ${
+            webInteractive ? "pointer-events-auto" : "pointer-events-none"
+          }`}
+          sandbox="allow-scripts"
+          src={webUrl}
+          title={t("网页壁纸")}
+        />
+      )}
+      {/*黑白 scrim：亮色白/暗色黑，强度由设置页"背景压暗度"控制（默认 80%），
+       * 把任意壁纸压到接近主题明暗度，保证前景文字可读 */}
+      <div
+        className="absolute inset-0 nya-bg-scrim"
+        style={{ opacity: scrim / 100 }}
+      />
+    </div>
+  );
+};
+
+/**
+ * 背景取色桥接：主题色设为"跟随背景"时，从当前背景图里提一个莫奈式主色写回
+ * ThemeColorProvider。放在 Layouts 里是因为背景上下文只在这一层之上；
+ * 取不到（跨域受限 / 纯灰阶壁纸）时什么都不做，保留用户原来的颜色。
+ */
+const BackgroundMonetBridge: React.FC = () => {
+  const { url } = useBackground();
+  const { source, extractNonce, setExtractedColor } = useThemeColor();
+
+  useEffect(() => {
+    if (source !== "background" || !url) return;
+    let alive = true;
+
+    void extractThemeColor(url).then((result) => {
+      if (alive && result) setExtractedColor(result.hex);
+    });
+
+    return () => {
+      alive = false;
+    };
+  }, [url, source, extractNonce, setExtractedColor]);
+
+  return null;
+};
+
+const Layouts: React.FC = () => {
+  return (
+    <BackgroundProvider>
+      <SidebarSettingsProvider>
+        <SimpleModeProvider>
+          <BackgroundMonetBridge />
+          <Shell />
+        </SimpleModeProvider>
+      </SidebarSettingsProvider>
+    </BackgroundProvider>
+  );
+};
+
+/**
+ * 治启动闪屏的"揭幕"组件：窗口由 main.go 的 HideWindowOnStart 隐藏创建，
+ * 等两处启动配置（背景不透明度/模式 + 侧边栏布局/自动隐藏）都 hydrate 完、
+ * 首屏 DOM 定型后再显示窗口，用户看到的第一眼就是最终样子——不再经历
+ * "空白透明窗 → UI 弹出 → 不透明度突变 → 布局跳动"的全过程。
+ *
+ * 时机注意：
+ * - 不能用 requestAnimationFrame 等首帧：窗口隐藏时 WebView2 不合成帧，
+ *   rAF 回调永远不触发，窗口会一直藏着（只能等 Go 侧 5s 兜底）。
+ *   setTimeout 在隐藏页里至多被节流到 1Hz，仍然可靠。
+ * - 略留 50ms 缓冲，让 hydration 引发的重渲染（含各模式取图 effect 的
+ *   发起）先提交，Show 后 WebView 立即合成最终布局。
+ * - 浏览器里直接跑 Vite dev（无 Wails runtime）时 Show 不存在，安全跳过。
+ */
+const WindowReveal: React.FC = () => {
+  const { hydrated: backgroundHydrated } = useBackground();
+  const { hydrated: sidebarHydrated } = useSidebarSettings();
+  // S 模式改变侧边栏构成与首屏，同样要等它落定再揭幕
+  const { hydrated: simpleModeHydrated } = useSimpleMode();
+  const revealed = useRef(false);
+
+  useEffect(() => {
+    if (
+      !backgroundHydrated ||
+      !sidebarHydrated ||
+      !simpleModeHydrated ||
+      revealed.current
+    )
+      return;
+    revealed.current = true;
+    const timer = window.setTimeout(() => {
+      window.runtime?.Show?.();
+    }, 50);
+
+    return () => window.clearTimeout(timer);
+  }, [backgroundHydrated, sidebarHydrated, simpleModeHydrated]);
+
+  return null;
+};
+
+// Shell 主框架：底色单独垫在 BaseColorLayer（见上），根容器保持透明，
+// 桌面透出程度由窗口不透明度决定（窗口创建为可透明，见 main.go）。
+const Shell: React.FC = () => {
+  const [activeKey, setActiveKey] = useState<string>(DEFAULT_PAGE_ID);
+  // 自动隐藏时内容区顶到窗口左缘，侧边栏改为悬浮弹出、不再占位
+  const { autoHide } = useSidebarSettings();
+  // 订阅页面列表：S 模式下只剩五个页面，主页改标「启动」；插件加载后自动跟上
+  const pages = useShellPages();
+
+  // ---- 点 X 的关闭询问（后端 OnBeforeClose 分发为 launcher:close-requested） ----
+  const [closeAskOpen, setCloseAskOpen] = useState(false);
+  const [rememberClose, setRememberClose] = useState(false);
+
+  useEffect(
+    () => EventsOn("launcher:close-requested", () => setCloseAskOpen(true)),
+    [],
+  );
+
+  const answerClose = async (action: "tray" | "exit") => {
+    const remember = rememberClose;
+
+    setCloseAskOpen(false);
+    setRememberClose(false);
+    try {
+      if (remember) await SetValue("closeAction", action);
+    } catch {
+      /* 记住失败就下次继续询问 */
+    }
+    try {
+      if (action === "exit") await ExitLauncher();
+      else await HideLauncher();
+    } catch {
+      /* 后端兜底：调用失败窗口保持原样 */
+    }
+  };
+
+  // 插件在首帧之后加载，避免拖慢启动；注册表变更后界面自动跟上
+  useEffect(() => {
+    void loadPlugins();
+  }, []);
+
+  // 主页小组件等通过导航总线请求切页
+  useEffect(() => onNavigate((request) => setActiveKey(request.pageId)), []);
+
+  // 当前页未注册（插件被禁用/卸载）时回落到默认页
+  const activePage =
+    pages.find((page) => page.id === activeKey) ??
+    pages.find((page) => page.id === DEFAULT_PAGE_ID);
+
+  // 切换方向按侧边栏顺序推导：往后面的页面切则新内容从右滑入，反之从左
+  const activeIndex = activePage
+    ? pages.findIndex((page) => page.id === activePage.id)
+    : -1;
+  const direction = useSwitchDirection(activeIndex);
+
+  return (
+    <div className="relative flex h-screen w-screen overflow-hidden text-gray-900 dark:text-gray-100">
+      {/*底色层（窗口不透明度作用在这层）+ 全局背景层（图源/透明度/模糊）*/}
+      <BaseColorLayer />
+      <BackgroundLayer />
+
+      {/*全局标题栏，也就是窗口标题*/}
+      <TitleBar title="NekoLauncher" />
+
+      {/*标题栏下方的内容区（背景层从标题栏一直铺到底部）*/}
+      <div className="relative flex flex-1 w-full pt-10 z-[1]">
         {/*全局左侧栏*/}
         <Sidebar activeKey={activeKey} onNavigate={setActiveKey} />
 
-        {/*内容区*/}
-        <div className="flex-1 ml-16 relative">
-          {activeKey === 'home' && <HomePage />}
-          {activeKey === 'settings' && <SettingsPage />}
+        {/*内容区（自动隐藏时不再为收起的侧边栏留位）*/}
+        <div
+          className={`flex-1 relative overflow-hidden ${autoHide ? "ml-0" : "ml-16"}`}
+        >
+          {/* 按页 key 做滑动切换；页面出错只丢这一页，不会把整个界面带走 */}
+          <SwitchTransition
+            activeKey={activePage?.id ?? "missing"}
+            className="h-full w-full"
+            direction={direction}
+          >
+            <ErrorBoundary title={activePage?.label}>
+              {activePage ? <PageHost definition={activePage} /> : null}
+            </ErrorBoundary>
+          </SwitchTransition>
         </div>
       </div>
+
+      {/*全局下载进度指示（跨页面常驻，点击打开下载页）*/}
+      <DownloadIndicator onOpenDownloads={() => setActiveKey("download")} />
+
+      {/*内嵌微软登录进度（登录页跳转往返会重载 SPA，浮层全局挂载接力显示）*/}
+      <MicrosoftLoginProgress />
+
+      {/*启动闪屏治理：配置落定后揭幕窗口（见组件注释）*/}
+      <WindowReveal />
+
+      {/*点 X 时的关闭询问：最小化到托盘 / 退出，可记住选择（设置页可改）*/}
+      <Modal
+        isOpen={closeAskOpen}
+        size="sm"
+        onClose={() => setCloseAskOpen(false)}
+        {...modalBehaviorProps}
+      >
+        <ModalContent>
+          <ModalShell
+            icon={<Power20Regular />}
+            title={t("关闭启动器")}
+            onClose={() => setCloseAskOpen(false)}
+          >
+            <div className="flex flex-col gap-3">
+              <Checkbox
+                isSelected={rememberClose}
+                size="sm"
+                onValueChange={setRememberClose}
+              >
+                {t("记住我的选择")}
+              </Checkbox>
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  startContent={<ArrowMinimize20Regular />}
+                  variant="flat"
+                  onPress={() => void answerClose("tray")}
+                >
+                  {t("最小化到托盘")}
+                </Button>
+                <Button
+                  color="danger"
+                  startContent={<Power20Regular />}
+                  variant="flat"
+                  onPress={() => void answerClose("exit")}
+                >
+                  {t("退出启动器")}
+                </Button>
+              </div>
+              <div className="text-[11px] text-gray-400">
+                {t("记住后可在「设置 → 启动器行为」中修改。")}
+              </div>
+            </div>
+          </ModalShell>
+        </ModalContent>
+      </Modal>
     </div>
   );
 };

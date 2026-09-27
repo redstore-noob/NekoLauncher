@@ -1,0 +1,1248 @@
+/*
+ * Copyright 2026 烟花
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * 联机页：把两家联机供应商（陶瓦联机 / 红石联机）收敛成同一套交互。
+ *
+ * 页面不做任何协议处理——建房 / 加入 / 退出都是后端会话（internal/online），
+ * 状态由 online:changed 事件推送（后端内部轮询供应商的状态机），前端只负责
+ * 渲染与把用户动作转成一次调用。两家的形态差异（虚拟局域网 vs 公网中继）
+ * 体现在供应商说明、设置项与提示文案上。
+ *
+ * 左列 = 当前会话与建房/加入操作，右列 = 供应商设置（含本机后台服务状态）。
+ */
+import type { ReactNode } from "react";
+import type { online } from "../../wailsjs/go/models";
+
+type ProviderInfo = online.ProviderInfo;
+type SessionStatus = online.Status;
+type OnlineSettings = online.Settings;
+type ProviderRuntime = online.Runtime;
+type GameServerOption = online.LocalServer;
+type RelayNode = online.RelayOption;
+
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Button,
+  Chip,
+  Input,
+  Select,
+  SelectItem,
+  Spinner,
+} from "@heroui/react";
+import {
+  Add20Regular,
+  ArrowExit20Regular,
+  ArrowSync20Regular,
+  ArrowDownload20Regular,
+  CheckmarkCircle20Regular,
+  ChevronRight20Regular,
+  Copy20Regular,
+  Dismiss20Regular,
+  Flash20Regular,
+  FolderOpen20Regular,
+  Globe20Regular,
+  Info20Regular,
+  Link20Regular,
+  Open20Regular,
+  People20Regular,
+  Play20Regular,
+  Rocket20Regular,
+  Server20Regular,
+  Warning20Regular,
+} from "@fluentui/react-icons";
+
+import SegmentedTabs from "../components/segmented-tabs";
+import { confirm, notify } from "../components/overlay/dialog";
+import { Launch } from "../../wailsjs/go/bindings/LauncherAPI";
+import {
+  InstallTerracotta,
+  GetRuntime,
+  GetSettings,
+  ListStatuses,
+  Host,
+  Join,
+  Leave,
+  ListLocalServers,
+  ListProviders,
+  ListRelayOptions,
+  OpenPage,
+  SaveSettings,
+  ShutdownProvider,
+  UseFastestRelay,
+} from "../../wailsjs/go/bindings/OnlineAPI";
+import { SelectFile } from "../../wailsjs/go/bindings/SystemAPI";
+import { EventsOn } from "../../wailsjs/runtime/runtime";
+import { t } from "../i18n";
+import { errorMessage } from "../lib/home";
+import { isWindowsPlatform } from "../lib/platform";
+
+/** 默认中继提示（与后端 online.DefaultRelayAddress 保持一致）。 */
+const DEFAULT_RELAY_HINT = "122.51.108.96";
+/** 设置读回前的兜底值（与后端 online 包的默认值保持一致）。 */
+const FALLBACK_SETTINGS: OnlineSettings = {
+  Provider: "terracotta",
+  Player: "",
+  TerracottaPath: "",
+  RedstoneRelay: DEFAULT_RELAY_HINT,
+  RedstoneKey: "",
+  Target: "127.0.0.1:25565",
+  ServerID: "",
+  MaxPlayers: 8,
+};
+
+/** 会话状态 → 中文文案与配色（Chip 的 color 取值见 HeroUI）。 */
+function stateChip(status: SessionStatus | null): ReactNode {
+  const state = status?.State ?? "idle";
+
+  if (state === "hosting") {
+    return (
+      <Chip color="success" size="sm" variant="flat">
+        ● {t("房间已就绪")}
+      </Chip>
+    );
+  }
+  if (state === "joined") {
+    return (
+      <Chip color="success" size="sm" variant="flat">
+        ● {t("已连接")}
+      </Chip>
+    );
+  }
+  if (state === "starting") {
+    return (
+      <Chip color="warning" size="sm" variant="flat">
+        {t("准备中")}
+      </Chip>
+    );
+  }
+  if (state === "error") {
+    return (
+      <Chip color="danger" size="sm" variant="flat">
+        {t("出错")}
+      </Chip>
+    );
+  }
+
+  return (
+    <Chip size="sm" variant="flat">
+      {t("空闲")}
+    </Chip>
+  );
+}
+
+/** 复制到剪贴板（含降级方案，WebView 上 clipboard API 偶尔不可用）。 */
+async function copyText(value: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(value);
+
+    return true;
+  } catch {
+    try {
+      const area = document.createElement("textarea");
+
+      area.value = value;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand("copy");
+
+      area.remove();
+
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** 窄标签 + 值的一行设置项。 */
+const SettingRow: React.FC<{
+  label: string;
+  hint?: string;
+  children: ReactNode;
+}> = ({ label, hint, children }) => (
+  <div className="flex flex-col gap-1.5">
+    <span className="text-[12px] font-medium text-gray-600 dark:text-gray-300">
+      {t(label)}
+    </span>
+    {children}
+    {hint ? (
+      <span className="text-[10px] leading-tight text-gray-400 dark:text-gray-500">
+        {t(hint)}
+      </span>
+    ) : null}
+  </div>
+);
+
+const OnlinePage: React.FC = () => {
+  const [providers, setProviders] = useState<ProviderInfo[]>([]);
+  const [providerId, setProviderId] = useState("terracotta");
+  const [statusMap, setStatusMap] = useState<Record<string, SessionStatus>>({});
+  // 设置永远有值：读回前用与后端一致的默认值，避免表单/按钮出现"点了没反应"
+  const [settings, setSettings] = useState<OnlineSettings>(FALLBACK_SETTINGS);
+  const [runtime, setRuntime] = useState<ProviderRuntime | null>(null);
+  const [servers, setServers] = useState<GameServerOption[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [launching, setLaunching] = useState(false);
+
+  // 建房表单
+  const [joinInput, setJoinInput] = useState("");
+  // 红石联机的转发目标：启动器托管的服务器 / 本机端口（固定转发到 127.0.0.1）
+  const [targetMode, setTargetMode] = useState<"server" | "manual">("server");
+  const [targetServerId, setTargetServerId] = useState("");
+  const [manualPort, setManualPort] = useState("25565");
+
+  // 设置面板
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [installing, setInstalling] = useState(false);
+
+  // 红石联机的中继节点：候选列表（测速结果由"一键选最快"的提示直接给出）
+  const [relayNodes, setRelayNodes] = useState<RelayNode[]>([]);
+  const [probing, setProbing] = useState(false);
+  // 高级设置默认折叠：中继节点 / 并发上限都是一次性配置；API Key、节点预检
+  // 与自动换线已封装进后端建房流程，界面不再暴露
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const provider = useMemo(
+    () => providers.find((item) => item.ID === providerId) ?? null,
+    [providers, providerId],
+  );
+  const isRedstone = providerId === "redstone";
+
+  // 后端按供应商各持一个会话：状态按 Provider 归位，两个标签页互不干扰
+  const statusForCurrent = statusMap[providerId] ?? null;
+  const currentState = statusForCurrent?.State ?? "idle";
+  const sessionLive =
+    currentState === "hosting" ||
+    currentState === "joined" ||
+    currentState === "starting";
+  const otherProviderId = providerId === "redstone" ? "terracotta" : "redstone";
+  const otherStatus = statusMap[otherProviderId] ?? null;
+  // 另一家也开着会话：只是告知（两家可以同时开），不再要求用户先退出
+  const otherProviderLive =
+    !!otherStatus &&
+    otherStatus.State !== "idle" &&
+    otherStatus.State !== "error";
+
+  const patchSettings = useCallback((patch: Partial<OnlineSettings>) => {
+    setSettings((prev) => ({ ...prev, ...patch }));
+    setSettingsDirty(true);
+  }, []);
+
+  const refreshRuntime = useCallback(async (id: string) => {
+    try {
+      setRuntime(await GetRuntime(id));
+    } catch {
+      setRuntime(null);
+    }
+  }, []);
+
+  const refreshServers = useCallback(async () => {
+    try {
+      const list = await ListLocalServers();
+
+      setServers(Array.isArray(list) ? list : []);
+    } catch {
+      setServers([]);
+    }
+  }, []);
+
+  /** 拉取可选节点（内置 + 已保存的自定义节点）。 */
+  const refreshRelayNodes = useCallback(async () => {
+    try {
+      const list = await ListRelayOptions();
+
+      setRelayNodes(Array.isArray(list) ? list : []);
+    } catch {
+      setRelayNodes([]);
+    }
+  }, []);
+
+  /** 一键测速并挑最快的节点写进设置（预检结果由后端返回）。 */
+  const pickFastestRelay = useCallback(async () => {
+    setProbing(true);
+    try {
+      const probe = await UseFastestRelay();
+
+      if (probe?.Address) {
+        // 后端已经把节点写进设置；这里同步表单（其它字段的未保存修改仍然算脏）
+        patchSettings({ RedstoneRelay: probe.Address });
+        notify.success(
+          t("已选用最快节点 {0}（{1} ms）", {
+            "0": probe.Address,
+            "1": String(probe.LatencyMs),
+          }),
+        );
+        await refreshRelayNodes();
+      }
+    } catch (ex) {
+      notify.error(t("自动选节点失败：{0}", { "0": errorMessage(ex) }));
+    } finally {
+      setProbing(false);
+    }
+  }, [patchSettings, refreshRelayNodes]);
+
+  // 首帧：供应商 / 设置 / 状态 / 本机服务器
+  useEffect(() => {
+    void ListProviders()
+      .then((list) => setProviders(Array.isArray(list) ? list : []))
+      .catch(() => setProviders([]));
+    void GetSettings()
+      .then((value) => {
+        if (!value) return;
+        setSettings(value);
+        setProviderId(value.Provider || "terracotta");
+        // 兼容旧配置（完整的 host:port）：只取端口部分
+        const target = value.Target ?? "";
+        const port = target.includes(":")
+          ? target.split(":").pop() || ""
+          : target;
+
+        setManualPort(/^\d{1,5}$/.test(port) ? port : "25565");
+        if (value.ServerID) setTargetServerId(value.ServerID);
+      })
+      .catch(() => undefined);
+    void ListStatuses()
+      .then((list) => {
+        const map: Record<string, SessionStatus> = {};
+
+        (Array.isArray(list) ? list : []).forEach((item) => {
+          if (item?.Provider) map[item.Provider] = item;
+        });
+        setStatusMap(map);
+      })
+      .catch(() => undefined);
+    void refreshServers();
+    void refreshRuntime("terracotta");
+    void refreshRelayNodes();
+  }, [refreshServers, refreshRuntime, refreshRelayNodes]);
+
+  // 会话状态由后端推送，前端不轮询（按 Provider 归位，两家的状态各自更新）
+  useEffect(() => {
+    const off = EventsOn("online:changed", (payload: SessionStatus) => {
+      if (!payload?.Provider) return;
+      setStatusMap((prev) => ({ ...prev, [payload.Provider]: payload }));
+    });
+
+    return () => {
+      if (typeof off === "function") off();
+    };
+  }, []);
+
+  // 切供应商时刷新本机运行时状态（陶瓦是否有进程、红石是否有隧道）
+  useEffect(() => {
+    void refreshRuntime(providerId);
+  }, [providerId, refreshRuntime]);
+
+  /** 一键进服：用启动器当前实例直接连到会话地址。 */
+  const joinGame = async () => {
+    if (!statusForCurrent?.JoinHost) return;
+    setLaunching(true);
+    try {
+      const result = await Launch(
+        statusForCurrent.JoinHost,
+        statusForCurrent.JoinPort || null,
+      );
+
+      if (!result?.Success) {
+        notify.error(result?.Message || t("启动失败"));
+      } else {
+        notify.success(t("已启动游戏并连接服务器"));
+      }
+    } catch (ex) {
+      notify.error(t("启动失败：{0}", { "0": errorMessage(ex) }));
+    } finally {
+      setLaunching(false);
+    }
+  };
+
+  const doHost = async () => {
+    if (isRedstone) {
+      if (targetMode === "server" && !targetServerId) {
+        notify.warning(t("请先选择要转发的本机服务器"));
+
+        return;
+      }
+      if (targetMode === "manual") {
+        const port = Number(manualPort);
+
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          notify.warning(t("请先填写要转发的本机端口（1-65535）"));
+
+          return;
+        }
+      }
+    }
+
+    setBusy(true);
+    try {
+      await Host({
+        Provider: providerId,
+        Player: settings.Player ?? "",
+        Target:
+          isRedstone && targetMode === "manual"
+            ? `127.0.0.1:${Number(manualPort)}`
+            : "",
+        ServerID: isRedstone && targetMode === "server" ? targetServerId : "",
+        MaxPlayers: settings.MaxPlayers || 0,
+      });
+    } catch (ex) {
+      notify.error(t("创建房间失败：{0}", { "0": errorMessage(ex) }));
+    } finally {
+      setBusy(false);
+      void refreshRuntime(providerId);
+    }
+  };
+
+  const doJoin = async () => {
+    const value = joinInput.trim();
+
+    if (!value) {
+      notify.warning(
+        isRedstone
+          ? t("请先填写房主给你的公网地址")
+          : t("请先填写房主给你的房间码"),
+      );
+
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await Join(providerId, value, settings.Player ?? "");
+    } catch (ex) {
+      notify.error(t("加入房间失败：{0}", { "0": errorMessage(ex) }));
+    } finally {
+      setBusy(false);
+      void refreshRuntime(providerId);
+    }
+  };
+
+  const doLeave = async () => {
+    setBusy(true);
+    try {
+      // 只退出当前标签页这一家：另一家的会话继续跑
+      await Leave(providerId);
+    } catch (ex) {
+      notify.error(t("退出房间失败：{0}", { "0": errorMessage(ex) }));
+    } finally {
+      setBusy(false);
+      void refreshRuntime(providerId);
+    }
+  };
+
+  const doSaveSettings = async () => {
+    setSaving(true);
+    try {
+      await SaveSettings({ ...settings, Provider: providerId });
+      setSettingsDirty(false);
+      notify.success(t("联机设置已保存"));
+      void refreshRuntime(providerId);
+    } catch (ex) {
+      notify.error(t("保存失败：{0}", { "0": errorMessage(ex) }));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const installTerracotta = async () => {
+    setInstalling(true);
+    try {
+      const result = await InstallTerracotta();
+
+      if (result?.ManualHint) {
+        notify.warning(result.ManualHint);
+
+        return;
+      }
+      if (result?.Path) {
+        patchSettings({ TerracottaPath: result.Path });
+        notify.success(
+          t("已安装陶瓦联机 {0}，保存后生效", { "0": result.Version ?? "" }),
+        );
+        await refreshRuntime(providerId);
+      }
+    } catch (ex) {
+      notify.error(t("安装失败：{0}", { "0": errorMessage(ex) }));
+    } finally {
+      setInstalling(false);
+    }
+  };
+
+  const pickTerracottaBinary = async () => {
+    try {
+      const picked = await SelectFile(
+        t("选择陶瓦联机可执行文件"),
+        t("陶瓦联机"),
+        // Windows 的发行物是 .exe；macOS/Linux 没有扩展名约定，不加过滤器
+        isWindowsPlatform() ? "*.exe" : "",
+      );
+
+      if (!picked) return;
+      patchSettings({ TerracottaPath: picked });
+      notify.info(t("已选择 {0}，保存后生效", { "0": picked }));
+    } catch {
+      /* 用户取消 */
+    }
+  };
+
+  const shutdownProvider = async () => {
+    const ok = await confirm(
+      t("关闭后台服务"),
+      isRedstone
+        ? t("将断开隧道并让中继释放端口，房间里的玩家会立刻掉线。")
+        : t(
+            "将结束本机的陶瓦联机进程。如果它是你自己打开的窗口，那个窗口也会一起关闭。",
+          ),
+      { confirmLabel: t("关闭服务"), severity: "warning" },
+    );
+
+    if (!ok) return;
+    try {
+      await ShutdownProvider(providerId);
+      notify.success(t("后台服务已关闭"));
+    } catch (ex) {
+      notify.error(t("关闭失败：{0}", { "0": errorMessage(ex) }));
+    } finally {
+      void refreshRuntime(providerId);
+    }
+  };
+
+  const copyValue = async (value: string, label: string) => {
+    const ok = await copyText(value);
+
+    if (ok) notify.success(t("{0} 已复制到剪贴板", { "0": t(label) }));
+    else notify.error(t("复制失败，请手动选中文本复制"));
+  };
+
+  const providerTabs = providers.map((item) => ({
+    key: item.ID,
+    label: (
+      <span className="flex items-center gap-1.5">
+        {item.ID === "redstone" ? <Globe20Regular /> : <People20Regular />}
+        {t(item.Name)}
+      </span>
+    ),
+  }));
+
+  const switchProvider = (next: string) => {
+    setProviderId(next);
+    if (settings) patchSettings({ Provider: next });
+    setJoinInput("");
+  };
+
+  const serverOptions = useMemo(
+    () =>
+      servers.map((item) => ({
+        key: item.ID,
+        name: item.Name,
+        port: item.Port,
+        running: item.Running,
+      })),
+    [servers],
+  );
+
+  const selectedServer = servers.find((item) => item.ID === targetServerId);
+  // 选中服务器后给一行"实际会被转发的地址"，避免用户以为填的是公网地址
+  const selectedServerHint = selectedServer
+    ? t("将转发到 127.0.0.1:{0}（端口取自服务器配置）", {
+        "0": String(selectedServer.Port),
+      })
+    : "";
+
+  // 节点下拉项：内置的加个标记，方便和自定义节点区分
+  const relayNodeItems = useMemo(
+    () =>
+      relayNodes.map((node) => ({
+        key: node.Address,
+        name: node.Name,
+        label: `${node.Name} · ${node.Address}${node.Builtin ? ` · ${t("内置")}` : ""}`,
+      })),
+    [relayNodes],
+  );
+
+  // ---- 会话卡片 ----
+  const sessionCard = () => {
+    if (!statusForCurrent) return null;
+
+    const isHost = statusForCurrent.State === "hosting";
+    const shareValue = statusForCurrent.Room || statusForCurrent.Address;
+    const shareLabel = isHost
+      ? isRedstone
+        ? t("联机地址")
+        : t("房间码")
+      : t("房间地址");
+    // 出错时可能根本没有房间（例如建房第一步就失败），标题别谎称"已加入的房间"
+    const failedWithoutRoom =
+      statusForCurrent.State === "error" &&
+      !shareValue &&
+      !statusForCurrent.JoinHost;
+
+    return (
+      <div className="nya-panel-inner flex flex-col gap-3 rounded-2xl border nya-border p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="flex size-9 flex-none items-center justify-center rounded-xl bg-primary/15 text-primary">
+            {isHost ? <Rocket20Regular /> : <Link20Regular />}
+          </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">
+                {failedWithoutRoom
+                  ? t("上次操作失败")
+                  : isHost
+                    ? t("我创建的房间")
+                    : t("已加入的房间")}
+              </span>
+              {stateChip(statusForCurrent)}
+            </div>
+            <div className="truncate text-[11px] text-gray-400">
+              {t(statusForCurrent.Phase || "")}
+              {statusForCurrent.Since
+                ? ` · ${t("开始于")} ${new Date(statusForCurrent.Since * 1000).toLocaleTimeString()}`
+                : ""}
+            </div>
+          </div>
+          <div className="ml-auto flex items-center gap-1.5">
+            {currentState === "starting" ? <Spinner size="sm" /> : null}
+            <Button
+              color="danger"
+              isDisabled={busy}
+              size="sm"
+              startContent={<ArrowExit20Regular />}
+              variant="flat"
+              onPress={() => void doLeave()}
+            >
+              {currentState === "starting" ? t("取消") : t("退出房间")}
+            </Button>
+          </div>
+        </div>
+
+        {/* 可分享的值：房主是房间码/公网地址，红石房客是自己要连的地址 */}
+        {shareValue ? (
+          <div className="flex items-center gap-2 rounded-xl border border-primary/30 bg-primary/5 px-3 py-2">
+            <span className="min-w-0 flex-1 select-all break-all font-mono text-[15px] font-semibold tracking-wide text-primary">
+              {shareValue}
+            </span>
+            <Button
+              isIconOnly
+              aria-label={t("复制")}
+              size="sm"
+              variant="flat"
+              onPress={() => void copyValue(shareValue, shareLabel)}
+            >
+              <Copy20Regular />
+            </Button>
+          </div>
+        ) : null}
+
+        {statusForCurrent.Tip ? (
+          <div className="flex items-start gap-1.5 text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+            <Info20Regular className="mt-0.5 flex-none" />
+            <span>{t(statusForCurrent.Tip)}</span>
+          </div>
+        ) : null}
+
+        {/* 中继节点说明（预检发现切换节点 / 全部不通时的运行期提示，原样展示） */}
+        {statusForCurrent.RelayNote ? (
+          <div className="flex items-start gap-1.5 rounded-xl border border-warning/30 bg-warning/5 px-3 py-2 text-[11px] leading-relaxed text-warning-600 dark:text-warning-400">
+            <Globe20Regular className="mt-0.5 flex-none" />
+            <span>{statusForCurrent.RelayNote}</span>
+          </div>
+        ) : null}
+
+        {/* 当前连接数（红石中继不暴露成员名单，只报活跃隧道连接） */}
+        {isRedstone && isHost ? (
+          <div className="text-[11px] text-gray-500 dark:text-gray-400">
+            {t("当前连接数")}：{statusForCurrent.Connections ?? 0}
+          </div>
+        ) : null}
+
+        {/* 成员列表：陶瓦来自房间状态机；红石转发托管服务器时来自服务器的 list */}
+        {statusForCurrent.Players?.length ? (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-[12px] font-medium text-gray-600 dark:text-gray-300">
+              {isRedstone ? t("在线玩家") : t("房间成员")} ·{" "}
+              {statusForCurrent.Players.length}
+            </span>
+            <div className="flex flex-wrap gap-1.5">
+              {statusForCurrent.Players.map((player, index) => (
+                <span
+                  key={`${player.Name}-${index}`}
+                  className="flex items-center gap-1.5 rounded-full border nya-border px-2.5 py-1 text-[11px] text-gray-600 dark:text-gray-300"
+                >
+                  <People20Regular />
+                  {player.Name}
+                  <span
+                    className={
+                      player.Kind === "HOST"
+                        ? "text-primary"
+                        : "text-gray-400 dark:text-gray-500"
+                    }
+                  >
+                    {player.Kind === "HOST" ? t("房主") : t("成员")}
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {statusForCurrent.JoinHost ? (
+          <div>
+            <Button
+              color="primary"
+              isLoading={launching}
+              size="sm"
+              startContent={launching ? undefined : <Play20Regular />}
+              variant="flat"
+              onPress={() => void joinGame()}
+            >
+              {t("一键进服")}
+            </Button>
+            {statusForCurrent.LocalAddress ? (
+              <span className="ml-2 font-mono text-[11px] text-gray-400">
+                {statusForCurrent.LocalAddress}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {currentState === "error" && statusForCurrent.Error ? (
+          <div className="flex items-start gap-1.5 rounded-xl border border-danger/30 bg-danger/5 px-3 py-2 text-[11px] leading-relaxed text-danger">
+            <Warning20Regular className="mt-0.5 flex-none" />
+            <span>{statusForCurrent.Error}</span>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  return (
+    <div className="relative flex h-full w-full gap-3 overflow-hidden p-3">
+      {/* ============ 左列：会话与操作 ============ */}
+      <div className="nya-panel flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border nya-border">
+        <div className="flex flex-none flex-col gap-3 px-5 pb-2 pt-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex size-9 flex-none items-center justify-center rounded-xl bg-primary/15 text-primary">
+              <People20Regular />
+            </div>
+            <div className="min-w-0">
+              <div className="text-lg font-semibold text-gray-800 dark:text-gray-200">
+                {t("联机")}
+              </div>
+            </div>
+            {providers.length > 0 ? (
+              <SegmentedTabs
+                className="ml-auto flex items-center gap-1 rounded-full border nya-border p-1"
+                disabled={currentState === "starting" || busy}
+                items={providerTabs}
+                layoutId="nya-online-provider"
+                value={providerId}
+                onChange={switchProvider}
+              />
+            ) : null}
+          </div>
+
+          {/* 供应商说明 */}
+          {provider ? (
+            <div className="flex flex-col gap-1.5 rounded-2xl border nya-border px-3 py-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">
+                  {t(provider.Name)}
+                </span>
+                {provider.Ready ? (
+                  <Chip
+                    color="success"
+                    size="sm"
+                    startContent={<CheckmarkCircle20Regular />}
+                    variant="flat"
+                  >
+                    {t("可用")}
+                  </Chip>
+                ) : (
+                  <Chip
+                    color="warning"
+                    size="sm"
+                    startContent={<Warning20Regular />}
+                    variant="flat"
+                  >
+                    {t("需要先准备")}
+                  </Chip>
+                )}
+                {provider.NeedsMod ? (
+                  <Chip size="sm" variant="flat">
+                    {t("房主需装模组")}
+                  </Chip>
+                ) : null}
+                <Button
+                  className="ml-auto"
+                  size="sm"
+                  startContent={<Open20Regular />}
+                  variant="light"
+                  onPress={() => void OpenPage(provider.Homepage)}
+                >
+                  {t("项目主页")}
+                </Button>
+              </div>
+              <div className="text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+                {t(provider.Summary)}
+              </div>
+              {provider.Hint ? (
+                <div className="text-[10px] leading-tight text-gray-400 dark:text-gray-500">
+                  {provider.Hint}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+
+        {/* 主体 */}
+        <div className="nya-scroll min-h-0 flex-1 overflow-y-auto px-5 pb-5">
+          <div className="flex flex-col gap-3">
+            {/* 另一家供应商也开着会话：只是告知——两家可以同时开着，互不打断 */}
+            {otherProviderLive && otherStatus ? (
+              <div className="flex items-center gap-2 rounded-2xl border border-primary/30 bg-primary/5 px-4 py-3 text-[12px] text-primary">
+                <Info20Regular className="flex-none" />
+                <span className="min-w-0 flex-1">
+                  {t("另一家联机（{0}）的会话也在进行中，两家可以同时开着。", {
+                    "0": t(
+                      otherStatus.Provider === "redstone"
+                        ? "红石联机"
+                        : "陶瓦联机",
+                    ),
+                  })}
+                </span>
+                <Button
+                  isDisabled={busy}
+                  size="sm"
+                  variant="flat"
+                  onPress={() => switchProvider(otherProviderId)}
+                >
+                  {t("切过去看看")}
+                </Button>
+              </div>
+            ) : null}
+
+            {sessionLive || currentState === "error" ? sessionCard() : null}
+
+            {/* 建房 / 加入：本标签页已有会话时收起，避免误触"换一局" */}
+            {!sessionLive ? (
+              <>
+                <div className="flex flex-col gap-3 rounded-2xl border nya-border p-4">
+                  <div className="flex items-center gap-2">
+                    <span className="flex size-8 items-center justify-center rounded-lg bg-primary/15 text-primary">
+                      <Add20Regular />
+                    </span>
+                    <span className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">
+                      {t("创建房间")}
+                    </span>
+                  </div>
+
+                  {isRedstone ? (
+                    <>
+                      <SegmentedTabs
+                        className="flex w-fit items-center gap-1 rounded-full border nya-border p-1"
+                        items={[
+                          {
+                            key: "server",
+                            label: (
+                              <span className="flex items-center gap-1.5">
+                                <Server20Regular />
+                                {t("启动器服务器")}
+                              </span>
+                            ),
+                          },
+                          {
+                            key: "manual",
+                            label: (
+                              <span className="flex items-center gap-1.5">
+                                <Link20Regular />
+                                {t("本机地址")}
+                              </span>
+                            ),
+                          },
+                        ]}
+                        layoutId="nya-online-target"
+                        value={targetMode}
+                        onChange={(next) =>
+                          setTargetMode(next === "manual" ? "manual" : "server")
+                        }
+                      />
+
+                      {targetMode === "server" ? (
+                        serverOptions.length > 0 ? (
+                          <SettingRow
+                            hint="建房时会自动把这个服务器启动起来（已运行则直接复用）。"
+                            label="转发到哪台服务器"
+                          >
+                            <Select
+                              aria-label={t("转发到哪台服务器")}
+                              items={serverOptions}
+                              placeholder={t("选择一台本机服务器")}
+                              selectedKeys={
+                                targetServerId ? [targetServerId] : []
+                              }
+                              size="sm"
+                              variant="bordered"
+                              onSelectionChange={(keys) => {
+                                const key = [...keys][0];
+
+                                if (key !== undefined) {
+                                  setTargetServerId(String(key));
+                                  patchSettings({ ServerID: String(key) });
+                                }
+                              }}
+                            >
+                              {(item) => (
+                                <SelectItem
+                                  key={item.key}
+                                  textValue={item.name}
+                                >
+                                  {`${item.name} · ${item.port} · ${
+                                    item.running ? t("运行中") : t("已停止")
+                                  }`}
+                                </SelectItem>
+                              )}
+                            </Select>
+                            {selectedServerHint ? (
+                              <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                                {selectedServerHint}
+                              </span>
+                            ) : null}
+                          </SettingRow>
+                        ) : (
+                          <div className="rounded-xl border border-dashed border-gray-300/80 px-4 py-3 text-[11px] leading-relaxed text-gray-400 dark:border-gray-700">
+                            {t("暂无托管服务器，可切到「本机地址」直接转发")}
+                          </div>
+                        )
+                      ) : (
+                        <SettingRow
+                          hint="游戏里「对局域网开放」后，把聊天栏提示的端口填到这里；固定转发到 127.0.0.1。"
+                          label="本机端口"
+                        >
+                          <Input
+                            aria-label={t("本机端口")}
+                            className="w-32 min-w-0 max-w-full"
+                            max={65535}
+                            min={1}
+                            placeholder="25565"
+                            size="sm"
+                            type="number"
+                            value={manualPort}
+                            variant="bordered"
+                            onValueChange={(value) => {
+                              const digits = value.replace(/\D/g, "");
+
+                              setManualPort(digits);
+                              patchSettings({
+                                Target: `127.0.0.1:${digits || "25565"}`,
+                              });
+                            }}
+                          />
+                        </SettingRow>
+                      )}
+                    </>
+                  ) : null}
+
+                  <div>
+                    <Button
+                      color="primary"
+                      isDisabled={busy || !provider?.Ready}
+                      isLoading={busy}
+                      startContent={busy ? undefined : <Rocket20Regular />}
+                      variant="flat"
+                      onPress={() => void doHost()}
+                    >
+                      {t("创建房间")}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-3 rounded-2xl border nya-border p-4">
+                  <div className="flex items-center gap-2">
+                    <span className="flex size-8 items-center justify-center rounded-lg bg-primary/15 text-primary">
+                      <Link20Regular />
+                    </span>
+                    <span className="text-[13px] font-semibold text-gray-800 dark:text-gray-200">
+                      {t("加入房间")}
+                    </span>
+                  </div>
+
+                  <SettingRow
+                    hint={
+                      isRedstone ? "只填主机名时按 25565 端口处理。" : undefined
+                    }
+                    label={isRedstone ? "房主给的公网地址" : "房间码"}
+                  >
+                    <Input
+                      placeholder={
+                        isRedstone
+                          ? "122.51.108.96:12345"
+                          : "U/XXXX-XXXX-XXXX-XXXX"
+                      }
+                      size="sm"
+                      value={joinInput}
+                      variant="bordered"
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void doJoin();
+                      }}
+                      onValueChange={setJoinInput}
+                    />
+                  </SettingRow>
+
+                  <div>
+                    <Button
+                      isDisabled={busy}
+                      isLoading={busy}
+                      startContent={busy ? undefined : <Play20Regular />}
+                      variant="flat"
+                      onPress={() => void doJoin()}
+                    >
+                      {t("加入房间")}
+                    </Button>
+                  </div>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      </div>
+
+      {/* ============ 右列：设置 ============ */}
+      <div className="nya-panel flex w-[300px] flex-none flex-col overflow-hidden rounded-2xl border nya-border">
+        <div className="flex flex-none items-center gap-2 px-4 pb-2 pt-4">
+          <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+            {t("联机设置")}
+          </span>
+          {settingsDirty ? (
+            <Chip color="warning" size="sm" variant="flat">
+              {t("未保存")}
+            </Chip>
+          ) : null}
+          <Button
+            className="ml-auto"
+            color={settingsDirty ? "primary" : "default"}
+            isDisabled={!settingsDirty || saving}
+            isLoading={saving}
+            size="sm"
+            startContent={saving ? undefined : <CheckmarkCircle20Regular />}
+            variant="flat"
+            onPress={() => void doSaveSettings()}
+          >
+            {t("保存")}
+          </Button>
+        </div>
+
+        <div className="nya-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
+          <SettingRow label="玩家昵称">
+            <Input
+              placeholder={t("留空使用当前账号名")}
+              size="sm"
+              value={settings.Player}
+              variant="bordered"
+              onValueChange={(value) => patchSettings({ Player: value })}
+            />
+          </SettingRow>
+
+          {isRedstone ? (
+            <div className="flex flex-col gap-3 rounded-2xl border nya-border p-3">
+              <span className="flex items-center gap-1.5 text-[12px] font-semibold text-gray-700 dark:text-gray-300">
+                <Globe20Regular />
+                {t("红石联机")}
+              </span>
+
+              {/* 本机隧道状态：红石联机日常唯一需要关注的行 */}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-gray-500 dark:text-gray-400">
+                  {t("本机隧道")}：
+                  <span className="font-mono">
+                    {runtime?.Running
+                      ? `${t("运行中")} · ${runtime.Port || "-"}`
+                      : t("未运行")}
+                  </span>
+                </span>
+                <Button
+                  color="danger"
+                  isDisabled={!runtime?.Running}
+                  size="sm"
+                  startContent={<Dismiss20Regular />}
+                  variant="light"
+                  onPress={() => void shutdownProvider()}
+                >
+                  {t("断开隧道")}
+                </Button>
+              </div>
+
+              {/* 高级设置默认折叠：中继管理 / API Key 等都是一次性配置 */}
+              <button
+                className="flex items-center gap-1 self-start text-[12px] font-medium text-gray-500 transition-colors hover:text-primary"
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+              >
+                <ChevronRight20Regular
+                  className={`transition-transform ${showAdvanced ? "rotate-90" : ""}`}
+                />
+                {t("高级设置")}
+              </button>
+
+              {showAdvanced ? (
+                <div className="flex flex-col gap-3 border-t border-dashed border-gray-200 pt-3 dark:border-gray-700">
+                  <SettingRow
+                    hint="建房前会自动预检，当前节点连不上时会自动换最快可达的节点；API Key 也已自动管理，一般无需手动调整。"
+                    label="中继节点"
+                  >
+                    <div className="flex flex-col items-end gap-2">
+                      <Select
+                        aria-label={t("选择中继节点")}
+                        className="w-72 min-w-0 max-w-full [&_*]:min-w-0"
+                        items={relayNodeItems}
+                        placeholder={t("从节点列表选择")}
+                        selectedKeys={
+                          settings.RedstoneRelay ? [settings.RedstoneRelay] : []
+                        }
+                        size="sm"
+                        onSelectionChange={(keys) => {
+                          const key = [...keys][0];
+
+                          if (key !== undefined) {
+                            patchSettings({ RedstoneRelay: String(key) });
+                          }
+                        }}
+                      >
+                        {(item) => (
+                          <SelectItem key={item.key} textValue={item.name}>
+                            {item.label}
+                          </SelectItem>
+                        )}
+                      </Select>
+                      <Button
+                        isLoading={probing}
+                        size="sm"
+                        startContent={probing ? undefined : <Flash20Regular />}
+                        variant="flat"
+                        onPress={() => void pickFastestRelay()}
+                      >
+                        {t("测速并选最快节点")}
+                      </Button>
+                    </div>
+                  </SettingRow>
+
+                  <SettingRow
+                    hint="隧道最多同时转发多少个玩家连接。"
+                    label="并发上限"
+                  >
+                    <Select
+                      aria-label={t("并发上限")}
+                      className="w-28 min-w-0 max-w-full [&_*]:min-w-0"
+                      selectedKeys={[String(settings.MaxPlayers || 8)]}
+                      size="sm"
+                      onSelectionChange={(keys) => {
+                        const key = [...keys][0];
+
+                        if (key !== undefined) {
+                          patchSettings({ MaxPlayers: Number(key) || 8 });
+                        }
+                      }}
+                    >
+                      {["2", "4", "8", "16", "32"].map((value) => (
+                        <SelectItem key={value}>{value}</SelectItem>
+                      ))}
+                    </Select>
+                  </SettingRow>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3 rounded-2xl border nya-border p-3">
+              <span className="flex items-center gap-1.5 text-[12px] font-semibold text-gray-700 dark:text-gray-300">
+                <People20Regular />
+                {t("陶瓦联机")}
+              </span>
+
+              <div className="flex flex-col gap-1 text-[11px] text-gray-500 dark:text-gray-400">
+                <span>
+                  {t("后台服务")}：
+                  {runtime?.Running
+                    ? `${t("运行中")}${runtime.Version ? ` · v${runtime.Version}` : ""}`
+                    : t("未运行")}
+                </span>
+                <span className="break-all font-mono text-[10px] text-gray-400 dark:text-gray-500">
+                  {runtime?.Binary || t("尚未找到可执行文件")}
+                </span>
+              </div>
+
+              <Button
+                color="primary"
+                isLoading={installing}
+                size="sm"
+                startContent={
+                  installing ? undefined : <ArrowDownload20Regular />
+                }
+                variant="flat"
+                onPress={() => void installTerracotta()}
+              >
+                {t("自动下载并安装")}
+              </Button>
+
+              <Button
+                size="sm"
+                startContent={<FolderOpen20Regular />}
+                variant="flat"
+                onPress={() => void pickTerracottaBinary()}
+              >
+                {t("选择可执行文件")}
+              </Button>
+              <Button
+                size="sm"
+                startContent={<ArrowSync20Regular />}
+                variant="light"
+                onPress={() => void refreshRuntime(providerId)}
+              >
+                {t("重新检测")}
+              </Button>
+              <Button
+                color="danger"
+                isDisabled={!runtime?.Running}
+                size="sm"
+                startContent={<Dismiss20Regular />}
+                variant="flat"
+                onPress={() => void shutdownProvider()}
+              >
+                {t("关闭后台服务")}
+              </Button>
+
+              <div className="text-[10px] leading-tight text-gray-400 dark:text-gray-500">
+                {t(
+                  "陶瓦联机是第三方开源项目（AGPL-3.0），需要单独下载；启动器只通过它的本地 HTTP 接口驱动它。",
+                )}
+              </div>
+            </div>
+          )}
+
+          <div className="text-[10px] leading-tight text-gray-400 dark:text-gray-500">
+            {t(
+              "联机会话由启动器后台维持：切到别的页面也不会断，退出启动器时会自动收尾。",
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default OnlinePage;

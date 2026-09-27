@@ -11,19 +11,26 @@ import (
 type PlaybackState string
 
 const (
+	// StateStopped 已停止。
 	StateStopped PlaybackState = "Stopped"
+	// StatePlaying 播放中。
 	StatePlaying PlaybackState = "Playing"
-	StatePaused  PlaybackState = "Paused"
+	// StatePaused 已暂停。
+	StatePaused PlaybackState = "Paused"
 )
 
 // PlaybackMode 播放模式：顺序（播完停）、列表循环、单曲循环、随机播放。
 type PlaybackMode string
 
 const (
+	// ModeSequential 顺序播放（播完停）。
 	ModeSequential PlaybackMode = "Sequential"
-	ModeRepeatAll  PlaybackMode = "RepeatAll"
-	ModeRepeatOne  PlaybackMode = "RepeatOne"
-	ModeShuffle    PlaybackMode = "Shuffle"
+	// ModeRepeatAll 列表循环。
+	ModeRepeatAll PlaybackMode = "RepeatAll"
+	// ModeRepeatOne 单曲循环。
+	ModeRepeatOne PlaybackMode = "RepeatOne"
+	// ModeShuffle 随机播放。
+	ModeShuffle PlaybackMode = "Shuffle"
 )
 
 // AudioPlayer 实际音频输出接口。
@@ -173,11 +180,12 @@ func (s *MusicPlayerService) Volume() int {
 // SetVolume 设置音量。
 func (s *MusicPlayerService) SetVolume(value int) {
 	s.mu.Lock()
-	s.volume = clamp(value, 0, 100)
+	clamped := clamp(value, 0, 100)
+	s.volume = clamped
 	audio := s.audio
 	s.mu.Unlock()
 	if audio != nil {
-		audio.SetVolume(s.volume)
+		audio.SetVolume(clamped)
 	}
 }
 
@@ -280,16 +288,20 @@ func (s *MusicPlayerService) Next() bool {
 	s.mu.Lock()
 	currentIndex := indexOfTrack(s.playlist, s.currentTrack)
 	nextIndex := SelectNextIndex(s.playbackMode, len(s.playlist), currentIndex, true, s.random)
-	var next *MusicTrack
+	// 锁内取值拷贝（不取 &s.playlist[i]）：SetPlaylist 并发替换切片时，
+	// 锁外解引用旧数组指针会读到被替换前的曲目
+	var next MusicTrack
+	hasNext := false
 	if nextIndex >= 0 {
-		next = &s.playlist[nextIndex]
+		next = s.playlist[nextIndex]
+		hasNext = true
 	}
 	s.mu.Unlock()
 
-	if next == nil {
+	if !hasNext {
 		return false
 	}
-	if err := s.playCore(*next); err != nil {
+	if err := s.playCore(next); err != nil {
 		return false
 	}
 	if s.OnTrackChanged != nil {
@@ -348,7 +360,9 @@ func (s *MusicPlayerService) onNaturallyFinished() {
 		currentIndex := indexOfTrack(s.playlist, s.currentTrack)
 		nextIndex := SelectNextIndex(s.playbackMode, len(s.playlist), currentIndex, false, s.random)
 		if nextIndex >= 0 {
-			next = &s.playlist[nextIndex]
+			// 锁内取值拷贝，理由同 Next
+			nextCopy := s.playlist[nextIndex]
+			next = &nextCopy
 		}
 	}
 	s.mu.Unlock()

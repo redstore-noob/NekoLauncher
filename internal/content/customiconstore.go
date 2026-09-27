@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"nyalauncher/internal/config"
+	"nekolauncher/internal/config"
 )
 
 // allowedIconExtensions 允许的自定义图标扩展名。

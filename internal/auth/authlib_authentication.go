@@ -6,13 +6,14 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
-	"nyalauncher/internal/config"
+	"nekolauncher/internal/config"
 )
 
 // AuthlibServerInfo 解析后的皮肤站信息：归一化的 API 根 + 元数据。
@@ -60,7 +61,7 @@ func NewAuthlibAuthenticator(httpClient *http.Client) *AuthlibAuthenticator {
 }
 
 // GetOrCreateClientToken 读取（或首次生成）本安装的 clientToken。Yggdrasil 规范要求
-// 同一客户端的 authenticate/refresh 使用一致的 clientToken，因此持久化到 config.json。
+// 同一客户端的 authenticate/refresh 使用一致的 clientToken，因此持久化到 accounts.yaml。
 func GetOrCreateClientToken() string {
 	existing := config.GetValue(ClientTokenConfigKey)
 	if strings.TrimSpace(existing) != "" {
@@ -212,7 +213,8 @@ func (a *AuthlibAuthenticator) Authenticate(
 ) (*AuthlibLoginResult, error) {
 	if strings.TrimSpace(apiRoot) == "" || strings.TrimSpace(username) == "" ||
 		strings.TrimSpace(password) == "" {
-		panic("apiRoot/username/password 不能为空")
+		// 参数来自 UI 输入，缺失按错误返回而非 panic（绑定协程不 recover）
+		return nil, errors.New("皮肤站地址、用户名与密码均不能为空。")
 	}
 	if strings.TrimSpace(clientToken) == "" {
 		clientToken = GetOrCreateClientToken()
@@ -299,10 +301,10 @@ func (a *AuthlibAuthenticator) ValidateOrRefresh(
 	clientToken string,
 ) (string, error) {
 	if credential == nil {
-		panic("credential 不能为空")
+		return "", errors.New("credential 不能为空")
 	}
 	if strings.TrimSpace(credential.ApiRoot) == "" || strings.TrimSpace(credential.AccessToken) == "" {
-		panic("credential.ApiRoot/AccessToken 不能为空")
+		return "", errors.New("皮肤站凭据缺少 ApiRoot 或 AccessToken。")
 	}
 	if strings.TrimSpace(clientToken) == "" {
 		clientToken = GetOrCreateClientToken()

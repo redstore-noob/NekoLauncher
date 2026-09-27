@@ -1,6 +1,6 @@
 package download
 
-import "nyalauncher/internal/models"
+import "nekolauncher/internal/models"
 
 // VersionFilter Minecraft 版本筛选服务。对应 C# VersionFilter。
 
