@@ -9,6 +9,7 @@ import (
 	"nekolauncher/internal/bindings"
 	"nekolauncher/internal/config"
 	"nekolauncher/internal/logs"
+	"nekolauncher/internal/singleinstance"
 	"nekolauncher/internal/solo"
 
 	"github.com/wailsapp/wails/v2"
@@ -22,6 +23,16 @@ import (
 var assets embed.FS
 
 func main() {
+	// 单实例守卫：必须在读取任何配置、创建托盘之前完成。
+	// 同一安装目录已有实例在运行时，本包会把那个窗口提到前台，这里直接退出——
+	// 否则两个实例会争抢同一个 launcher.yaml、同一个托盘图标、同一个游戏目录。
+	// 作用域是「exe 所在目录」，不同文件夹的启动器仍可同时运行（见该包注释）。
+	instance := singleinstance.Acquire()
+	if instance.AlreadyRunning {
+		return
+	}
+	defer instance.Cleanup()
+
 	api := bindings.New()
 	// 恢复上次保存的窗口尺寸（未保存过时用默认值 760×480）
 	windowWidth, windowHeight := config.LoadLauncherWindowSize()
