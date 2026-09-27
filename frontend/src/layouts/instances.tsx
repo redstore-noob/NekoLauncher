@@ -28,6 +28,7 @@
  * - 管理：InstanceAPI.RenameInstance / DeleteInstance（两步确认）、打开文件夹。
  */
 import type { content, download, instance } from "../../wailsjs/go/models";
+import type { Variants } from "framer-motion";
 
 import React, {
   useCallback,
@@ -81,7 +82,7 @@ import RewindDialog, {
 import ModVersionDialog, {
   type ModVersionTarget,
 } from "../components/instance/ModVersionDialog";
-import { listItemVariants } from "../lib/motion";
+import { TRANSITION_EASINGS } from "../lib/motion";
 import SwitchTransition, {
   useSwitchDirection,
 } from "../components/screen-transition";
@@ -138,6 +139,29 @@ import { t } from "../i18n";
 
 type ContentTab = "已安装模组" | "资源包" | "光影包" | "游戏存档";
 type Visual = { IconPath: string; FallbackGlyph: string };
+
+/* 左列列表项专用进出场：只做透明度，**不动 height**。
+ *
+ * 为什么不复用 lib/motion 的 listItemVariants：那一份用 height: 0 → auto
+ * 折叠。framer 在动画起始时测量一次内容高度并写成内联 height，而本列表的
+ * 第二行（自定义名）来自 GetInstanceDisplayVersion 的**异步**返回——
+ * 28 行并发、各自计时，异步到达后行内容变高，旧的内联 height 却不会跟着变，
+ * 再被 overflow-hidden 裁掉，于是每个实例条目占据的垂直空间小于内容所需高度，
+ * 整列被系统性压扁。
+ *
+ * 改为只过渡透明度；高度折叠交给外层的 CSS grid（0fr ↔ 1fr），
+ * 由布局引擎在每次布局时重新计算，不存在"过期尺寸"。 */
+const LIST_FADE: Variants = {
+  enter: { opacity: 0 },
+  center: {
+    opacity: 1,
+    transition: { duration: 0.25, ease: TRANSITION_EASINGS.easeOut },
+  },
+  exit: {
+    opacity: 0,
+    transition: { duration: 0.2, ease: TRANSITION_EASINGS.easeIn },
+  },
+};
 
 // key 为语言无关的标识（用于状态与比较），label 为原文，展示时再 t()
 
@@ -934,19 +958,29 @@ const InstancesPage: React.FC = () => {
     top: number;
     height: number;
   } | null>(null);
+  // 左列折叠状态：首帧之后再展开，得到 0fr→1fr 的过渡；
+  // 首屏渲染时不播放，避免启动时列表莫名抖一下。
+  const [rowsReady, setRowsReady] = useState(false);
+
+  useLayoutEffect(() => {
+    const raf = requestAnimationFrame(() => setRowsReady(true));
+
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   // 选中项 / 列表变化后测量高亮块几何，供下方位移动画使用（下一帧再量一次，
   // 覆盖列表布局动画尚未落定的情况）。用 rect 差值测量，不依赖 offsetParent。
   useLayoutEffect(() => {
+    const container = listRef.current;
+    const node = itemRefs.current[selected];
+
+    if (!container || !node) {
+      setHighlight(null);
+
+      return;
+    }
+
     const measure = () => {
-      const container = listRef.current;
-      const node = itemRefs.current[selected];
-
-      if (!container || !node) {
-        setHighlight(null);
-
-        return;
-      }
       const containerRect = container.getBoundingClientRect();
       const nodeRect = node.getBoundingClientRect();
 
@@ -957,10 +991,17 @@ const InstancesPage: React.FC = () => {
     };
 
     measure();
-    const raf = requestAnimationFrame(measure);
 
-    return () => cancelAnimationFrame(raf);
-  }, [selected, versions.length, loading]);
+    // 跟随真实尺寸变化：自定义名是异步返回的，行内容变高后 pill 也必须跟着变。
+    // 之前只依赖 [selected, versions.length, loading]，异步到货时不会重测，
+    // pill 会停留在旧高度。
+    const observer = new ResizeObserver(measure);
+
+    observer.observe(node);
+    if (node.firstElementChild) observer.observe(node.firstElementChild);
+
+    return () => observer.disconnect();
+  }, [selected, versions.length, loading, rowsReady]);
   const [contentSearch, setContentSearch] = useState("");
   const [contentBusy, setContentBusy] = useState("");
   const [newName, setNewName] = useState("");
@@ -1875,39 +1916,52 @@ const InstancesPage: React.FC = () => {
                   key={v}
                   layout
                   animate="center"
-                  className="overflow-hidden"
                   exit="exit"
                   initial="enter"
-                  variants={listItemVariants}
+                  variants={LIST_FADE}
                 >
-                  <button
-                    ref={(el) => {
-                      itemRefs.current[v] = el;
-                    }}
-                    className={`relative flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left cursor-pointer ${
-                      v === selected
-                        ? "font-semibold text-blue-600 dark:text-blue-300"
-                        : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+                  {/* 高度折叠交给 CSS grid（0fr ↔ 1fr）：行高由布局引擎在每次
+                      布局时按内容真实高度重算，不会像 framer 的 height: 0→auto
+                      那样把"动画起点测得的旧高度"写死成内联 height——异步返回的
+                      自定义名会让内容变高，旧写法会把条目下半截裁掉。
+                      min-h-0 是 0fr 能真正塌陷到底的前提。 */}
+                  <div
+                    className={`grid transition-[grid-template-rows] duration-[250ms] ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                      rowsReady ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
                     }`}
-                    onClick={() => {
-                      if (snap) void selectVersion(v, snap.MinecraftDirectory);
-                    }}
                   >
-                    <span className="relative z-10 flex flex-shrink-0">
-                      {renderInstanceIcon(v, "w-7 h-7")}
-                    </span>
-                    {/* 主显示实例自己的名称；版本号降级为次行小字 */}
-                    <span className="relative z-10 min-w-0 flex-1">
-                      <span className="block truncate text-[13px] leading-tight">
-                        {v}
-                      </span>
-                      {displayNames[v] && displayNames[v] !== v ? (
-                        <span className="block truncate text-[10px] leading-tight font-normal text-gray-400">
-                          {displayNames[v]}
+                    <div className="min-h-0 overflow-hidden">
+                      <button
+                        ref={(el) => {
+                          itemRefs.current[v] = el;
+                        }}
+                        className={`relative flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left cursor-pointer ${
+                          v === selected
+                            ? "font-semibold text-blue-600 dark:text-blue-300"
+                            : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+                        }`}
+                        onClick={() => {
+                          if (snap)
+                            void selectVersion(v, snap.MinecraftDirectory);
+                        }}
+                      >
+                        <span className="relative z-10 flex flex-shrink-0">
+                          {renderInstanceIcon(v, "w-7 h-7")}
                         </span>
-                      ) : null}
-                    </span>
-                  </button>
+                        {/* 主显示实例自己的名称；版本号降级为次行小字 */}
+                        <span className="relative z-10 min-w-0 flex-1">
+                          <span className="block truncate text-[13px] leading-tight">
+                            {v}
+                          </span>
+                          {displayNames[v] && displayNames[v] !== v ? (
+                            <span className="block truncate text-[10px] leading-tight font-normal text-gray-400">
+                              {displayNames[v]}
+                            </span>
+                          ) : null}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
                 </motion.div>
               ))}
             </AnimatePresence>
