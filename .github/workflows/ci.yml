@@ -89,17 +89,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
-    matrix:
-      include:
-        - os: windows-latest
-          platform: windows/amd64
-        # 22.04：wails v2.15 认 webkit2gtk-4.0（4.0 的 API 包 24.04 已移除，
-        # 而 libasound2t64 是 24.04 的包名，22.04 上必须用 libasound2）
-        - os: ubuntu-22.04
-          platform: linux/amd64
-        - os: macos-latest
-          platform: darwin/universal
-
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows/amd64
+          # 22.04：wails v2.15 的 linux 端 pkg-config 认 webkit2gtk-4.0
+          # （4.0 的 API 包在 24.04 已移除；libasound2t64 是 24.04 包名，22.04 用 libasound2）
+          - os: ubuntu-22.04
+            platform: linux/amd64
+          - os: macos-latest
+            platform: darwin/universal
     steps:
       - uses: actions/checkout@v4
 
