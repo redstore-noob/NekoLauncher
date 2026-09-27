@@ -3134,7 +3134,15 @@ const AiPage: React.FC = () => {
                             ? "bg-primary/15 text-primary"
                             : "hover:bg-default-100/70"
                         }`}
+                        role="button"
+                        tabIndex={0}
                         onClick={() => setActiveSessionId(session.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setActiveSessionId(session.id);
+                          }
+                        }}
                       >
                         <ChatIcon className="h-4 w-4 flex-shrink-0 opacity-70" />
                         <div className="min-w-0 flex-1">
@@ -3559,8 +3567,9 @@ const AiPage: React.FC = () => {
                                           className="rounded-lg border nya-border bg-default-50/50 overflow-hidden"
                                         >
                                           {/* 工具调用头部 */}
-                                          <div
-                                            className="flex items-center gap-2 px-2.5 py-1.5 cursor-pointer hover:bg-default-100/50 transition-colors"
+                                          <button
+                                            className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left cursor-pointer hover:bg-default-100/50 transition-colors"
+                                            type="button"
                                             onClick={() =>
                                               toggleToolCall(tc.id)
                                             }
@@ -3588,7 +3597,7 @@ const AiPage: React.FC = () => {
                                             ) : (
                                               <ChevronRightIcon className="h-3 w-3 flex-shrink-0 text-gray-400" />
                                             )}
-                                          </div>
+                                          </button>
 
                                           {/* 待批准：显示批准/拒绝按钮 */}
                                           {tc.status === "pending" && (
