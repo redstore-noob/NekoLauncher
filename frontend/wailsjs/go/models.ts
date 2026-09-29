@@ -647,6 +647,45 @@ export namespace content {
 	        this.FallbackGlyph = source["FallbackGlyph"];
 	    }
 	}
+	export class RewindSummary {
+	    snapshotCount: number;
+	    blobBytes: number;
+	    budgetBytes: number;
+	    // Go type: time
+	    lastSnapshotAt: any;
+	    recentColors?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new RewindSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.snapshotCount = source["snapshotCount"];
+	        this.blobBytes = source["blobBytes"];
+	        this.budgetBytes = source["budgetBytes"];
+	        this.lastSnapshotAt = this.convertValues(source["lastSnapshotAt"], null);
+	        this.recentColors = source["recentColors"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class SaveSnapshot {
 	    Id: string;
 	    // Go type: time
@@ -2251,17 +2290,21 @@ export namespace modpack {
 	    DeclaredFiles: number;
 	    OverrideFiles: number;
 	    Warnings: string[];
-	
+	    PayloadPath: string;
+	    PayloadSizeBytes: number;
+
 	    static createFrom(source: any = {}) {
 	        return new ModpackExportResult(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.OutputPath = source["OutputPath"];
 	        this.DeclaredFiles = source["DeclaredFiles"];
 	        this.OverrideFiles = source["OverrideFiles"];
 	        this.Warnings = source["Warnings"];
+	        this.PayloadPath = source["PayloadPath"];
+	        this.PayloadSizeBytes = source["PayloadSizeBytes"];
 	    }
 	}
 
@@ -2694,11 +2737,13 @@ export namespace solo {
 	    VersionID: string;
 	    BundleJava: boolean;
 	    SimpleMode: boolean;
-	
+	    RemoteDistribution: boolean;
+	    PayloadURL: string;
+
 	    static createFrom(source: any = {}) {
 	        return new SoloExportOptions(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.PackName = source["PackName"];
@@ -2716,6 +2761,8 @@ export namespace solo {
 	        this.VersionID = source["VersionID"];
 	        this.BundleJava = source["BundleJava"];
 	        this.SimpleMode = source["SimpleMode"];
+	        this.RemoteDistribution = source["RemoteDistribution"];
+	        this.PayloadURL = source["PayloadURL"];
 	    }
 	}
 	export class StubStatus {

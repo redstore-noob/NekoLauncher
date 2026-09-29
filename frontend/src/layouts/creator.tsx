@@ -22,6 +22,7 @@ import React, { useMemo, useState } from "react";
 import { Input } from "@heroui/react";
 import {
   ArrowRight20Regular,
+  Box20Regular,
   BoxMultiple20Regular,
   Color20Regular,
   FolderZip20Regular,
@@ -53,6 +54,7 @@ interface CreatorEntry {
 
 const CreatorPage: React.FC = () => {
   const [modpackOpen, setModpackOpen] = useState(false);
+  const [soloOpen, setSoloOpen] = useState(false);
   const [pluginOpen, setPluginOpen] = useState(false);
   const [skinOpen, setSkinOpen] = useState(false);
   const [resourcePackOpen, setResourcePackOpen] = useState(false);
@@ -70,6 +72,16 @@ const CreatorPage: React.FC = () => {
       icon: <FolderZip20Regular />,
       tileClass: "from-sky-400 via-blue-500 to-indigo-500 shadow-blue-500/30",
       open: () => setModpackOpen(true),
+    },
+    {
+      key: "solo",
+      title: t("NekoSolo 安装包"),
+      description: t(
+        "把启动器、Java 与整合包打进单个 exe，玩家双击即玩（仅 Windows）",
+      ),
+      icon: <Box20Regular />,
+      tileClass: "from-rose-400 via-red-500 to-orange-500 shadow-rose-500/30",
+      open: () => setSoloOpen(true),
     },
     {
       key: "resourcepack",
@@ -212,6 +224,11 @@ const CreatorPage: React.FC = () => {
       <ModpackExportDialog
         isOpen={modpackOpen}
         onClose={() => setModpackOpen(false)}
+      />
+      <ModpackExportDialog
+        soloOnly
+        isOpen={soloOpen}
+        onClose={() => setSoloOpen(false)}
       />
       <PluginManifestDialog
         isOpen={pluginOpen}

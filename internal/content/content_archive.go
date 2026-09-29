@@ -334,6 +334,38 @@ func writeEntryToFile(entry *zip.File, destination string) error {
 	return err
 }
 
+// CopyFileIntoDirectory 把外部文件复制到指定目录（拖拽安装用）。
+// 只接受 .jar / .zip，目标重名时返回错误而不是静默覆盖。
+func CopyFileIntoDirectory(sourcePath, destinationDir string) (string, error) {
+	ext := strings.ToLower(filepath.Ext(sourcePath))
+	if ext != ".jar" && ext != ".zip" {
+		return "", fmt.Errorf("不支持的文件类型: %s", ext)
+	}
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("不支持目录")
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(destinationDir, 0o755); err != nil {
+		return "", err
+	}
+	target := filepath.Join(destinationDir, filepath.Base(sourcePath))
+	if _, err := os.Stat(target); err == nil {
+		return "", fmt.Errorf("目标已存在同名文件: %s", filepath.Base(target))
+	}
+	if err := os.WriteFile(target, data, 0o644); err != nil {
+		return "", err
+	}
+
+	return target, nil
+}
+
 // pruneIconCache 图标缓存按 (路径, 大小, mtime, 条目) 哈希命名，重下/改名的模组会不断
 // 产生新键；超过上限时删除最旧的一批，避免缓存无限增长。
 func pruneIconCache(cacheDirectory string) {

@@ -7,6 +7,7 @@ import (
 
 	"nekolauncher/internal/content"
 	"nekolauncher/internal/instance"
+	"nekolauncher/internal/modname"
 )
 
 // ---- 内容扫描 ----
@@ -52,6 +53,11 @@ func (a *ContentAPI) RemoveCustomIcon(minecraftDirectory, versionID string) bool
 	return content.RemoveCustomIcon(minecraftDirectory, versionID)
 }
 
+// CopyFileIntoDirectory 把外部文件复制到指定目录（拖拽安装 .jar/.zip 用）。
+func (a *ContentAPI) CopyFileIntoDirectory(sourcePath, destinationDir string) (string, error) {
+	return content.CopyFileIntoDirectory(sourcePath, destinationDir)
+}
+
 // ---- 存档操作 ----
 
 // ExportSave 把存档目录打包为 .zip。
@@ -67,7 +73,28 @@ func (a *ContentAPI) ImportSave(archiveZipPath, savesDirectory string) (string, 
 // DeleteSave 删除存档目录。
 func (a *ContentAPI) DeleteSave(saveDirectory string) error { return content.DeleteSave(saveDirectory) }
 
+// ---- 模组中文名 ----
+// 译名数据来自 MC百科（mcmod.cn）搜索匹配，本地持久缓存；关于页有声明。
+
+// LookupModNameTranslations 立即返回已知译名（只查本地缓存，不发请求）。
+// key 为传入的原始文件名，只包含有命中的条目。
+func (a *ContentAPI) LookupModNameTranslations(fileNames []string) map[string]string {
+	return modname.Lookup(fileNames)
+}
+
+// RefreshModNameTranslations 异步为未命中的模组补查（限流；结果落盘后发出
+// "modname:updated" 事件，前端收到后重新调用 Lookup 即可拿到新译名）。
+func (a *ContentAPI) RefreshModNameTranslations(fileNames []string) {
+	modname.RefreshAsync(fileNames)
+}
+
 // ---- 存档快照（Rewind） ----
+
+// RewindSummary 汇总整个回溯仓库：快照总数、数据块占用与预算、最近快照。
+// 主页小组件用它展示一眼概览，不需要指定某个存档或实例。
+func (a *ContentAPI) RewindSummary() content.RewindSummary {
+	return content.ComputeRewindSummary()
+}
 
 // ListSaveSnapshots 列出某个存档的全部快照（新的在前）。
 func (a *ContentAPI) ListSaveSnapshots(saveDirectory string) []content.SaveSnapshot {

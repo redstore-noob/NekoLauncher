@@ -50,6 +50,26 @@ namespace NekoSolo.Installer
 
         [DataMember(Name = "updateLink")]
         public string UpdateLink { get; set; }
+
+        // ---- v2 在线安装包（尾标 NKSOLO2）内嵌远程清单的额外字段 ----
+
+        /// <summary>载荷 zip 的下载地址（如 GitHub Releases 资产直链）；v1 为 null。</summary>
+        [DataMember(Name = "payloadUrl")]
+        public string PayloadUrl { get; set; }
+
+        /// <summary>载荷 zip 的字节数（下载完整性校验之一）。</summary>
+        [DataMember(Name = "payloadSize")]
+        public long PayloadSize { get; set; }
+
+        /// <summary>载荷 zip 的 CRC32（IEEE，与 Go hash/crc32 一致）。</summary>
+        [DataMember(Name = "payloadCrc32")]
+        public uint PayloadCrc32 { get; set; }
+
+        /// <summary>v2 在线安装包：载荷不在 exe 内，安装时需要联网下载。</summary>
+        public bool IsRemote
+        {
+            get { return !string.IsNullOrEmpty(PayloadUrl); }
+        }
     }
 
     /// <summary>安装完成写入 NekoLauncher-data/neko-solo.json 的标记；

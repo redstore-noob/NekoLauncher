@@ -119,7 +119,9 @@ function sanitizeFileName(name: string): string {
 const ModpackExportDialog: React.FC<{
   isOpen: boolean;
   onClose: () => void;
-}> = ({ isOpen, onClose }) => {
+  /** 只导出 NekoSolo 安装包（创作中心的独立入口）：隐藏格式选择并固定 format=3 */
+  soloOnly?: boolean;
+}> = ({ isOpen, onClose, soloOnly = false }) => {
   const [snapshot, setSnapshot] =
     useState<instance.GameInstanceSnapshot | null>(null);
   const [versions, setVersions] = useState<string[]>([]);
@@ -140,18 +142,49 @@ const ModpackExportDialog: React.FC<{
   /** 导出档案：元数据回填源 + 「恢复默认」基准 + 排除项持久化 */
   const profile = useRef<Partial<modpack.ModpackExportProfile>>({});
 
-  // 表单
-  const [format, setFormat] = useState(0);
+  // 表单（选项记忆：上次导出用的格式/元信息存 localStorage，下次打开自动带上）
+  const EXPORT_PREFS_KEY = "nekolauncher-export-prefs";
+  const loadExportPrefs = (): Record<string, unknown> => {
+    try {
+      return JSON.parse(
+        localStorage.getItem(EXPORT_PREFS_KEY) ?? "{}",
+      ) as Record<string, unknown>;
+    } catch {
+      return {};
+    }
+  };
+  const exportPrefs = loadExportPrefs();
+  const [format, setFormat] = useState(
+    typeof exportPrefs.format === "number" ? exportPrefs.format : 0,
+  );
   const [packName, setPackName] = useState("");
-  const [packVersion, setPackVersion] = useState("1.0.0");
-  const [author, setAuthor] = useState("");
-  const [updateLink, setUpdateLink] = useState("");
+  const [packVersion, setPackVersion] = useState(
+    typeof exportPrefs.packVersion === "string"
+      ? exportPrefs.packVersion
+      : "1.0.0",
+  );
+  const [author, setAuthor] = useState(
+    typeof exportPrefs.author === "string" ? exportPrefs.author : "",
+  );
+  const [updateLink, setUpdateLink] = useState(
+    typeof exportPrefs.updateLink === "string" ? exportPrefs.updateLink : "",
+  );
   const [description, setDescription] = useState("");
-  const [resolveLinks, setResolveLinks] = useState(true);
+  const [resolveLinks, setResolveLinks] = useState(
+    typeof exportPrefs.resolveLinks === "boolean"
+      ? exportPrefs.resolveLinks
+      : true,
+  );
   const [iconPngPath, setIconPngPath] = useState("");
   // NekoSolo 安装包（format 3）专属：捆绑首选 Java 运行时与安装器模板状态
-  const [bundleJava, setBundleJava] = useState(true);
+  const [bundleJava, setBundleJava] = useState(
+    typeof exportPrefs.bundleJava === "boolean" ? exportPrefs.bundleJava : true,
+  );
   const [stubFound, setStubFound] = useState(true);
+  // 在线安装包（v2）：载荷 zip 上传到 GitHub Releases 等 https 地址，
+  // exe 只有小体积安装器 + 远程清单，玩家安装时动态下载
+  const [remoteDist, setRemoteDist] = useState(false);
+  const [payloadUrl, setPayloadUrl] = useState("");
 
   // 状态
   const [packing, setPacking] = useState(false);
@@ -421,13 +454,38 @@ const ModpackExportDialog: React.FC<{
     setProfileDir(profileDirectory);
     setPackName(profile.current.packName || versionId);
     setPackVersion(
-      profile.current.packVersion || defaults.PackVersion || "1.0.0",
+      profile.current.packVersion ||
+        defaults.PackVersion ||
+        (typeof exportPrefs.packVersion === "string"
+          ? exportPrefs.packVersion
+          : "1.0.0"),
     );
-    setAuthor(profile.current.author || "");
-    setUpdateLink(profile.current.updateLink || "");
+    setAuthor(
+      profile.current.author ||
+        (typeof exportPrefs.author === "string" ? exportPrefs.author : ""),
+    );
+    setUpdateLink(
+      profile.current.updateLink ||
+        (typeof exportPrefs.updateLink === "string"
+          ? exportPrefs.updateLink
+          : ""),
+    );
     setDescription(profile.current.description || "");
-    setResolveLinks(profile.current.resolveModrinthLinks ?? true);
-    setFormat(profile.current.format ?? defaults.Format ?? 0);
+    setResolveLinks(
+      profile.current.resolveModrinthLinks ??
+        (typeof exportPrefs.resolveLinks === "boolean"
+          ? exportPrefs.resolveLinks
+          : true),
+    );
+    // 独立入口固定导出 NekoSolo 安装包；格式逐级回落：档案 → 个人偏好 → 默认值
+    setFormat(
+      soloOnly
+        ? 3
+        : (profile.current.format ??
+            (typeof exportPrefs.format === "number"
+              ? exportPrefs.format
+              : (defaults.Format ?? 0))),
+    );
     setPackStatus("");
     setProgressTotal(0);
     setProgressCurrent(0);
@@ -607,15 +665,25 @@ const ModpackExportDialog: React.FC<{
           VersionID: selectedVersion,
           BundleJava: bundleJava,
           SimpleMode: true,
+          RemoteDistribution: remoteDist,
+          PayloadURL: payloadUrl.trim(),
         });
         const result = await ExportSoloPack(soloOptions, outputPath);
 
         setPackStatus(
-          t("已保存：{0}（版本文件 {1} 个、整合包内容 {2} 个）", {
-            "0": result.OutputPath,
-            "1": result.DeclaredFiles,
-            "2": result.OverrideFiles,
-          }),
+          result.PayloadPath
+            ? t(
+                "已保存：{0}（在线安装包）\n请把载荷 {1} 上传到下载地址后再分发安装包。",
+                {
+                  "0": result.OutputPath,
+                  "1": result.PayloadPath,
+                },
+              )
+            : t("已保存：{0}（版本文件 {1} 个、整合包内容 {2} 个）", {
+                "0": result.OutputPath,
+                "1": result.DeclaredFiles,
+                "2": result.OverrideFiles,
+              }),
         );
         setStatusText(
           result.Warnings && result.Warnings.length > 0
@@ -673,6 +741,23 @@ const ModpackExportDialog: React.FC<{
           excludedPaths: packedExclusions,
         }),
       ).catch(() => undefined);
+
+      // 跨实例记住个人偏好（格式/作者/链接/选项），下次打开对话框自动带出
+      try {
+        localStorage.setItem(
+          EXPORT_PREFS_KEY,
+          JSON.stringify({
+            format,
+            packVersion: version,
+            author: author.trim(),
+            updateLink: updateLink.trim(),
+            resolveLinks,
+            bundleJava,
+          }),
+        );
+      } catch {
+        /* 存储满或被禁用时静默失败 */
+      }
     } catch (ex) {
       setPackStatus("");
       setStatusText(t("打包失败：{0}", { "0": asMessage(ex) }));
@@ -712,7 +797,7 @@ const ModpackExportDialog: React.FC<{
         <ModalShell
           icon={<FolderZip20Regular />}
           subtitle={instanceSummary}
-          title={t("整合包制作")}
+          title={soloOnly ? t("NekoSolo 安装包") : t("整合包制作")}
           onClose={onClose}
         >
           <div className="flex h-full min-h-0 flex-col">
@@ -907,20 +992,25 @@ const ModpackExportDialog: React.FC<{
                   <div className="flex flex-col gap-3">
                     <div className="flex flex-col gap-1">
                       {settingLabel(t("打包格式"))}
-                      <RadioGroup
-                        aria-label={t("打包格式")}
-                        classNames={{ wrapper: "gap-4" }}
-                        isDisabled={packing}
-                        orientation="horizontal"
-                        size="sm"
-                        value={String(format)}
-                        onValueChange={(value) => setFormat(Number(value))}
-                      >
-                        <Radio value="0">Modrinth（.mrpack）</Radio>
-                        <Radio value="1">MultiMC（.zip）</Radio>
-                        <Radio value="2">CurseForge（.zip）</Radio>
-                        <Radio value="3">NekoSolo（.exe）</Radio>
-                      </RadioGroup>
+                      {soloOnly ? (
+                        <div className="flex h-9 items-center rounded-lg bg-default-100/80 px-2.5 text-[13px] text-gray-600 dark:bg-default/20 dark:text-gray-300">
+                          NekoSolo（.exe）
+                        </div>
+                      ) : (
+                        <RadioGroup
+                          aria-label={t("打包格式")}
+                          classNames={{ wrapper: "gap-4" }}
+                          isDisabled={packing}
+                          orientation="horizontal"
+                          size="sm"
+                          value={String(format)}
+                          onValueChange={(value) => setFormat(Number(value))}
+                        >
+                          <Radio value="0">Modrinth（.mrpack）</Radio>
+                          <Radio value="1">MultiMC（.zip）</Radio>
+                          <Radio value="2">CurseForge（.zip）</Radio>
+                        </RadioGroup>
+                      )}
                     </div>
 
                     {format === 2 ? (
@@ -956,6 +1046,40 @@ const ModpackExportDialog: React.FC<{
                             {t("捆绑当前 Java 运行时（推荐，离线也能玩）")}
                           </span>
                         </Checkbox>
+                        <Checkbox
+                          classNames={{ wrapper: "before:hidden" }}
+                          isDisabled={packing}
+                          isSelected={remoteDist}
+                          size="sm"
+                          onValueChange={setRemoteDist}
+                        >
+                          <span className="text-[13px] text-gray-600 dark:text-gray-300">
+                            {t(
+                              "在线安装包（小体积，安装时从下方地址动态下载内容）",
+                            )}
+                          </span>
+                        </Checkbox>
+                        {remoteDist ? (
+                          <>
+                            <Input
+                              aria-label={t("载荷下载地址")}
+                              classNames={{
+                                inputWrapper:
+                                  "bg-default-100/80 data-[hover=true]:bg-default-200",
+                              }}
+                              isDisabled={packing}
+                              placeholder="https://github.com/用户名/仓库/releases/download/标签/payload.zip"
+                              size="sm"
+                              value={payloadUrl}
+                              onValueChange={setPayloadUrl}
+                            />
+                            <div className="break-words rounded-lg bg-default-100/80 p-2 px-2.5 text-[11px] text-gray-500 dark:text-gray-400">
+                              {t(
+                                "导出会同时生成一个 payload.zip：把它作为资产上传到上面的 GitHub Release，玩家安装时即从此地址下载并校验。推荐先建好 Release 再导出。",
+                              )}
+                            </div>
+                          </>
+                        ) : null}
                       </>
                     ) : null}
 

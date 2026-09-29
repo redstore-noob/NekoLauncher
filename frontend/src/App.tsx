@@ -17,17 +17,21 @@
 import { Route, Routes } from "react-router-dom";
 
 import OverlayHost from "@/components/overlay/OverlayHost";
+import { OobeProvider } from "@/components/oobe/OobeProvider";
+import OobeOverlay from "@/components/oobe/OobeOverlay";
 import IndexPage from "@/layouts/index";
 
 function App() {
   return (
-    <>
+    <OobeProvider>
       <Routes>
         <Route element={<IndexPage />} path="/" />
       </Routes>
-      {/* 全局浮层：NekoAlert（底部警示）/ NyaPrompt（提示对话框），随处可调 */}
+      {/*全局浮层：NekoAlert（底部警示）/ NyaPrompt（提示对话框），随处可调 */}
       <OverlayHost />
-    </>
+      {/*首次启动引导覆盖层（OOBE）：萌新 / 跳过 / 创作者三路线，见 OobeProvider */}
+      <OobeOverlay />
+    </OobeProvider>
   );
 }
 

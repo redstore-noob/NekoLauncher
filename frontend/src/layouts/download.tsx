@@ -53,7 +53,6 @@ import {
   ArrowImport20Regular,
   ArrowClockwise20Regular as RefreshIcon,
   Warning20Regular,
-  GlobeSearch20Regular,
 } from "@fluentui/react-icons";
 
 import SegmentedTabs from "../components/segmented-tabs";
@@ -71,6 +70,10 @@ import {
 } from "../../wailsjs/go/bindings/DownloadAPI";
 import { GetGameDirectory } from "../../wailsjs/go/bindings/ConfigAPI";
 import {
+  LookupModNameTranslations,
+  RefreshModNameTranslations,
+} from "../../wailsjs/go/bindings/ContentAPI";
+import {
   OpenInExplorer,
   SelectFile,
 } from "../../wailsjs/go/bindings/SystemAPI";
@@ -81,8 +84,7 @@ import ContentDownloadOverlay, {
   type ProjectLike,
 } from "../components/download/ContentDownloadOverlay";
 import JavaDownloadTab from "../components/download/JavaDownloadTab";
-// X-3：资源搜索弹层（Modrinth / CurseForge 双数据源，走后端绑定 + 镜像回退）
-import ResourceSearchDialog from "../components/download/ResourceSearchDialog";
+// X-3 资源搜索已并入标签页大列表（版本/实例选择见 ContentDownloadOverlay）
 import SwitchTransition, {
   useSwitchDirection,
 } from "../components/screen-transition";
@@ -104,6 +106,16 @@ const TAB_NAMES = [
   "Java",
 ];
 const MODRINTH_TABS = ["Mod", "整合包", "光影包", "材质包"];
+
+// 加载器筛选（原资源搜索弹层；空串 = 不过滤，Go 侧把空串当"全部"）
+const MOD_LOADER_OPTIONS = ["", "fabric", "forge", "neoforge", "quilt"];
+
+function loaderOptionLabel(loader: string): string {
+  if (!loader) return t("全部加载器");
+  if (loader === "neoforge") return "NeoForge";
+
+  return loader.charAt(0).toUpperCase() + loader.slice(1);
+}
 
 // Modrinth project_type 与加载器 facets
 const MODRINTH_CONFIG: Record<
@@ -262,17 +274,13 @@ const DownloadPage: React.FC = () => {
   >({});
 
   // ---------- 弹层与下载进度 ----------
+  // Modrinth 列表筛选（原资源搜索弹层的两项）：游戏版本 + 加载器（仅 Mod）
+  const [contentGameVersion, setContentGameVersion] = useState("");
+  const [contentLoader, setContentLoader] = useState("");
   const [contentOverlay, setContentOverlay] = useState<{
     project: ProjectLike | null;
     kind: ContentKind;
     localPath: string;
-  } | null>(null);
-  // X-3 资源搜索弹层（Modrinth / CurseForge 双数据源）
-  // preset：从资源标签页进入时带上该标签的项目类型与页内搜索词；右上角入口为 null
-  const [resourceSearchOpen, setResourceSearchOpen] = useState(false);
-  const [resourceSearchPreset, setResourceSearchPreset] = useState<{
-    type: string;
-    query: string;
   } | null>(null);
   const [mcOverlayVersion, setMcOverlayVersion] =
     useState<models.MinecraftVersion | null>(null);
@@ -378,8 +386,9 @@ const DownloadPage: React.FC = () => {
         source: "modrinth",
         projectType: config.type,
         query,
-        gameVersion: "",
-        loader: "",
+        // 原资源搜索弹层的筛选：游戏版本（可选）与加载器（仅 Mod 标签页）
+        gameVersion: contentGameVersion.trim(),
+        loader: config.loaders ? contentLoader : "",
         loaders: config.loaders ?? [],
         limit: 100,
       };
@@ -415,7 +424,7 @@ const DownloadPage: React.FC = () => {
     }
   };
 
-  // 搜索词变化：重置页码 + 对 Modrinth 标签页做 300ms 防抖重查
+  // 搜索词 / 筛选变化：重置页码 + 对 Modrinth 标签页做 300ms 防抖重查
   const firstQueryRender = useRef(true);
 
   useEffect(() => {
@@ -435,7 +444,7 @@ const DownloadPage: React.FC = () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentQuery]);
+  }, [contentQuery, contentGameVersion, contentLoader]);
 
   // ?? 的右值每次渲染都是新对象，会让下面的 useMemo 依赖永远变化；
   // 固定成一个常量作为空态
@@ -473,6 +482,52 @@ const DownloadPage: React.FC = () => {
     (contentPage - 1) * PAGE_SIZE,
     contentPage * PAGE_SIZE,
   );
+
+  // ---------- 资源中文名（MC百科） ----------
+  // 下载大厅的资源标题是英文原名；复用实例页同一套 MC百科（mcmod.cn）译名服务：
+  // 先秒回缓存命中，未命中的由后端限流补查（与已装 Mod 共用一份持久缓存），
+  // 补到后经 "modname:updated" 事件触发重查。只查当前页条目，尊重搜索配额。
+  const [contentNames, setContentNames] = useState<Record<string, string>>({});
+  const contentPageTitles = useMemo(
+    () =>
+      contentPageItems
+        .map((p) => String(p.title ?? ""))
+        .filter((n) => !!n)
+        .join("\n"),
+    [contentPageItems],
+  );
+
+  useEffect(() => {
+    const titles = contentPageTitles.split("\n").filter((n) => !!n);
+
+    if (titles.length === 0) {
+      setContentNames({});
+
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => {
+      void LookupModNameTranslations(titles)
+        .then((map) => {
+          if (!cancelled && map && Object.keys(map).length > 0) {
+            setContentNames(map);
+          }
+        })
+        .catch(() => {
+          /* 译名查询失败不影响列表展示 */
+        });
+    };
+
+    refresh();
+    void RefreshModNameTranslations(titles).catch(() => {});
+    const off = EventsOn("modname:updated", refresh);
+
+    return () => {
+      cancelled = true;
+      off();
+    };
+    // contentPageTitles 是拼接串：页码/搜索词变化才变，避免每帧重发请求
+  }, [contentPageTitles]);
 
   function downloadContent(project: ProjectLike) {
     setContentOverlay({
@@ -657,18 +712,6 @@ const DownloadPage: React.FC = () => {
             </span>
           ) : null}
         </div>
-        <Button
-          radius="full"
-          size="sm"
-          startContent={<GlobeSearch20Regular />}
-          variant="flat"
-          onPress={() => {
-            setResourceSearchPreset(null);
-            setResourceSearchOpen(true);
-          }}
-        >
-          {t("资源搜索")}
-        </Button>
         <Button
           radius="full"
           size="sm"
@@ -861,23 +904,43 @@ const DownloadPage: React.FC = () => {
                   value={contentQuery}
                   onValueChange={setContentQuery}
                 />
-                {/* 标签页入口：预填当前标签的项目类型与搜索词（右上角入口不预填） */}
-                <Button
-                  className="flex-shrink-0"
+                {/* 游戏版本筛选（原资源搜索弹层）：输入如 1.20.1，回车/防抖后生效 */}
+                <Input
+                  aria-label={t("游戏版本过滤")}
+                  className="w-36 flex-none"
+                  classNames={{
+                    inputWrapper:
+                      "bg-default-100/80 data-[hover=true]:bg-default-200",
+                  }}
+                  placeholder={t("游戏版本（可选）")}
                   radius="full"
                   size="sm"
-                  startContent={<GlobeSearch20Regular />}
-                  variant="flat"
-                  onPress={() => {
-                    setResourceSearchPreset({
-                      type: MODRINTH_CONFIG[activeTab]?.type ?? "mod",
-                      query: contentQuery.trim(),
-                    });
-                    setResourceSearchOpen(true);
-                  }}
-                >
-                  {t("高级搜索")}
-                </Button>
+                  value={contentGameVersion}
+                  onValueChange={setContentGameVersion}
+                />
+                {/* 加载器筛选：仅 Mod 标签页有意义 */}
+                {MODRINTH_CONFIG[activeTab]?.loaders ? (
+                  <Select
+                    aria-label={t("加载器过滤")}
+                    className="w-36 flex-none"
+                    items={MOD_LOADER_OPTIONS.map((value) => ({
+                      key: value || "__all__",
+                      label: loaderOptionLabel(value),
+                    }))}
+                    popoverProps={{ motionProps: popoverMotionProps }}
+                    selectedKeys={[contentLoader || "__all__"]}
+                    size="sm"
+                    onSelectionChange={(keys) => {
+                      const raw = String(Array.from(keys)[0] ?? "__all__");
+
+                      setContentLoader(raw === "__all__" ? "" : raw);
+                    }}
+                  >
+                    {(item) => (
+                      <SelectItem key={item.key}>{item.label}</SelectItem>
+                    )}
+                  </Select>
+                ) : null}
                 {activeTab === "整合包" && (
                   <Button
                     className="flex-shrink-0"
@@ -942,8 +1005,15 @@ const DownloadPage: React.FC = () => {
                         </span>
                       )}
                       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                        <span className="overflow-hidden text-sm font-semibold text-ellipsis whitespace-nowrap">
-                          {String(p.title ?? "")}
+                        <span className="flex items-baseline gap-2 overflow-hidden">
+                          <span className="overflow-hidden text-sm font-semibold text-ellipsis whitespace-nowrap">
+                            {String(p.title ?? "")}
+                          </span>
+                          {contentNames[String(p.title ?? "")] && (
+                            <span className="flex-none text-xs font-medium text-primary/80">
+                              {contentNames[String(p.title ?? "")]}
+                            </span>
+                          )}
                         </span>
                         <span className="overflow-hidden text-xs text-gray-400 text-ellipsis whitespace-nowrap">
                           {String(p.description ?? "")}
@@ -991,13 +1061,7 @@ const DownloadPage: React.FC = () => {
         onClose={() => setContentOverlay(null)}
       />
 
-      {/* 资源搜索弹层（X-3：Modrinth / CurseForge，搜索 + 版本 + 下载到实例） */}
-      <ResourceSearchDialog
-        initialQuery={resourceSearchPreset?.query}
-        initialType={resourceSearchPreset?.type}
-        open={resourceSearchOpen}
-        onClose={() => setResourceSearchOpen(false)}
-      />
+      {/* 资源搜索弹层已并入各标签页的大列表：搜索框 + 列表 + ContentDownloadOverlay */}
     </div>
   );
 };

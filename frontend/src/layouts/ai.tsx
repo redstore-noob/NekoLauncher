@@ -56,12 +56,14 @@ import {
   ChevronRight20Regular as ChevronRightIcon,
   Database20Regular as DatabaseIcon,
   WindowConsole20Regular as TerminalIcon,
-  Clock20Regular as ClockIcon,
   Bot20Regular as AiIcon,
   Checkmark20Regular as ApproveIcon,
   Chat20Regular as ChatIcon,
   Delete20Regular as DeleteIcon,
   Dismiss20Regular as RejectIcon,
+  Edit20Regular as RenameIcon,
+  Pin20Regular as PinIcon,
+  PinOff20Regular as UnpinIcon,
   Eye20Regular as ReadOnlyIcon,
   Person20Regular as UserIcon,
   Settings20Regular as SettingsIcon,
@@ -74,6 +76,7 @@ import remarkGfm from "remark-gfm";
 
 import { modalBehaviorProps } from "../components/modal-shell";
 import { t } from "../i18n";
+import { consumePendingDetail } from "../lib/navigation";
 import { listItemVariants } from "../lib/motion";
 import {
   GetVersionDetails,
@@ -165,6 +168,13 @@ interface ChatSession {
   messages: ChatMessage[];
   createdAt: number;
   updatedAt: number;
+  /** 置顶的会话排在列表最前 */
+  pinned?: boolean;
+  /**
+   * 自动压缩生成的历史摘要：压缩发生时，被摘要覆盖的旧消息会从 messages
+   * 中移除，摘要本身存在这里并在每次请求时作为首条消息回传给模型
+   */
+  summary?: string;
 }
 
 interface AiSettings {
@@ -363,7 +373,7 @@ const DEFAULT_SETTINGS: AiSettings = {
 ### 工具调用规则
 
 1. **先思考再调用**：确认需要实时数据或执行操作时才调用工具
-2. **一次调用一个工具**：不要在一条消息中调用多个工具
+2. **可并行调用独立工具**：相互之间没有依赖的工具可以在一条回复里同时发出多个调用，系统会并行执行、一并回传结果；有依赖关系时（如先 search_mod 再 install_mod）必须等前一个结果回来再发起下一个
 3. **参数正确**：确保参数名和值正确；安装模组时 project_id 必须来自 search_mod 的返回结果，不要编造
 4. **结果处理**：工具结果会以 <tool_result> 标签包裹、作为用户消息回传给你。收到后用自然语言总结给用户，不要直接粘贴原始 JSON
 5. **错误处理**：如果工具调用失败（<tool_result> 中 ok 为 false），告诉用户失败原因，并给出替代方案；可以修正参数后再次调用，但同一个失败调用不要重试超过一次
@@ -418,7 +428,7 @@ const DEFAULT_SETTINGS: AiSettings = {
 当「允许直接修改」关闭时，你仍然**正常发出 <tool_call>**，系统会自动拦截：
 
 1. 修改类工具不会立即执行，界面会出现"待批准"卡片
-2. 用户点击"批准"后系统执行并回传 <tool_result>；点击"拒绝"则回传拒绝结果
+2. 用户点击"批准"后系统执行并回传 <tool_result>；点击"拒绝"则回传拒绝结果；点击"总是允许"则该工具在本应用运行期间不再需要批准（后续同类调用会直接执行）
 3. 收到拒绝结果后不要反复重试，向用户说明即可
 
 ### 直接修改模式下的行为
@@ -456,7 +466,7 @@ const DEFAULT_SETTINGS: AiSettings = {
 - 记住当前对话的上下文，不要反复问用户已经说过的信息
 - 涉及实例操作时，默认使用用户当前选中的实例
 - 如果用户提到其他实例，先确认实例名称
-- 长对话中适时总结，避免遗漏关键信息
+- 长对话接近上下文上限时，系统会自动把较早的历史压缩成摘要（以 [会话摘要] 开头出现在对话开头）。摘要之后的消息是完整原文，回答时优先依据原文；摘要中的细节可能省略，必要时可用工具重新查询
 
 ## 最终检查清单
 
@@ -492,6 +502,11 @@ const STORAGE_KEYS = {
 
 /** 单次用户消息触发的最大工具调用轮数（防死循环；自主调查链路较长，放宽到 10） */
 const MAX_TOOL_ROUNDS = 10;
+/** 自动压缩时保留原文的最近消息条数（不含工具结果），其余压缩成摘要 */
+const KEEP_RECENT_MESSAGES = 6;
+/** 会话摘要的系统提示词（一次性调用，不走 Agent 工具循环） */
+const SUMMARY_SYSTEM_PROMPT =
+  "你是会话摘要助手。把给定的 Launcher AI 助手对话历史压缩成简洁的中文摘要，保留：用户的目标与偏好、已执行的操作及其结果、关键数据（版本号、文件名、路径、设置值）、未完成的事项。直接输出摘要正文，不要寒暄或解释。";
 /** 工具结果回填给模型时的最大字符数 */
 const MAX_TOOL_RESULT_CHARS = 6000;
 /** allowModify=false 时需要用户批准的修改类工具 */
@@ -2112,10 +2127,11 @@ function formatFileSizeStatic(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** 组装发给模型的完整消息列表（含当前用户消息、工具结果与附件） */
+/** 组装发给模型的完整消息列表（含会话摘要、当前用户消息、工具结果与附件） */
 function buildApiMessages(
   convo: ChatMessage[],
   contextWindow: number,
+  summary?: string,
 ): OpenAiMessage[] {
   const drafts: OpenAiMessage[] = [];
 
@@ -2228,8 +2244,10 @@ function buildApiMessages(
 
     return n;
   };
+  const summaryTokens = summary ? estimateTokens(summary) + 8 : 0;
   const budget =
     Math.max(1024, contextWindow * 0.6) -
+    summaryTokens -
     tokenOf(patched[patched.length - 1] ?? { role: "user", content: "" });
   let used = 0;
   let firstKept = patched.length - 1;
@@ -2248,6 +2266,11 @@ function buildApiMessages(
   // 裁剪边界可能切开 tool 结果与其 assistant 调用：丢弃开头的孤儿 tool 消息
   while (kept[0]?.role === "tool") {
     kept = kept.slice(1);
+  }
+
+  // 历史被压缩过时，摘要作为首条消息回传，模型能"记住"被裁掉的内容
+  if (summary) {
+    kept = [{ role: "user", content: `[会话摘要]\n${summary}` }, ...kept];
   }
 
   return kept;
@@ -2284,7 +2307,13 @@ const AiPage: React.FC = () => {
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>(
     [],
   );
-  const [contextSettingsOpen, setContextSettingsOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  /** 正在重命名的会话 ID 与草稿 */
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  /** 正在编辑重发的用户消息 ID 与草稿 */
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
   const [expandedToolCalls, setExpandedToolCalls] = useState<Set<string>>(
     new Set(),
   );
@@ -2297,10 +2326,18 @@ const AiPage: React.FC = () => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  /** 等待用户批准的工具调用（toolCallId → resolver），批准/拒绝按钮 resolve */
-  const approvalWaitersRef = useRef<Map<string, (approved: boolean) => void>>(
-    new Map(),
-  );
+  /** 等待用户批准的工具调用（toolCallId → resolver），批准/拒绝/总是允许按钮 resolve */
+  const approvalWaitersRef = useRef<
+    Map<string, (approved: boolean | "always") => void>
+  >(new Map());
+  /** 本应用运行期内被用户「总是允许」的修改类工具（重启后重置，避免永久授权） */
+  const alwaysAllowedToolsRef = useRef<Set<string>>(new Set());
+  /** alwaysAllowedToolsRef 的镜像状态，供设置弹窗展示与撤销 */
+  const [alwaysAllowedList, setAlwaysAllowedList] = useState<string[]>([]);
+  /** 正在压缩历史摘要（给打字指示器换文案用） */
+  const [isCompacting, setIsCompacting] = useState(false);
+  /** 到达工具轮数上限而暂停的会话：显示「继续执行」按钮 */
+  const [continueTarget, setContinueTarget] = useState<string | null>(null);
   /** Agent 循环跨多次 await 运行，读设置走 ref，避免闭包里的旧值 */
   const settingsRef = useRef(settings);
 
@@ -2327,7 +2364,11 @@ const AiPage: React.FC = () => {
     const msgs = (activeSession?.messages ?? []).filter(
       (m) => m.role !== "tool_result",
     );
-    const used = estimateSessionTokens(msgs, settings.systemPrompt);
+    const summaryTokens = activeSession?.summary
+      ? estimateTokens(activeSession.summary)
+      : 0;
+    const used =
+      estimateSessionTokens(msgs, settings.systemPrompt) + summaryTokens;
     const pct = Math.min(100, (used / settings.contextWindow) * 100);
 
     return {
@@ -2342,6 +2383,10 @@ const AiPage: React.FC = () => {
 
   // 初始化加载
   useEffect(() => {
+    // 其它页面（实例右键「让 AI 分析」、帮助页「AI 诊断」）带来的预填问题
+    const preset = consumePendingDetail("ai");
+
+    if (preset) setInput(preset);
     const loadedSessions = loadFromStorage<ChatSession[]>(
       STORAGE_KEYS.sessions,
       [],
@@ -2428,6 +2473,32 @@ const AiPage: React.FC = () => {
     [sessions, activeSessionId],
   );
 
+  const renameSession = useCallback((id: string, title: string) => {
+    const trimmed = title.trim();
+
+    if (!trimmed) return;
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, title: trimmed } : s)),
+    );
+  }, []);
+
+  const togglePinSession = useCallback((id: string) => {
+    setSessions((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, pinned: !s.pinned } : s)),
+    );
+  }, []);
+
+  /** 展示顺序：置顶优先，其余按最近更新时间 */
+  const sortedSessions = useMemo(
+    () =>
+      [...sessions].sort(
+        (a, b) =>
+          Number(b.pinned ?? false) - Number(a.pinned ?? false) ||
+          b.updatedAt - a.updatedAt,
+      ),
+    [sessions],
+  );
+
   const updateSessionMessages = useCallback(
     (sessionId: string, updater: (msgs: ChatMessage[]) => ChatMessage[]) => {
       setSessions((prev) =>
@@ -2500,27 +2571,35 @@ const AiPage: React.FC = () => {
   // Agent 循环：单次模型调用
   // ------------------------------------------------------------------
 
+  /** 解析当前设置对应的 API 端点（Agent 循环与摘要压缩共用） */
+  const activeEndpoint = useCallback(() => {
+    const cur = settingsRef.current;
+    const provider = BUILTIN_PROVIDERS.find((p) => p.id === cur.providerId);
+    const openaiBaseUrl =
+      cur.providerId === "custom"
+        ? cur.customBaseUrl
+        : (provider?.baseUrl ?? "");
+    // Anthropic 格式优先走供应商专用的兼容端点（如 DeepSeek 的 /anthropic）
+    const baseUrl =
+      cur.apiFormat === "anthropic" && provider?.anthropicBaseUrl
+        ? provider.anthropicBaseUrl
+        : openaiBaseUrl;
+
+    return { cur, baseUrl };
+  }, []);
+
   /** 发起一次流式请求。返回是否被用户中断；网络/HTTP 错误向上抛出。 */
   const callModelOnce = useCallback(
     async (
       convo: ChatMessage[],
       onChunk: (chunk: string) => void,
+      summary?: string,
     ): Promise<{
       text: string;
       nativeToolCalls: NativeToolCall[];
       aborted: boolean;
     }> => {
-      const cur = settingsRef.current;
-      const provider = BUILTIN_PROVIDERS.find((p) => p.id === cur.providerId);
-      const openaiBaseUrl =
-        cur.providerId === "custom"
-          ? cur.customBaseUrl
-          : (provider?.baseUrl ?? "");
-      // Anthropic 格式优先走供应商专用的兼容端点（如 DeepSeek 的 /anthropic）
-      const baseUrl =
-        cur.apiFormat === "anthropic" && provider?.anthropicBaseUrl
-          ? provider.anthropicBaseUrl
-          : openaiBaseUrl;
+      const { cur, baseUrl } = activeEndpoint();
 
       const controller = new AbortController();
 
@@ -2529,7 +2608,7 @@ const AiPage: React.FC = () => {
       let full = "";
 
       try {
-        const messages = buildApiMessages(convo, cur.contextWindow);
+        const messages = buildApiMessages(convo, cur.contextWindow, summary);
         // 系统提示词动态拼上当前权限状态，模型能提前知道哪些工具可用
         const systemPrompt = buildSystemPrompt(cur);
         const onDelta = (chunk: string) => {
@@ -2578,13 +2657,13 @@ const AiPage: React.FC = () => {
         abortControllerRef.current = null;
       }
     },
-    [],
+    [activeEndpoint],
   );
 
-  /** 挂起等待用户批准，由批准/拒绝按钮 resolve */
+  /** 挂起等待用户批准，由批准（true）/拒绝（false）/总是允许（"always"）按钮 resolve */
   const requestApproval = useCallback(
-    (toolCallId: string): Promise<boolean> => {
-      return new Promise<boolean>((resolve) => {
+    (toolCallId: string): Promise<boolean | "always"> => {
+      return new Promise<boolean | "always">((resolve) => {
         approvalWaitersRef.current.set(toolCallId, resolve);
       });
     },
@@ -2592,7 +2671,7 @@ const AiPage: React.FC = () => {
   );
 
   const resolveApproval = useCallback(
-    (toolCallId: string, approved: boolean) => {
+    (toolCallId: string, approved: boolean | "always") => {
       const waiter = approvalWaitersRef.current.get(toolCallId);
 
       if (waiter) {
@@ -2603,13 +2682,27 @@ const AiPage: React.FC = () => {
     [],
   );
 
+  /** 记录「总是允许」：ref 供 Agent 循环即时读取，state 镜像供设置弹窗展示/撤销 */
+  const allowToolAlways = useCallback((name: string) => {
+    alwaysAllowedToolsRef.current.add(name);
+    setAlwaysAllowedList(Array.from(alwaysAllowedToolsRef.current));
+  }, []);
+
+  /** 撤销本运行期内全部「总是允许」授权 */
+  const resetAlwaysAllowed = useCallback(() => {
+    alwaysAllowedToolsRef.current.clear();
+    setAlwaysAllowedList([]);
+  }, []);
+
   // ------------------------------------------------------------------
   // Agent 循环：请求 → 解析 <tool_call> → 执行 → 回填结果 → 继续
   // ------------------------------------------------------------------
 
   const runAgentTurn = useCallback(
-    async (sessionId: string, convo: ChatMessage[]) => {
+    async (sessionId: string, convo: ChatMessage[], summary?: string) => {
       const working = [...convo];
+
+      setContinueTarget(null);
 
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         setStreamingContent("");
@@ -2618,8 +2711,10 @@ const AiPage: React.FC = () => {
         let aborted: boolean;
 
         try {
-          const result = await callModelOnce(working, (chunk) =>
-            setStreamingContent((prev) => prev + chunk),
+          const result = await callModelOnce(
+            working,
+            (chunk) => setStreamingContent((prev) => prev + chunk),
+            summary,
           );
 
           responseText = result.text;
@@ -2747,71 +2842,101 @@ const AiPage: React.FC = () => {
         };
 
         const ctx = await resolveToolContext();
-        const results: Array<{ tc: ToolCall; ok: boolean; result: string }> =
-          [];
-
-        for (const tc of toolCalls) {
-          let ok: boolean;
-          let resultText: string;
-
-          if (tc.name === "parse_error") {
-            ok = false;
-            resultText = tc.result ?? "工具调用格式错误";
-          } else if (
+        /** 每个调用的执行结果（按 toolCall.id 记录，回填时按原顺序取出） */
+        const outcomes = new Map<string, { ok: boolean; result: string }>();
+        /** 受权限开关控制的调用直接返回拒绝文案（不进入批准流程） */
+        const permissionDenied = (tc: ToolCall): string | null => {
+          if (
             FOLDER_READ_TOOLS.has(tc.name) &&
             !settingsRef.current.allowFolderRead
           ) {
-            // 用户关闭了「查看实例文件夹」权限：直接拒绝，不进入批准流程
-            ok = false;
-            resultText =
-              "权限不足：用户未开启「查看实例文件夹」权限，该工具被拒绝。请不要重试，告知用户可在 AI 设置 → 实例操作权限中开启";
-            setToolCallStatus(tc.id, "error", t("权限未开启：查看实例文件夹"));
-          } else if (
+            return "权限不足：用户未开启「查看实例文件夹」权限，该工具被拒绝。请不要重试，告知用户可在 AI 设置 → 实例操作权限中开启";
+          }
+          if (
             FOLDER_WRITE_TOOLS.has(tc.name) &&
             !settingsRef.current.allowFolderWrite
           ) {
-            // 用户关闭了「修改实例文件夹」权限：直接拒绝，即使处于可修改模式
-            ok = false;
-            resultText =
-              "权限不足：用户未开启「修改实例文件夹」权限，该工具被拒绝。请不要重试，告知用户可在 AI 设置 → 实例操作权限中开启";
-            setToolCallStatus(tc.id, "error", t("权限未开启：修改实例文件夹"));
-          } else if (
-            CONFIRM_TOOLS.has(tc.name) &&
-            !settingsRef.current.allowModify
-          ) {
-            // 只读模式：修改类工具挂起等待批准
-            const approved = await requestApproval(tc.id);
-
-            if (!approved) {
-              ok = false;
-              resultText = "用户拒绝执行该操作，请不要重复尝试";
-              setToolCallStatus(tc.id, "error", t("用户拒绝执行"));
-            } else {
-              setToolCallStatus(tc.id, "running");
-              const executed = await executeTool(
-                tc.name,
-                toolArgsOf(tc.args),
-                ctx,
-              );
-
-              ok = executed.ok;
-              resultText = executed.result;
-              setToolCallStatus(tc.id, ok ? "success" : "error", resultText);
-            }
-          } else {
-            setToolCallStatus(tc.id, "running");
-            const executed = await executeTool(
-              tc.name,
-              toolArgsOf(tc.args),
-              ctx,
-            );
-
-            ok = executed.ok;
-            resultText = executed.result;
-            setToolCallStatus(tc.id, ok ? "success" : "error", resultText);
+            return "权限不足：用户未开启「修改实例文件夹」权限，该工具被拒绝。请不要重试，告知用户可在 AI 设置 → 实例操作权限中开启";
           }
-          results.push({ tc, ok, result: resultText });
+
+          return null;
+        };
+        const executeAndRecord = async (tc: ToolCall) => {
+          setToolCallStatus(tc.id, "running");
+          const executed = await executeTool(tc.name, toolArgsOf(tc.args), ctx);
+
+          setToolCallStatus(
+            tc.id,
+            executed.ok ? "success" : "error",
+            executed.result,
+          );
+          outcomes.set(tc.id, executed);
+        };
+
+        // 第一波：无需批准的调用并行执行（相互独立的工具没有依赖关系）
+        const directCalls = toolCalls.filter(
+          (tc) =>
+            tc.name !== "parse_error" &&
+            !permissionDenied(tc) &&
+            !(
+              CONFIRM_TOOLS.has(tc.name) &&
+              !settingsRef.current.allowModify &&
+              !alwaysAllowedToolsRef.current.has(tc.name)
+            ),
+        );
+
+        await Promise.all(directCalls.map(executeAndRecord));
+
+        // 第二波：解析错误与权限拒绝就地出结果；修改类调用逐个挂起等批准
+        for (const tc of toolCalls) {
+          if (outcomes.has(tc.id)) continue;
+
+          if (tc.name === "parse_error") {
+            outcomes.set(tc.id, {
+              ok: false,
+              result: tc.result ?? "工具调用格式错误",
+            });
+            continue;
+          }
+          const denied = permissionDenied(tc);
+
+          if (denied) {
+            setToolCallStatus(
+              tc.id,
+              "error",
+              FOLDER_READ_TOOLS.has(tc.name)
+                ? t("权限未开启：查看实例文件夹")
+                : t("权限未开启：修改实例文件夹"),
+            );
+            outcomes.set(tc.id, { ok: false, result: denied });
+            continue;
+          }
+          if (
+            CONFIRM_TOOLS.has(tc.name) &&
+            !settingsRef.current.allowModify &&
+            !alwaysAllowedToolsRef.current.has(tc.name)
+          ) {
+            // 只读模式：修改类工具挂起等待批准；"总是允许"后运行期内免批
+            const decision = await requestApproval(tc.id);
+
+            if (decision === "always") {
+              allowToolAlways(tc.name);
+            } else if (!decision) {
+              setToolCallStatus(tc.id, "error", t("用户拒绝执行"));
+              outcomes.set(tc.id, {
+                ok: false,
+                result: "用户拒绝执行该操作，请不要重复尝试",
+              });
+              continue;
+            }
+          }
+          await executeAndRecord(tc);
         }
+
+        const results = toolCalls.map((tc) => ({
+          tc,
+          ...(outcomes.get(tc.id) ?? { ok: false, result: "" }),
+        }));
 
         // 回填：assistant（含调用原文）+ 每个工具的结果，继续下一轮
         working.push(aiMsg);
@@ -2848,9 +2973,170 @@ const AiPage: React.FC = () => {
       };
 
       updateSessionMessages(sessionId, (msgs) => [...msgs, limitMsg]);
+      setContinueTarget(sessionId);
     },
-    [callModelOnce, requestApproval, updateSessionMessages],
+    [allowToolAlways, callModelOnce, requestApproval, updateSessionMessages],
   );
+
+  // ------------------------------------------------------------------
+  // 会话压缩：接近上下文上限时把较早的历史摘要成一段"记忆"
+  // ------------------------------------------------------------------
+
+  /**
+   * 把 convo 中较早的消息压缩成摘要：保留最近 KEEP_RECENT_MESSAGES 条原文，
+   * 其余发给模型总结后存入 session.summary 并从消息列表移除。
+   * 摘要调用失败时静默放弃（null）——压缩只是优化，不该打断正常对话。
+   */
+  const compactHistory = useCallback(
+    async (
+      sessionId: string,
+      convo: ChatMessage[],
+    ): Promise<{ kept: ChatMessage[]; summary: string } | null> => {
+      const visible = convo.filter((m) => m.role !== "tool_result");
+
+      if (visible.length <= KEEP_RECENT_MESSAGES) return null;
+      const keptVisible = visible.slice(-KEEP_RECENT_MESSAGES);
+      const keptIds = new Set(keptVisible.map((m) => m.id));
+      const old = visible.filter((m) => !keptIds.has(m.id));
+
+      if (old.length === 0) return null;
+
+      const transcript = truncateMiddle(
+        old
+          .map((m) => {
+            if (m.role === "user") return `用户: ${m.content}`;
+            if (m.role === "assistant")
+              return `助手: ${stripToolBlocks(m.content)}`;
+
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n\n"),
+        12000,
+      );
+      const { cur, baseUrl } = activeEndpoint();
+
+      if (!cur.apiKey.trim() || !baseUrl.trim() || !cur.model.trim())
+        return null;
+      const prompt = `${transcript}`;
+      const existing = sessions.find((s) => s.id === sessionId)?.summary;
+
+      try {
+        setIsCompacting(true);
+        const result =
+          cur.apiFormat === "anthropic"
+            ? await streamAnthropicChat(
+                baseUrl,
+                cur.apiKey,
+                cur.model,
+                SUMMARY_SYSTEM_PROMPT,
+                [{ role: "user", content: prompt }],
+                0.2,
+                () => {},
+                undefined,
+                undefined,
+              )
+            : await streamOpenAiChat(
+                baseUrl,
+                cur.apiKey,
+                cur.model,
+                [
+                  { role: "system", content: SUMMARY_SYSTEM_PROMPT },
+                  { role: "user", content: prompt },
+                ],
+                0.2,
+                () => {},
+                undefined,
+                undefined,
+              );
+        const text = result.text.trim();
+
+        if (!text) return null;
+        const summary = existing ? `${existing}\n\n${text}` : text;
+        const notice: ChatMessage = {
+          id: uid(),
+          role: "action",
+          content: "",
+          actionStatus: "approved",
+          actionLabel: t("已自动压缩较早的对话历史以释放上下文"),
+          timestamp: Date.now(),
+        };
+
+        updateSessionMessages(sessionId, () => [...keptVisible, notice]);
+
+        return { kept: keptVisible, summary };
+      } catch {
+        return null;
+      } finally {
+        setIsCompacting(false);
+      }
+    },
+    [activeEndpoint, sessions, updateSessionMessages],
+  );
+
+  /**
+   * 统一执行一个对话回合：先按需压缩历史，再跑 Agent 循环。
+   * sendMessage 与消息编辑重发共用，保证压缩策略一致。
+   */
+  const executeTurn = useCallback(
+    async (sessionId: string, convo: ChatMessage[]) => {
+      setIsSending(true);
+      setStreamingContent("");
+      let working = [...convo];
+      let summary = sessions.find((s) => s.id === sessionId)?.summary;
+
+      try {
+        const { cur } = activeEndpoint();
+        const estimate =
+          estimateSessionTokens(working, buildSystemPrompt(cur)) +
+          (summary ? estimateTokens(summary) : 0);
+
+        if (estimate > cur.contextWindow * 0.8) {
+          const compacted = await compactHistory(sessionId, working);
+
+          if (compacted) {
+            working = compacted.kept;
+            summary = compacted.summary;
+          }
+        }
+        await runAgentTurn(sessionId, working, summary);
+      } catch (err) {
+        // runAgentTurn 内部已兜底，这里防御性地不再抛出
+        console.error("AI agent turn failed:", err);
+        const errMsg: ChatMessage = {
+          id: uid(),
+          role: "assistant",
+          content: formatErrorMessage(classifyApiError(err)),
+          timestamp: Date.now(),
+        };
+
+        updateSessionMessages(sessionId, (msgs) => [...msgs, errMsg]);
+      } finally {
+        setIsSending(false);
+        setStreamingContent("");
+        abortControllerRef.current = null;
+      }
+    },
+    [
+      activeEndpoint,
+      compactHistory,
+      runAgentTurn,
+      sessions,
+      updateSessionMessages,
+    ],
+  );
+
+  /** 收集未填写的必填 AI 配置项（发送与编辑重发共用） */
+  const missingConfigItems = useCallback(() => {
+    const { cur, baseUrl } = activeEndpoint();
+    const missing: string[] = [];
+
+    if (!cur.apiKey.trim()) missing.push(t("API Key"));
+    if (!baseUrl.trim()) missing.push(t("API 地址"));
+    if (!cur.model.trim()) missing.push(t("模型名称"));
+
+    return missing;
+  }, [activeEndpoint]);
 
   // 发送消息（真实 API 流式调用 + Agent 工具循环，未配置直接报错）
   const sendMessage = useCallback(async () => {
@@ -2900,21 +3186,9 @@ const AiPage: React.FC = () => {
     );
 
     setInput("");
-    setIsSending(true);
-    setStreamingContent("");
 
     // 配置检查：未配置直接报错，不再有模拟兜底
-    const cur = settingsRef.current;
-    const provider = BUILTIN_PROVIDERS.find((p) => p.id === cur.providerId);
-    const baseUrl =
-      cur.providerId === "custom"
-        ? cur.customBaseUrl
-        : (provider?.baseUrl ?? "");
-    const missing: string[] = [];
-
-    if (!cur.apiKey.trim()) missing.push(t("API Key"));
-    if (!baseUrl.trim()) missing.push(t("API 地址"));
-    if (!cur.model.trim()) missing.push(t("模型名称"));
+    const missing = missingConfigItems();
 
     if (missing.length > 0) {
       const errMsg: ChatMessage = {
@@ -2929,43 +3203,81 @@ const AiPage: React.FC = () => {
       };
 
       updateSessionMessages(sessionId, (msgs) => [...msgs, errMsg]);
-      setIsSending(false);
 
       return;
     }
 
-    try {
-      await runAgentTurn(sessionId, [...priorMessages, userMsg]);
-    } catch (err) {
-      // runAgentTurn 内部已兜底，这里防御性地不再抛出
-      console.error("AI agent turn failed:", err);
-      const errMsg: ChatMessage = {
-        id: uid(),
-        role: "assistant",
-        content: formatErrorMessage(classifyApiError(err)),
-        timestamp: Date.now(),
-      };
-
-      updateSessionMessages(sessionId, (msgs) => [...msgs, errMsg]);
-    } finally {
-      setIsSending(false);
-      setStreamingContent("");
-      abortControllerRef.current = null;
-    }
+    await executeTurn(sessionId, [...priorMessages, userMsg]);
   }, [
     input,
     isSending,
     activeSessionId,
     activeSession,
-    runAgentTurn,
+    executeTurn,
+    missingConfigItems,
     updateSessionMessages,
     pendingAttachments,
   ]);
+
+  /** 编辑历史用户消息并重发：截掉该消息之后的所有内容，替换文本后重跑回合 */
+  const resendFrom = useCallback(
+    async (sessionId: string, msgId: string, newContent: string) => {
+      const session = sessions.find((s) => s.id === sessionId);
+      const text = newContent.trim();
+
+      if (!session || isSending || !text) return;
+      const index = session.messages.findIndex((m) => m.id === msgId);
+
+      if (index < 0) return;
+      const target = session.messages[index];
+
+      if (target.role !== "user") return;
+      const convo: ChatMessage[] = [
+        ...session.messages.slice(0, index),
+        { ...target, content: text },
+      ];
+
+      updateSessionMessages(sessionId, () => convo);
+      setEditingMessageId(null);
+
+      if (missingConfigItems().length > 0) return;
+      await executeTurn(sessionId, convo);
+    },
+    [
+      executeTurn,
+      isSending,
+      missingConfigItems,
+      sessions,
+      updateSessionMessages,
+    ],
+  );
 
   // 停止生成
   const stopStreaming = useCallback(() => {
     abortControllerRef.current?.abort();
   }, []);
+
+  /** 工具轮数上限暂停后一键继续：以用户身份发一条「继续」并重跑回合 */
+  const continueTurn = useCallback(async () => {
+    const sessionId = activeSessionId;
+
+    if (!sessionId || isSending) return;
+    const msg: ChatMessage = {
+      id: uid(),
+      role: "user",
+      content: t("继续"),
+      timestamp: Date.now(),
+    };
+
+    updateSessionMessages(sessionId, (msgs) => [...msgs, msg]);
+    await executeTurn(sessionId, [...(activeSession?.messages ?? []), msg]);
+  }, [
+    activeSession,
+    activeSessionId,
+    executeTurn,
+    isSending,
+    updateSessionMessages,
+  ]);
 
   // 输入框键盘处理
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -3048,48 +3360,7 @@ const AiPage: React.FC = () => {
   // ------------------------------------------------------------------
 
   return (
-    <section className="flex h-full min-h-0 overflow-hidden">
-      {/* Markdown 样式 */}
-      <style>{`
-        .nya-markdown p { margin: 0.4em 0; }
-        .nya-markdown p:first-child { margin-top: 0; }
-        .nya-markdown p:last-child { margin-bottom: 0; }
-        .nya-markdown h1, .nya-markdown h2, .nya-markdown h3,
-        .nya-markdown h4, .nya-markdown h5, .nya-markdown h6 {
-          font-weight: 600; margin: 0.8em 0 0.4em; line-height: 1.3;
-        }
-        .nya-markdown h1 { font-size: 1.4em; }
-        .nya-markdown h2 { font-size: 1.25em; }
-        .nya-markdown h3 { font-size: 1.1em; }
-        .nya-markdown ul, .nya-markdown ol { margin: 0.4em 0; padding-left: 1.5em; }
-        .nya-markdown li { margin: 0.2em 0; }
-        .nya-markdown code {
-          background: rgba(125,125,125,0.15); padding: 0.15em 0.4em;
-          border-radius: 4px; font-size: 0.88em; font-family: ui-monospace, monospace;
-        }
-        .nya-markdown pre {
-          background: rgba(0,0,0,0.06); border-radius: 8px; padding: 0.8em 1em;
-          overflow-x: auto; margin: 0.6em 0;
-        }
-        .dark .nya-markdown pre { background: rgba(255,255,255,0.06); }
-        .nya-markdown pre code {
-          background: none; padding: 0; font-size: 0.85em; line-height: 1.5;
-        }
-        .nya-markdown blockquote {
-          border-left: 3px solid rgba(125,125,125,0.3); margin: 0.5em 0;
-          padding: 0.2em 0.8em; opacity: 0.8;
-        }
-        .nya-markdown a { color: rgb(var(--nya-primary, 59 130 246)); text-decoration: underline; }
-        .nya-markdown table {
-          border-collapse: collapse; margin: 0.6em 0; width: 100%; font-size: 0.9em;
-        }
-        .nya-markdown th, .nya-markdown td {
-          border: 1px solid rgba(125,125,125,0.25); padding: 0.4em 0.7em; text-align: left;
-        }
-        .nya-markdown th { background: rgba(125,125,125,0.1); font-weight: 600; }
-        .nya-markdown hr { border: none; border-top: 1px solid rgba(125,125,125,0.25); margin: 0.8em 0; }
-        .nya-markdown img { max-width: 100%; border-radius: 6px; }
-      `}</style>
+    <section className="flex h-full w-full min-h-0 overflow-hidden">
       {/* 左侧边栏：与其它顶层面板同源的毛玻璃（背景透出 + blur，随外观设置的毛玻璃强度变化） */}
       <motion.div
         animate={{ width: sidebarCollapsed ? 0 : 280 }}
@@ -3110,14 +3381,28 @@ const AiPage: React.FC = () => {
 
           <div className="nya-scroll min-h-0 flex-1 overflow-y-auto px-2">
             {sessions.length === 0 ? (
-              <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-gray-400">
-                <ChatIcon className="h-8 w-8 opacity-50" />
-                <span className="text-xs">{t("暂无对话")}</span>
+              <div className="my-12 flex flex-col items-center gap-3 text-center">
+                <div className="flex size-14 items-center justify-center rounded-3xl bg-gradient-to-br from-default-200 to-default-100">
+                  <ChatIcon className="h-7 w-7 text-gray-400" />
+                </div>
+                <span className="text-[13px] font-medium text-gray-500">
+                  {t("暂无对话")}
+                </span>
+                <Button
+                  color="primary"
+                  size="sm"
+                  startContent={<NewChatIcon />}
+                  variant="flat"
+                  onPress={createSession}
+                >
+                  {t("新建对话")}
+                </Button>
               </div>
             ) : (
               <AnimatePresence initial={false}>
-                {sessions.map((session) => {
+                {sortedSessions.map((session) => {
                   const isActive = session.id === activeSessionId;
+                  const isRenaming = session.id === renamingId;
 
                   return (
                     <motion.div
@@ -3129,14 +3414,16 @@ const AiPage: React.FC = () => {
                       variants={listItemVariants}
                     >
                       <div
-                        className={`group flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2.5 transition-all ${
+                        className={`group flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 transition-all ${
                           isActive
                             ? "bg-primary/15 text-primary"
                             : "hover:bg-default-100/70"
                         }`}
                         role="button"
                         tabIndex={0}
-                        onClick={() => setActiveSessionId(session.id)}
+                        onClick={() => {
+                          if (!isRenaming) setActiveSessionId(session.id);
+                        }}
                         onKeyDown={(e) => {
                           if (e.key === "Enter" || e.key === " ") {
                             e.preventDefault();
@@ -3144,21 +3431,88 @@ const AiPage: React.FC = () => {
                           }
                         }}
                       >
-                        <ChatIcon className="h-4 w-4 flex-shrink-0 opacity-70" />
+                        {session.pinned ? (
+                          <PinIcon className="h-3.5 w-3.5 flex-shrink-0 text-primary opacity-80" />
+                        ) : (
+                          <ChatIcon className="h-4 w-4 flex-shrink-0 opacity-70" />
+                        )}
                         <div className="min-w-0 flex-1">
-                          <div className="truncate text-sm font-medium">
-                            {session.title}
-                          </div>
-                          <div className="truncate text-[10px] text-gray-400">
-                            {formatTime(session.updatedAt)} ·{" "}
-                            {
-                              session.messages.filter(
-                                (m) => m.role !== "tool_result",
-                              ).length
-                            }{" "}
-                            {t("条消息")}
-                          </div>
+                          {isRenaming ? (
+                            <input
+                              /* eslint-disable-next-line jsx-a11y/no-autofocus -- 重命名弹出的行内输入框需要立即聚焦 */
+                              autoFocus
+                              className="w-full rounded-md border border-primary/40 bg-default-100 px-1.5 py-0.5 text-sm outline-none"
+                              value={renameDraft}
+                              onBlur={() => {
+                                renameSession(session.id, renameDraft);
+                                setRenamingId(null);
+                              }}
+                              onChange={(e) => setRenameDraft(e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") {
+                                  e.preventDefault();
+                                  renameSession(session.id, renameDraft);
+                                  setRenamingId(null);
+                                } else if (e.key === "Escape") {
+                                  setRenamingId(null);
+                                }
+                              }}
+                            />
+                          ) : (
+                            <>
+                              <div className="truncate text-sm font-medium">
+                                {session.title}
+                              </div>
+                              <div className="truncate text-[11px] text-gray-400">
+                                {formatTime(session.updatedAt)} ·{" "}
+                                {
+                                  session.messages.filter(
+                                    (m) => m.role !== "tool_result",
+                                  ).length
+                                }{" "}
+                                {t("条消息")}
+                              </div>
+                            </>
+                          )}
                         </div>
+                        <Tooltip content={t("置顶/取消置顶")} delay={300}>
+                          <Button
+                            isIconOnly
+                            className={`min-w-6 h-6 ${
+                              session.pinned
+                                ? "text-primary"
+                                : "opacity-0 group-hover:opacity-100"
+                            }`}
+                            size="sm"
+                            variant="light"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              togglePinSession(session.id);
+                            }}
+                          >
+                            {session.pinned ? (
+                              <UnpinIcon className="h-3.5 w-3.5" />
+                            ) : (
+                              <PinIcon className="h-3.5 w-3.5 text-gray-400" />
+                            )}
+                          </Button>
+                        </Tooltip>
+                        <Tooltip content={t("重命名")} delay={300}>
+                          <Button
+                            isIconOnly
+                            className="min-w-6 h-6 opacity-0 group-hover:opacity-100"
+                            size="sm"
+                            variant="light"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRenameDraft(session.title);
+                              setRenamingId(session.id);
+                            }}
+                          >
+                            <RenameIcon className="h-3.5 w-3.5 text-gray-400" />
+                          </Button>
+                        </Tooltip>
                         <Tooltip content={t("删除对话")} delay={300}>
                           <Button
                             isIconOnly
@@ -3250,17 +3604,17 @@ const AiPage: React.FC = () => {
           {/* 分隔线 */}
           <div className="h-6 w-px bg-default-200 flex-shrink-0" />
 
-          {/* AI 图标 */}
-          <div className="flex size-8 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary to-secondary text-primary-foreground shadow-sm shadow-primary/20">
-            <AiIcon className="h-4 w-4" />
+          {/* AI 图标：与其它页面标题区同规格（size-9 圆角方块 + primary/15 底） */}
+          <div className="flex size-9 flex-shrink-0 items-center justify-center rounded-xl bg-primary/15 text-primary">
+            <AiIcon className="h-5 w-5" />
           </div>
 
           {/* 标题信息 */}
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-semibold leading-tight">
+            <div className="truncate text-[15px] font-semibold leading-tight text-gray-800 dark:text-gray-200">
               {activeSession?.title ?? t("AI 助手")}
             </div>
-            <div className="truncate text-[10px] text-gray-400 leading-tight mt-0.5">
+            <div className="truncate text-[11px] text-gray-400 leading-tight mt-0.5">
               {currentProvider.name} · {settings.model || t("未设置模型")}
             </div>
           </div>
@@ -3300,7 +3654,7 @@ const AiPage: React.FC = () => {
               >
                 <button
                   aria-label={badge.tip}
-                  className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium leading-none transition-colors ${
+                  className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-none transition-colors ${
                     badge.on
                       ? "bg-success/15 text-success"
                       : "bg-default-100 text-gray-400"
@@ -3316,7 +3670,7 @@ const AiPage: React.FC = () => {
 
           {/* 消息数量 */}
           {activeSession && activeSession.messages.length > 0 && (
-            <span className="flex-shrink-0 rounded-full bg-default-100 px-2 py-0.5 text-[10px] text-gray-500 font-medium">
+            <span className="flex-shrink-0 rounded-full bg-default-100 px-2 py-0.5 text-[11px] text-gray-500 font-medium">
               {
                 activeSession.messages.filter((m) => m.role !== "tool_result")
                   .length
@@ -3336,20 +3690,20 @@ const AiPage: React.FC = () => {
               <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
                 <motion.div
                   animate={{ y: [0, -6, 0] }}
-                  className="flex size-20 items-center justify-center rounded-3xl bg-gradient-to-br from-primary via-secondary to-success text-primary-foreground shadow-xl shadow-primary/30"
+                  className="flex size-16 items-center justify-center rounded-3xl bg-gradient-to-br from-primary/20 to-secondary/10 text-primary"
                   transition={{
                     duration: 3,
                     repeat: Infinity,
                     ease: "easeInOut",
                   }}
                 >
-                  <AiIcon className="h-10 w-10" />
+                  <AiIcon className="h-8 w-8" />
                 </motion.div>
                 <div>
-                  <h2 className="text-xl font-bold">
+                  <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-200">
                     {t("你好，我是 AI 助手喵~")}
                   </h2>
-                  <p className="mt-1 max-w-md text-sm text-gray-400">
+                  <p className="mt-1 max-w-md text-[13px] text-gray-500 dark:text-gray-400">
                     {t(
                       "我可以帮你管理 Minecraft 实例、解答问题、调整配置。输入消息开始对话吧！",
                     )}
@@ -3391,47 +3745,109 @@ const AiPage: React.FC = () => {
                         transition={{ duration: 0.2 }}
                       >
                         {msg.role === "user" ? (
-                          <div className="flex justify-end gap-3">
-                            <div className="max-w-[80%] rounded-2xl rounded-tr-md bg-primary px-4 py-2.5 text-primary-foreground shadow-sm">
-                              {/* 附件预览 */}
-                              {msg.attachments &&
-                                msg.attachments.length > 0 && (
-                                  <div className="mb-2 flex flex-wrap gap-2">
-                                    {msg.attachments.map((att) =>
-                                      att.isImage ? (
-                                        <img
-                                          key={att.id}
-                                          alt={att.name}
-                                          className="max-h-32 max-w-full rounded-lg object-cover border border-white/20"
-                                          src={att.dataUrl}
-                                        />
-                                      ) : (
-                                        <div
-                                          key={att.id}
-                                          className="flex items-center gap-2 rounded-lg bg-white/10 px-2.5 py-1.5 text-xs"
-                                        >
-                                          <AttachIcon className="h-3.5 w-3.5 flex-shrink-0" />
-                                          <span className="max-w-[160px] truncate">
-                                            {att.name}
-                                          </span>
-                                          <span className="opacity-60">
-                                            {formatFileSize(att.size)}
-                                          </span>
+                          <div className="group flex flex-col items-end gap-1">
+                            {editingMessageId === msg.id ? (
+                              <div className="w-full max-w-[85%] rounded-2xl border border-primary/40 bg-default-50 p-2">
+                                <Textarea
+                                  /* eslint-disable-next-line jsx-a11y/no-autofocus -- 编辑弹出的输入框需要立即聚焦 */
+                                  autoFocus
+                                  classNames={{
+                                    input:
+                                      "min-h-[60px] max-h-[160px] resize-none py-1.5",
+                                    inputWrapper:
+                                      "bg-transparent border-0 shadow-none",
+                                  }}
+                                  radius="none"
+                                  value={editDraft}
+                                  variant="flat"
+                                  onValueChange={setEditDraft}
+                                />
+                                <div className="mt-1 flex justify-end gap-2">
+                                  <Button
+                                    size="sm"
+                                    variant="flat"
+                                    onPress={() => setEditingMessageId(null)}
+                                  >
+                                    {t("取消")}
+                                  </Button>
+                                  <Button
+                                    color="primary"
+                                    isDisabled={!editDraft.trim() || isSending}
+                                    size="sm"
+                                    startContent={
+                                      <ApproveIcon className="h-3.5 w-3.5" />
+                                    }
+                                    onPress={() => {
+                                      if (activeSession)
+                                        void resendFrom(
+                                          activeSession.id,
+                                          msg.id,
+                                          editDraft,
+                                        );
+                                    }}
+                                  >
+                                    {t("保存并重发")}
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <>
+                                <button
+                                  aria-label={t("编辑并重发")}
+                                  className="mr-1 flex items-center gap-1 text-[11px] text-gray-400 opacity-0 transition-opacity hover:text-primary group-hover:opacity-100"
+                                  type="button"
+                                  onClick={() => {
+                                    setEditDraft(msg.content);
+                                    setEditingMessageId(msg.id);
+                                  }}
+                                >
+                                  <RenameIcon className="h-3 w-3" />
+                                  {t("编辑并重发")}
+                                </button>
+                                <div className="flex justify-end gap-3">
+                                  <div className="max-w-[80%] rounded-2xl rounded-tr-md bg-primary px-4 py-2.5 text-primary-foreground shadow-sm">
+                                    {/* 附件预览 */}
+                                    {msg.attachments &&
+                                      msg.attachments.length > 0 && (
+                                        <div className="mb-2 flex flex-wrap gap-2">
+                                          {msg.attachments.map((att) =>
+                                            att.isImage ? (
+                                              <img
+                                                key={att.id}
+                                                alt={att.name}
+                                                className="max-h-32 max-w-full rounded-lg object-cover border border-white/20"
+                                                src={att.dataUrl}
+                                              />
+                                            ) : (
+                                              <div
+                                                key={att.id}
+                                                className="flex items-center gap-2 rounded-lg bg-white/10 px-2.5 py-1.5 text-xs"
+                                              >
+                                                <AttachIcon className="h-3.5 w-3.5 flex-shrink-0" />
+                                                <span className="max-w-[160px] truncate">
+                                                  {att.name}
+                                                </span>
+                                                <span className="opacity-60">
+                                                  {formatFileSize(att.size)}
+                                                </span>
+                                              </div>
+                                            ),
+                                          )}
                                         </div>
-                                      ),
-                                    )}
+                                      )}
+                                    <div className="whitespace-pre-wrap text-sm leading-relaxed">
+                                      {msg.content}
+                                    </div>
+                                    <div className="mt-1 text-right text-[11px] opacity-60">
+                                      {formatTime(msg.timestamp)}
+                                    </div>
                                   </div>
-                                )}
-                              <div className="whitespace-pre-wrap text-sm leading-relaxed">
-                                {msg.content}
-                              </div>
-                              <div className="mt-1 text-right text-[10px] opacity-60">
-                                {formatTime(msg.timestamp)}
-                              </div>
-                            </div>
-                            <div className="flex size-8 flex-shrink-0 items-center justify-center rounded-full bg-default-100">
-                              <UserIcon className="h-4 w-4 text-gray-500" />
-                            </div>
+                                  <div className="flex size-8 flex-shrink-0 items-center justify-center rounded-full bg-default-100">
+                                    <UserIcon className="h-4 w-4 text-gray-500" />
+                                  </div>
+                                </div>
+                              </>
+                            )}
                           </div>
                         ) : msg.role === "action" ? (
                           <div className="flex gap-3">
@@ -3450,7 +3866,7 @@ const AiPage: React.FC = () => {
                               <div className="flex items-center gap-2 text-xs font-medium">
                                 {msg.actionStatus === "approved" && (
                                   <span className="text-success">
-                                    {t("已批准执行")}
+                                    {t("系统提示")}
                                   </span>
                                 )}
                                 {msg.actionStatus === "rejected" && (
@@ -3524,7 +3940,7 @@ const AiPage: React.FC = () => {
                             <div className="flex size-8 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-secondary text-primary-foreground">
                               <AiIcon className="h-4 w-4" />
                             </div>
-                            <div className="max-w-[80%] rounded-2xl rounded-tl-md border nya-border nya-panel px-4 py-2.5 shadow-sm backdrop-blur-md">
+                            <div className="max-w-[80%] rounded-2xl rounded-tl-md border nya-border nya-panel px-4 py-2.5">
                               <div className="nya-markdown text-sm leading-relaxed">
                                 <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                   {stripToolBlocks(msg.content)}
@@ -3581,7 +3997,7 @@ const AiPage: React.FC = () => {
                                               {tc.name}
                                             </span>
                                             <span
-                                              className={`text-[10px] flex-shrink-0 ${
+                                              className={`text-[11px] flex-shrink-0 ${
                                                 statusColor
                                               } ${
                                                 tc.status === "running" ||
@@ -3623,6 +4039,23 @@ const AiPage: React.FC = () => {
                                               </Button>
                                               <Button
                                                 className="min-w-0 h-7 px-2.5"
+                                                color="success"
+                                                size="sm"
+                                                startContent={
+                                                  <ApproveIcon className="h-3 w-3" />
+                                                }
+                                                variant="flat"
+                                                onPress={() =>
+                                                  resolveApproval(
+                                                    tc.id,
+                                                    "always",
+                                                  )
+                                                }
+                                              >
+                                                {t("总是允许")}
+                                              </Button>
+                                              <Button
+                                                className="min-w-0 h-7 px-2.5"
                                                 color="danger"
                                                 size="sm"
                                                 startContent={
@@ -3643,21 +4076,21 @@ const AiPage: React.FC = () => {
                                             <div className="border-t nya-border px-2.5 py-2 space-y-2">
                                               {/* 输入参数 */}
                                               <div>
-                                                <div className="text-[10px] font-medium text-gray-400 mb-1">
+                                                <div className="text-[11px] font-medium text-gray-400 mb-1">
                                                   {t("输入参数")}
                                                 </div>
-                                                <pre className="text-[10px] font-mono bg-default-100/60 rounded p-1.5 overflow-x-auto max-h-32 overflow-y-auto">
+                                                <pre className="text-[11px] font-mono bg-default-100/60 rounded p-1.5 overflow-x-auto max-h-32 overflow-y-auto nya-scroll">
                                                   {tc.args || "—"}
                                                 </pre>
                                               </div>
                                               {/* 输出结果 */}
                                               {tc.result !== undefined && (
                                                 <div>
-                                                  <div className="text-[10px] font-medium text-gray-400 mb-1">
+                                                  <div className="text-[11px] font-medium text-gray-400 mb-1">
                                                     {t("返回结果")}
                                                   </div>
                                                   <pre
-                                                    className={`text-[10px] font-mono rounded p-1.5 overflow-x-auto max-h-40 overflow-y-auto ${
+                                                    className={`text-[11px] font-mono rounded p-1.5 overflow-x-auto max-h-40 overflow-y-auto nya-scroll ${
                                                       tc.status === "error"
                                                         ? "bg-danger/10 text-danger"
                                                         : "bg-default-100/60"
@@ -3675,7 +4108,7 @@ const AiPage: React.FC = () => {
                                 </div>
                               )}
 
-                              <div className="mt-1 text-[10px] text-gray-400">
+                              <div className="mt-1 text-[11px] text-gray-400">
                                 {formatTime(msg.timestamp)}
                               </div>
                             </div>
@@ -3684,6 +4117,21 @@ const AiPage: React.FC = () => {
                       </motion.div>
                     ))}
                 </AnimatePresence>
+
+                {/* 工具轮数上限暂停：一键继续 */}
+                {continueTarget === activeSessionId && !isSending && (
+                  <div className="mt-2 flex justify-center">
+                    <Button
+                      color="primary"
+                      size="sm"
+                      startContent={<SparkleIcon />}
+                      variant="flat"
+                      onPress={() => void continueTurn()}
+                    >
+                      {t("继续执行")}
+                    </Button>
+                  </div>
+                )}
 
                 {/* 正在生成中：流式内容或打字指示器 */}
                 {isSending && (
@@ -3695,13 +4143,18 @@ const AiPage: React.FC = () => {
                     <div className="flex size-8 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-primary to-secondary text-primary-foreground">
                       <AiIcon className="h-4 w-4" />
                     </div>
-                    <div className="max-w-[80%] rounded-2xl rounded-tl-md border nya-border nya-panel px-4 py-2.5 shadow-sm backdrop-blur-md">
+                    <div className="max-w-[80%] rounded-2xl rounded-tl-md border nya-border nya-panel px-4 py-2.5">
                       {isStreaming && streamingContent ? (
                         <div className="nya-markdown text-sm leading-relaxed">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>
                             {stripToolBlocks(streamingContent)}
                           </ReactMarkdown>
                           <span className="ml-0.5 inline-block w-1.5 h-4 bg-primary/60 animate-pulse align-middle" />
+                        </div>
+                      ) : isCompacting ? (
+                        <div className="flex items-center gap-1.5 py-1 text-xs text-gray-400">
+                          <SparkleIcon className="h-3.5 w-3.5 animate-pulse text-primary" />
+                          {t("正在整理较早的对话…")}
                         </div>
                       ) : (
                         <div className="flex items-center gap-1.5 py-1">
@@ -3733,7 +4186,7 @@ const AiPage: React.FC = () => {
           {showScrollToBottom && (
             <button
               aria-label={t("回到底部")}
-              className="absolute bottom-4 right-6 z-10 flex size-9 items-center justify-center rounded-full border nya-border nya-panel text-gray-500 shadow-md backdrop-blur-md transition-colors hover:text-primary"
+              className="absolute bottom-4 right-6 z-10 flex size-9 items-center justify-center rounded-full border nya-border nya-panel text-gray-500 shadow-md transition-colors hover:text-primary"
               type="button"
               onClick={() => scrollToBottom(true)}
             >
@@ -3765,7 +4218,7 @@ const AiPage: React.FC = () => {
                       <span className="max-w-[140px] truncate text-xs font-medium">
                         {att.name}
                       </span>
-                      <span className="text-[10px] text-gray-400">
+                      <span className="text-[11px] text-gray-400">
                         {formatFileSize(att.size)}
                       </span>
                     </div>
@@ -3796,7 +4249,7 @@ const AiPage: React.FC = () => {
               }}
             />
 
-            <div className="flex items-end gap-2 rounded-2xl border nya-border nya-panel p-2 shadow-sm backdrop-blur-md focus-within:border-primary/50">
+            <div className="flex items-end gap-2 rounded-2xl border nya-border nya-panel p-2 focus-within:border-primary/50">
               <Tooltip
                 content={t("添加附件（图片/文件，单个最大 10MB）")}
                 delay={300}
@@ -3850,7 +4303,7 @@ const AiPage: React.FC = () => {
             {/* 底部状态栏：权限提示 + 上下文使用 + 设置按钮 */}
             <div className="mt-2 flex items-center gap-3 px-1">
               {/* 权限提示 */}
-              <span className="flex-shrink-0 text-[10px] text-gray-400">
+              <span className="flex-shrink-0 text-[11px] text-gray-400">
                 {!settings.allowFolderRead && !settings.allowFolderWrite
                   ? t("🚫 已禁止访问实例文件夹")
                   : settings.allowModify
@@ -3877,7 +4330,7 @@ const AiPage: React.FC = () => {
                   />
                 </div>
                 <span
-                  className={`flex-shrink-0 text-[10px] tabular-nums ${
+                  className={`flex-shrink-0 text-[11px] tabular-nums ${
                     contextUsage.isOver
                       ? "text-danger"
                       : contextUsage.isNear
@@ -3888,23 +4341,10 @@ const AiPage: React.FC = () => {
                   {contextUsage.usedTokens.toLocaleString()} /{" "}
                   {contextUsage.totalTokens.toLocaleString()} tokens
                 </span>
-                <span className="flex-shrink-0 text-[10px] text-gray-400">
+                <span className="flex-shrink-0 text-[11px] text-gray-400">
                   · {contextUsage.messageCount} {t("条")}
                 </span>
               </div>
-
-              {/* 上下文设置按钮 */}
-              <Tooltip content={t("上下文设置")} delay={200} placement="top">
-                <Button
-                  isIconOnly
-                  className="flex-shrink-0 min-w-6 h-6 text-gray-400 hover:text-primary"
-                  size="sm"
-                  variant="light"
-                  onPress={() => setContextSettingsOpen(true)}
-                >
-                  <ClockIcon className="h-3.5 w-3.5" />
-                </Button>
-              </Tooltip>
             </div>
           </div>
         </div>
@@ -3989,41 +4429,6 @@ const AiPage: React.FC = () => {
                       setSettings((s) => ({ ...s, model: v }))
                     }
                   />
-                </div>
-
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs font-medium text-gray-500">
-                    {t("API 格式")}
-                  </label>
-                  <Select
-                    disallowEmptySelection
-                    selectedKeys={new Set([settings.apiFormat])}
-                    onSelectionChange={(keys) => {
-                      const fmt = String(Array.from(keys)[0] ?? "openai");
-
-                      if (fmt === "openai" || fmt === "anthropic") {
-                        setSettings((s) => ({ ...s, apiFormat: fmt }));
-                      }
-                    }}
-                  >
-                    <SelectItem key="openai" textValue="OpenAI 兼容格式">
-                      <div className="flex flex-col">
-                        <span className="text-sm">OpenAI 兼容格式</span>
-                        <span className="text-[10px] text-gray-400">
-                          /chat/completions · 适用于 OpenAI / DeepSeek /
-                          通义千问 等
-                        </span>
-                      </div>
-                    </SelectItem>
-                    <SelectItem key="anthropic" textValue="Anthropic 格式">
-                      <div className="flex flex-col">
-                        <span className="text-sm">Anthropic 格式</span>
-                        <span className="text-[10px] text-gray-400">
-                          /messages · 适用于 Claude 系列模型
-                        </span>
-                      </div>
-                    </SelectItem>
-                  </Select>
                 </div>
 
                 {/* 温度设置已隐藏，保留默认值 0.7 */}
@@ -4126,24 +4531,164 @@ const AiPage: React.FC = () => {
                       </div>
                     </div>
                   </div>
+
+                  {/* 总是允许授权：可随时撤销，重启后自动清空 */}
+                  {alwaysAllowedList.length > 0 && (
+                    <div className="flex items-start justify-between gap-3 rounded-xl border border-success/30 bg-success/5 p-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium">
+                          {t("已总是允许的工具")}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-gray-400">
+                          {t(
+                            "本运行期内这些修改类操作不再需要批准，重启启动器后自动重置",
+                          )}
+                        </div>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {alwaysAllowedList.map((name) => (
+                            <span
+                              key={name}
+                              className="rounded bg-default-200/60 px-1.5 py-0.5 font-mono text-[11px]"
+                            >
+                              {name}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      <Button
+                        className="flex-shrink-0"
+                        color="warning"
+                        size="sm"
+                        variant="flat"
+                        onPress={resetAlwaysAllowed}
+                      >
+                        {t("撤销全部")}
+                      </Button>
+                    </div>
+                  )}
                 </div>
 
-                <div className="rounded-xl bg-default-100/50 p-3">
-                  <div className="text-[11px] font-medium text-gray-500">
-                    {t("当前配置")}
-                  </div>
-                  <div className="mt-1 space-y-0.5 text-[11px] text-gray-400">
-                    <div>
-                      {t("供应商")}: {currentProvider.name}
+                {/* 高级设置：默认收起，普通用户不需要碰 */}
+                <Divider />
+                <button
+                  className="flex w-full items-center justify-between rounded-lg px-1 py-1 text-xs font-medium text-gray-500 hover:bg-default-100/60"
+                  type="button"
+                  onClick={() => setAdvancedOpen((v) => !v)}
+                >
+                  <span>{t("高级设置")}</span>
+                  {advancedOpen ? (
+                    <ChevronDownIcon className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronRightIcon className="h-3.5 w-3.5" />
+                  )}
+                </button>
+                {advancedOpen && (
+                  <>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-xs font-medium text-gray-500">
+                        {t("API 格式")}
+                      </label>
+                      <Select
+                        disallowEmptySelection
+                        selectedKeys={new Set([settings.apiFormat])}
+                        onSelectionChange={(keys) => {
+                          const fmt = String(Array.from(keys)[0] ?? "openai");
+
+                          if (fmt === "openai" || fmt === "anthropic") {
+                            setSettings((s) => ({ ...s, apiFormat: fmt }));
+                          }
+                        }}
+                      >
+                        <SelectItem key="openai" textValue="OpenAI 兼容格式">
+                          <div className="flex flex-col">
+                            <span className="text-sm">OpenAI 兼容格式</span>
+                            <span className="text-[11px] text-gray-400">
+                              /chat/completions · 适用于 OpenAI / DeepSeek /
+                              通义千问 等
+                            </span>
+                          </div>
+                        </SelectItem>
+                        <SelectItem key="anthropic" textValue="Anthropic 格式">
+                          <div className="flex flex-col">
+                            <span className="text-sm">Anthropic 格式</span>
+                            <span className="text-[11px] text-gray-400">
+                              /messages · 适用于 Claude 系列模型
+                            </span>
+                          </div>
+                        </SelectItem>
+                      </Select>
                     </div>
-                    <div>
-                      {t("端点")}: {effectiveBaseUrl || t("未设置")}
+
+                    <div className="flex flex-col gap-2">
+                      <label className="text-xs font-medium text-gray-500">
+                        {t("上下文窗口大小")}
+                      </label>
+                      <Select
+                        disallowEmptySelection
+                        selectedKeys={new Set([String(settings.contextWindow)])}
+                        onSelectionChange={(keys) => {
+                          const v = Number(Array.from(keys)[0] ?? 262144);
+
+                          setSettings((s) => ({ ...s, contextWindow: v }));
+                        }}
+                      >
+                        <SelectItem key="4096">4K (4096 tokens)</SelectItem>
+                        <SelectItem key="8192">8K (8192 tokens)</SelectItem>
+                        <SelectItem key="16384">16K (16384 tokens)</SelectItem>
+                        <SelectItem key="32768">32K (32768 tokens)</SelectItem>
+                        <SelectItem key="65536">64K (65536 tokens)</SelectItem>
+                        <SelectItem key="131072">
+                          128K (131072 tokens)
+                        </SelectItem>
+                        <SelectItem key="200000">
+                          200K (200000 tokens)
+                        </SelectItem>
+                        <SelectItem key="262144">
+                          256K (262144 tokens)
+                        </SelectItem>
+                      </Select>
+                      <span className="text-[11px] text-gray-400">
+                        {t(
+                          "根据模型支持的上下文窗口选择，过大会增加 API 调用成本",
+                        )}
+                      </span>
                     </div>
-                    <div>
-                      {t("模型")}: {settings.model || t("未设置")}
+
+                    <div className="flex items-center justify-between rounded-xl border nya-border p-3">
+                      <div>
+                        <div className="text-sm font-medium">
+                          {t("显示工具调用详情")}
+                        </div>
+                        <div className="text-[11px] text-gray-400 mt-0.5">
+                          {t("在聊天中展示 AI 调用工具的名称、参数和返回结果")}
+                        </div>
+                      </div>
+                      <Switch
+                        isSelected={settings.showToolCalls}
+                        onValueChange={(v) =>
+                          setSettings((s) => ({ ...s, showToolCalls: v }))
+                        }
+                      />
                     </div>
-                  </div>
-                </div>
+
+                    <div className="rounded-xl bg-default-100/50 p-3">
+                      <div className="text-[11px] font-medium text-gray-500">
+                        {t("当前配置")}
+                      </div>
+                      <div className="mt-1 space-y-0.5 text-[11px] text-gray-400">
+                        <div>
+                          {t("供应商")}: {currentProvider.name}
+                        </div>
+                        <div>
+                          {t("端点")}: {effectiveBaseUrl || t("未设置")}
+                        </div>
+                        <div>
+                          {t("模型")}: {settings.model || t("未设置")}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                )}
               </ModalBody>
               <ModalFooter>
                 <Button variant="flat" onPress={onClose}>
@@ -4157,117 +4702,6 @@ const AiPage: React.FC = () => {
                   }}
                 >
                   {t("保存设置")}
-                </Button>
-              </ModalFooter>
-            </>
-          )}
-        </ModalContent>
-      </Modal>
-      {/* 上下文设置弹窗 */}
-      <Modal
-        isOpen={contextSettingsOpen}
-        size="md"
-        onClose={() => setContextSettingsOpen(false)}
-        {...modalBehaviorProps}
-      >
-        <ModalContent>
-          {(onClose) => (
-            <>
-              <ModalHeader className="flex items-center gap-2">
-                <ClockIcon className="h-5 w-5 text-primary" />
-                {t("上下文设置")}
-              </ModalHeader>
-              <ModalBody className="gap-4">
-                {/* 上下文窗口大小 */}
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs font-medium text-gray-500">
-                    {t("上下文窗口大小")}
-                  </label>
-                  <Select
-                    disallowEmptySelection
-                    selectedKeys={new Set([String(settings.contextWindow)])}
-                    onSelectionChange={(keys) => {
-                      const v = Number(Array.from(keys)[0] ?? 8192);
-
-                      setSettings((s) => ({ ...s, contextWindow: v }));
-                    }}
-                  >
-                    <SelectItem key="4096">4K (4096 tokens)</SelectItem>
-                    <SelectItem key="8192">8K (8192 tokens)</SelectItem>
-                    <SelectItem key="16384">16K (16384 tokens)</SelectItem>
-                    <SelectItem key="32768">32K (32768 tokens)</SelectItem>
-                    <SelectItem key="65536">64K (65536 tokens)</SelectItem>
-                    <SelectItem key="131072">128K (131072 tokens)</SelectItem>
-                    <SelectItem key="200000">200K (200000 tokens)</SelectItem>
-                    <SelectItem key="262144">256K (262144 tokens)</SelectItem>
-                  </Select>
-                  <span className="text-[10px] text-gray-400">
-                    {t("根据模型支持的上下文窗口选择，过大会增加 API 调用成本")}
-                  </span>
-                </div>
-
-                {/* 工具调用显示 */}
-                <div className="flex items-center justify-between rounded-xl border nya-border p-3">
-                  <div>
-                    <div className="text-sm font-medium">
-                      {t("显示工具调用详情")}
-                    </div>
-                    <div className="text-[11px] text-gray-400 mt-0.5">
-                      {t("在聊天中展示 AI 调用工具的名称、参数和返回结果")}
-                    </div>
-                  </div>
-                  <Switch
-                    isSelected={settings.showToolCalls}
-                    onValueChange={(v) =>
-                      setSettings((s) => ({ ...s, showToolCalls: v }))
-                    }
-                  />
-                </div>
-
-                {/* 当前使用统计 */}
-                <div className="rounded-xl bg-default-100/50 p-3">
-                  <div className="text-[11px] font-medium text-gray-500 mb-2">
-                    {t("当前会话统计")}
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 text-[11px]">
-                    <div className="text-gray-400">
-                      {t("消息数")}:{" "}
-                      <span className="text-gray-600 font-medium">
-                        {contextUsage.messageCount}
-                      </span>
-                    </div>
-                    <div className="text-gray-400">
-                      {t("估算 token")}:{" "}
-                      <span className="text-gray-600 font-medium">
-                        {contextUsage.usedTokens.toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="text-gray-400">
-                      {t("窗口大小")}:{" "}
-                      <span className="text-gray-600 font-medium">
-                        {contextUsage.totalTokens.toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="text-gray-400">
-                      {t("使用率")}:{" "}
-                      <span
-                        className={`font-medium ${contextUsage.isOver ? "text-danger" : contextUsage.isNear ? "text-warning" : "text-gray-600"}`}
-                      >
-                        {contextUsage.percent.toFixed(1)}%
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </ModalBody>
-              <ModalFooter>
-                <Button
-                  color="primary"
-                  onPress={() => {
-                    saveToStorage(STORAGE_KEYS.settings, settings);
-                    onClose();
-                  }}
-                >
-                  {t("完成")}
                 </Button>
               </ModalFooter>
             </>

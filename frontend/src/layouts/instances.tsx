@@ -27,7 +27,12 @@
  *   可更新条目带角标，详情弹层可打开下载页 / 复制地址 / 另存 / 备份后替换；
  * - 管理：InstanceAPI.RenameInstance / DeleteInstance（两步确认）、打开文件夹。
  */
-import type { content, download, instance } from "../../wailsjs/go/models";
+import type {
+  content,
+  download,
+  instance,
+  launch,
+} from "../../wailsjs/go/models";
 import type { Variants } from "framer-motion";
 
 import React, {
@@ -58,8 +63,13 @@ import {
   ArrowClockwise20Regular as RefreshIcon,
   ArrowImport20Regular as ImportIcon,
   ArrowSwap20Regular as VersionIcon,
+  Bot20Regular as BotIcon,
+  Copy20Regular as CopyIcon,
+  Edit20Regular as RenameIcon,
   History20Regular as RewindIcon,
   ArrowSync20Regular as UpdateIcon,
+  Play20Regular as PlayIcon,
+  Sparkle20Regular as SparkleIcon,
   Save20Regular as SaveIcon,
 } from "@fluentui/react-icons";
 import { AnimatePresence, motion } from "framer-motion";
@@ -76,6 +86,12 @@ import {
   SelectInstance,
 } from "../../wailsjs/go/bindings/InstanceAPI";
 import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
+import {
+  ContextMenuOverlay,
+  type ContextMenuItem,
+  type ContextMenuState,
+} from "../components/context-menu";
+import { navigateToPage } from "../lib/navigation";
 import RewindDialog, {
   type RewindKind,
 } from "../components/instance/RewindDialog";
@@ -101,11 +117,17 @@ import {
   ExportSave,
   GetInstanceVisual,
   ImportSave,
+  LookupModNameTranslations,
+  RefreshModNameTranslations,
   RemoveCustomIcon,
   SetCustomIcon,
   ToggleContentEntry,
+  CopyFileIntoDirectory,
 } from "../../wailsjs/go/bindings/ContentAPI";
-import { GetMemorySliderMaximum } from "../../wailsjs/go/bindings/LauncherAPI";
+import {
+  GetMemorySliderMaximum,
+  LaunchVersion,
+} from "../../wailsjs/go/bindings/LauncherAPI";
 import {
   OpenInExplorer,
   OpenPath,
@@ -115,7 +137,11 @@ import {
   SelectFile,
   WriteTextFile,
 } from "../../wailsjs/go/bindings/SystemAPI";
-import { EventsOn } from "../../wailsjs/runtime/runtime";
+import {
+  EventsOn,
+  OnFileDrop,
+  OnFileDropOff,
+} from "../../wailsjs/runtime/runtime";
 import { config } from "../../wailsjs/go/models";
 import { asObject, asArray } from "../lib/guards";
 import { popoverMotionProps } from "../lib/motion";
@@ -1005,6 +1031,15 @@ const InstancesPage: React.FC = () => {
   const [contentSearch, setContentSearch] = useState("");
   const [contentBusy, setContentBusy] = useState("");
   const [newName, setNewName] = useState("");
+  // 右键菜单与由它打开的重命名/复制输入弹层
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
+  const [menuAction, setMenuAction] = useState<null | "rename" | "copy">(null);
+  // 拖拽文件安装：拖入时高亮 + zip 类别选择弹层
+  const [dragActive, setDragActive] = useState(false);
+  const [dropChoice, setDropChoice] = useState<string | null>(null);
+  const pendingDropPaths = useRef<string[]>([]);
+  /** 内容搜索框外层容器（Ctrl+F 用，HeroUI Input 本体 ref 不可靠） */
+  const contentSearchRef = useRef<HTMLDivElement | null>(null);
   const [copyName, setCopyName] = useState("");
   const [copying, setCopying] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -1028,6 +1063,46 @@ const InstancesPage: React.FC = () => {
   const [versionTarget, setVersionTarget] = useState<ModVersionTarget | null>(
     null,
   );
+
+  // ---------- 模组中文名 ----------
+  // 译名来自 MC百科（mcmod.cn）搜索匹配（后端持久缓存）。key 为模组文件名；
+  // 先秒回缓存命中的部分，未命中的由后端限流补查，补到后经事件触发重查。
+  const [modNames, setModNames] = useState<Record<string, string>>({});
+
+  // 译名效果：先秒回缓存命中；未命中的交给后端限流补查，落盘后收到
+  // "modname:updated" 事件再重查一次（重查只是读缓存，开销可忽略）。
+  useEffect(() => {
+    const names = (details?.Mods ?? [])
+      .map((m) => m.Name)
+      .filter((n): n is string => !!n);
+
+    if (names.length === 0) {
+      setModNames({});
+
+      return;
+    }
+    let cancelled = false;
+    const refresh = () => {
+      void LookupModNameTranslations(names)
+        .then((map) => {
+          if (!cancelled && map && Object.keys(map).length > 0) {
+            setModNames(map);
+          }
+        })
+        .catch(() => {
+          /* 译名查询失败不影响列表展示 */
+        });
+    };
+
+    refresh();
+    void RefreshModNameTranslations(names).catch(() => {});
+    const off = EventsOn("modname:updated", refresh);
+
+    return () => {
+      cancelled = true;
+      off();
+    };
+  }, [details]);
 
   // ---------- 导入其它启动器 ----------
   const [importOpen, setImportOpen] = useState(false);
@@ -1361,6 +1436,293 @@ const InstancesPage: React.FC = () => {
     }
   };
 
+  // ---------- 右键快捷菜单 ----------
+  // 右键先顺手选中该实例（详情/权限等动作依赖 selected），再弹菜单。
+
+  /** 启动指定实例；失败且像 Java 问题时给"去配置 Java"的直达引导。 */
+  const launchInstance = async (versionId: string) => {
+    let result: launch.LaunchResult;
+
+    try {
+      result = await LaunchVersion(versionId, "", null);
+    } catch (ex) {
+      alert(t("启动失败：{0}", { "0": (ex as Error)?.message ?? ex }), {
+        severity: "danger",
+      });
+
+      return;
+    }
+    if (result?.Success) {
+      setStatus(result.Message || t("启动指令已发出。"));
+
+      return;
+    }
+    const message = result?.Message || t("启动失败");
+    const isJavaProblem = /java/i.test(message);
+
+    if (isJavaProblem) {
+      const agreed = await confirm(t("缺少可用的 Java"), message, {
+        confirmLabel: t("去配置 Java"),
+        severity: "warning",
+      });
+
+      if (agreed) navigateToPage("settings", "java");
+    } else {
+      alert(message, { severity: "danger" });
+    }
+  };
+
+  const openInstanceMenu = (versionId: string, e: React.MouseEvent) => {
+    if (snap) void selectVersion(versionId, snap.MinecraftDirectory);
+    const items: ContextMenuItem[] = [
+      {
+        key: "launch",
+        label: t("启动"),
+        icon: <PlayIcon />,
+        onSelect: () => void launchInstance(versionId),
+      },
+      { key: "d1", divider: true },
+      {
+        key: "rename",
+        label: t("重命名…"),
+        icon: <RenameIcon />,
+        onSelect: () => {
+          setNewName(versionId);
+          setMenuAction("rename");
+        },
+      },
+      {
+        key: "copy",
+        label: t("复制实例…"),
+        icon: <CopyIcon />,
+        onSelect: () => {
+          setCopyName(t("{0}-副本", { "0": versionId }));
+          setMenuAction("copy");
+        },
+      },
+      { key: "d2", divider: true },
+      {
+        key: "versionFolder",
+        label: t("打开版本文件夹"),
+        icon: <FolderIcon />,
+        onSelect: () => {
+          const dir = details?.VersionDirectory
+            ? details.VersionDirectory
+            : joinPath(
+                joinPath(snap?.MinecraftDirectory, "versions"),
+                versionId,
+              );
+
+          void OpenInExplorer(dir).catch(() => {});
+        },
+      },
+      {
+        key: "gameFolder",
+        label: t("打开游戏文件夹"),
+        icon: <FolderIcon />,
+        onSelect: () => {
+          if (snap?.MinecraftDirectory) {
+            void OpenInExplorer(snap.MinecraftDirectory).catch(() => {});
+          }
+        },
+      },
+      { key: "d3", divider: true },
+      {
+        key: "checkUpdate",
+        label: t("检查更新"),
+        icon: <UpdateIcon />,
+        onSelect: () => void checkContentUpdates(),
+      },
+    ];
+
+    setCtxMenu({ x: e.clientX, y: e.clientY, items });
+  };
+
+  /** 模组行右键：版本管理 / 交给 AI 分析（带上中文名上下文）。 */
+  const openModMenu = (
+    entry: content.GameContentEntry,
+    e: React.MouseEvent,
+  ) => {
+    const displayName = modNames[entry.Name] || entry.Name;
+
+    setCtxMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: [
+        {
+          key: "versionManager",
+          label: t("版本管理…"),
+          icon: <UpdateIcon />,
+          onSelect: () => openVersionManager(entry),
+        },
+        { key: "d1", divider: true },
+        {
+          key: "ai",
+          label: t("让 AI 分析"),
+          icon: <BotIcon />,
+          onSelect: () =>
+            navigateToPage(
+              "ai",
+              t(
+                "帮我分析当前实例里的模组「{0}」：它是做什么的、和其他常见模组有没有已知的兼容性问题？",
+                { "0": displayName },
+              ),
+            ),
+        },
+      ],
+    });
+  };
+
+  // ---------- 拖拽安装 ----------
+  // Wails OnFileDrop 给绝对路径：jar → 当前实例 mods 目录；
+  // zip 先按存档结构自动识别，识别不出弹类别选择（资源包/光影）。
+
+  const handleDropImport = async (paths: string[]) => {
+    if (paths.length === 0) return;
+    if (!snap?.MinecraftDirectory || !details?.ContentDirectory) {
+      alert(t("请先选择一个实例，再拖入文件。"), { severity: "warning" });
+
+      return;
+    }
+    const contentDir = details.ContentDirectory.replace(/[\\/]+$/, "");
+    const zips: string[] = [];
+
+    for (const path of paths) {
+      const lower = path.toLowerCase();
+
+      if (lower.endsWith(".jar")) {
+        try {
+          await CopyFileIntoDirectory(path, `${contentDir}/mods`);
+          setStatus(
+            t("已安装模组 {0}。", { "0": path.split(/[\\/]/).pop() ?? path }),
+          );
+        } catch (ex) {
+          alert(
+            t("安装 {0} 失败：{1}", {
+              "0": path.split(/[\\/]/).pop() ?? path,
+              "1": (ex as Error)?.message ?? ex,
+            }),
+            {
+              severity: "danger",
+            },
+          );
+        }
+        continue;
+      }
+      if (lower.endsWith(".zip")) {
+        // 存档 zip 有层级特征，先尝试自动识别；识别不出让用户选类别。
+        try {
+          await ImportSave(path, joinPath(contentDir, "saves"));
+          setStatus(
+            t("已导入存档 {0}。", { "0": path.split(/[\\/]/).pop() ?? path }),
+          );
+          setDetails(await GetVersionDetails(selected));
+          continue;
+        } catch {
+          /* 不是存档结构，走手动选择 */
+        }
+        zips.push(path);
+        continue;
+      }
+      alert(
+        t("不支持的文件类型：{0}（仅支持 .jar 模组与 .zip 资源包/光影/存档）", {
+          "0": path.split(/[\\/]/).pop() ?? path,
+        }),
+        { severity: "warning" },
+      );
+    }
+    if (zips.length > 0) {
+      pendingDropPaths.current = zips;
+      setDropChoice(zips[0].split(/[\\/]/).pop() ?? zips[0]);
+    }
+    setDragActive(false);
+  };
+
+  // Wails 原生文件拖放监听（浏览器 dev 环境下 runtime 不存在则自动无效果）
+  useEffect(() => {
+    OnFileDrop((_x, _y, paths) => {
+      setDragActive(false);
+      void handleDropImport(paths);
+    }, false);
+
+    return () => {
+      OnFileDropOff();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只注册一次，回调用到的都是 ref/state setter
+  }, []);
+
+  /** 用户给拖入的 zip 选定类别后落位。 */
+  const finishDropChoice = async (kind: "resourcepacks" | "shaderpacks") => {
+    const paths = pendingDropPaths.current;
+
+    setDropChoice(null);
+    pendingDropPaths.current = [];
+    if (!details?.ContentDirectory || paths.length === 0) return;
+    const target = joinPath(
+      details.ContentDirectory.replace(/[\\/]+$/, ""),
+      kind,
+    );
+
+    for (const path of paths) {
+      try {
+        await CopyFileIntoDirectory(path, target);
+        setStatus(
+          t("已导入 {0}。", { "0": path.split(/[\\/]/).pop() ?? path }),
+        );
+      } catch (ex) {
+        alert(
+          t("导入 {0} 失败：{1}", {
+            "0": path,
+            "1": (ex as Error)?.message ?? ex,
+          }),
+          {
+            severity: "danger",
+          },
+        );
+      }
+    }
+    try {
+      setDetails(await GetVersionDetails(selected));
+    } catch {
+      /* 列表刷新失败不打断提示 */
+    }
+  };
+
+  // ---------- 列表键盘操作与快捷键 ----------
+  // Ctrl+F 聚焦内容搜索框；实例列表支持 ↑/↓ 切换、双击空白处去下载页。
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        const input = contentSearchRef.current?.querySelector("input");
+
+        if (input) {
+          e.preventDefault();
+          input.focus();
+          input.select();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", onKey);
+
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const handleListKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const index = versions.indexOf(selected);
+    const next =
+      e.key === "ArrowDown"
+        ? versions[Math.min(versions.length - 1, index + 1)]
+        : versions[Math.max(0, index - 1)];
+
+    if (next && next !== selected && snap) {
+      void selectVersion(next, snap.MinecraftDirectory);
+    }
+  };
+
   const deleteInstance = async () => {
     if (!selected || !snap) return;
     try {
@@ -1518,6 +1880,85 @@ const InstancesPage: React.FC = () => {
       setStatus(t("检查更新失败：{0}", { "0": (ex as Error)?.message ?? ex }));
     } finally {
       setUpdateChecking(false);
+    }
+  };
+
+  // ---------- 一键全部更新 ----------
+  // 预发布（pre/alpha/beta/rc 等）默认跳过，避免把稳定环境推向测试版。
+  const isPrereleaseVersion = (version: string): boolean =>
+    /(?:^|[-_.+])(?:pre|alpha|beta|rc|candidate)(?:[-_.+0-9]|$)/i.test(version);
+
+  const updatableFiles = useMemo(
+    () => (updateResult?.Files ?? []).filter((f) => isUpdatable(f)),
+    [updateResult],
+  );
+  const bulkUpdatableFiles = useMemo(
+    () =>
+      updatableFiles.filter((f) => !isPrereleaseVersion(f.LatestVersion ?? "")),
+    [updatableFiles],
+  );
+  const skippedPrereleaseCount =
+    updatableFiles.length - bulkUpdatableFiles.length;
+
+  const [bulkUpdating, setBulkUpdating] = useState(false);
+
+  const updateAll = async () => {
+    if (bulkUpdating || !selected || bulkUpdatableFiles.length === 0) return;
+    const agreed = await confirm(
+      t("全部更新"),
+      t(
+        "将按顺序为 {0} 个文件下载新版本并备份替换，期间请勿关闭启动器。跳过预发布版本。",
+        { "0": bulkUpdatableFiles.length },
+      ),
+      { confirmLabel: t("开始更新"), severity: "warning" },
+    );
+
+    if (!agreed) return;
+    setBulkUpdating(true);
+    let okCount = 0;
+    let failedCount = 0;
+
+    try {
+      for (const entry of bulkUpdatableFiles) {
+        setUpdateProgress(
+          t("正在更新 {0}…（{1}/{2}）", {
+            "0": entry.FileName,
+            "1": okCount + failedCount + 1,
+            "2": bulkUpdatableFiles.length,
+          }),
+        );
+        try {
+          await ApplyContentUpdate(
+            downloadLink(entry),
+            entry.FilePath,
+            entry.SHA1 ?? "",
+          );
+          okCount++;
+        } catch {
+          failedCount++;
+        }
+      }
+      try {
+        setDetails(await GetVersionDetails(selected));
+      } catch {
+        /* 列表刷新失败不打断提示 */
+      }
+      setUpdateResults((prev) => {
+        const next = { ...prev };
+
+        delete next[selected];
+
+        return next;
+      });
+      const message = t("全部更新完成：成功 {0} 个，失败 {1} 个。", {
+        "0": okCount,
+        "1": failedCount,
+      });
+
+      setUpdateProgress("");
+      alert(message, { severity: failedCount > 0 ? "warning" : "success" });
+    } finally {
+      setBulkUpdating(false);
     }
   };
 
@@ -1802,7 +2243,25 @@ const InstancesPage: React.FC = () => {
     (list ?? []).length;
 
   return (
-    <div className="relative h-full w-full flex flex-col overflow-hidden">
+    <div
+      className="relative h-full w-full flex flex-col overflow-hidden"
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragActive(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setDragActive(false);
+      }}
+      // 实际的落点由 Wails OnFileDrop 处理（能拿到绝对路径），这里只做视觉提示
+    >
+      {/* 拖拽安装提示层 */}
+      {dragActive ? (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-primary/60 bg-primary/5">
+          <span className="rounded-full bg-primary/15 px-4 py-1.5 text-sm font-medium text-primary">
+            {t("松开以安装（模组 .jar / 资源包·光影·存档 .zip）")}
+          </span>
+        </div>
+      ) : null}
       {/* 标题区（窄窗口时控件换行，避免溢出） */}
       <div className="px-6 pt-5 pb-3 flex flex-col gap-2 flex-shrink-0">
         <div className="flex items-end justify-between gap-4">
@@ -1901,7 +2360,14 @@ const InstancesPage: React.FC = () => {
           </div>
           <div
             ref={listRef}
-            className="relative flex-1 overflow-y-auto flex flex-col gap-0.5"
+            className="relative flex-1 overflow-y-auto flex flex-col gap-0.5 outline-none"
+            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- 让实例列表可用 ↑/↓ 键切换
+            tabIndex={0}
+            onDoubleClick={(e) => {
+              // 双击列表空白处 → 去下载页装新实例
+              if (e.target === e.currentTarget) navigateToPage("download");
+            }}
+            onKeyDown={handleListKeyDown}
           >
             {highlight ? (
               <div
@@ -1944,6 +2410,7 @@ const InstancesPage: React.FC = () => {
                           if (snap)
                             void selectVersion(v, snap.MinecraftDirectory);
                         }}
+                        onContextMenu={(e) => openInstanceMenu(v, e)}
                       >
                         <span className="relative z-10 flex flex-shrink-0">
                           {renderInstanceIcon(v, "w-7 h-7")}
@@ -2376,19 +2843,24 @@ const InstancesPage: React.FC = () => {
                                 </button>
                               ))}
                             </div>
-                            <Input
-                              aria-label={t("搜索{0}名称…", {
-                                "0": t(contentTab),
-                              })}
-                              className="min-w-[140px] flex-1"
-                              placeholder={t("搜索{0}名称…", {
-                                "0": t(contentTab),
-                              })}
-                              size="sm"
-                              value={contentSearch}
-                              variant="bordered"
-                              onValueChange={setContentSearch}
-                            />
+                            <div
+                              ref={contentSearchRef}
+                              className="flex min-w-0 flex-1"
+                            >
+                              <Input
+                                aria-label={t("搜索{0}名称…", {
+                                  "0": t(contentTab),
+                                })}
+                                className="min-w-[140px] w-full flex-1"
+                                placeholder={t("搜索{0}名称…（Ctrl+F）", {
+                                  "0": t(contentTab),
+                                })}
+                                size="sm"
+                                value={contentSearch}
+                                variant="bordered"
+                                onValueChange={setContentSearch}
+                              />
+                            </div>
                             {contentTab === "游戏存档" ? (
                               <Button
                                 className="flex-shrink-0"
@@ -2432,6 +2904,30 @@ const InstancesPage: React.FC = () => {
                                   ? updateProgress || t("正在检查更新…")
                                   : summarizeResult(updateResult, t)}
                               </span>
+                              {/* 一键全部更新：有可更新文件时出现（预发布默认跳过） */}
+                              {!updateChecking &&
+                              bulkUpdatableFiles.length > 0 ? (
+                                <Button
+                                  className="min-w-0 h-6 px-2.5"
+                                  color="primary"
+                                  isDisabled={bulkUpdating}
+                                  isLoading={bulkUpdating}
+                                  size="sm"
+                                  variant="flat"
+                                  onPress={() => void updateAll()}
+                                >
+                                  {t("全部更新（{0}）", {
+                                    "0": bulkUpdatableFiles.length,
+                                  })}
+                                </Button>
+                              ) : null}
+                              {!updateChecking && skippedPrereleaseCount > 0 ? (
+                                <span className="text-gray-400">
+                                  {t("已跳过 {0} 个预发布版本", {
+                                    "0": skippedPrereleaseCount,
+                                  })}
+                                </span>
+                              ) : null}
                               {updateResult?.Modpack?.Present ? (
                                 <button
                                   className="cursor-pointer text-left text-gray-500 underline decoration-dotted dark:text-gray-400"
@@ -2474,6 +2970,10 @@ const InstancesPage: React.FC = () => {
                                   <div
                                     key={entry.SourcePath}
                                     className="flex items-center gap-3 rounded-lg px-3 py-2 transition-colors hover:bg-primary/10"
+                                    onContextMenu={(e) => {
+                                      if (contentTab === "已安装模组")
+                                        openModMenu(entry, e);
+                                    }}
                                   >
                                     <span className="w-8 h-8 flex-shrink-0 flex items-center justify-center rounded-lg bg-gray-200 dark:bg-gray-700">
                                       {entry.IconPath ? (
@@ -2489,14 +2989,30 @@ const InstancesPage: React.FC = () => {
                                       )}
                                     </span>
                                     <div className="min-w-0 flex-1">
-                                      <div
-                                        className={`truncate text-[13px] font-semibold text-gray-800 dark:text-gray-200 ${entry.IsDisabled ? "line-through opacity-60" : ""}`}
-                                      >
-                                        {entry.Name}
-                                      </div>
-                                      <div className="truncate text-[10px] text-gray-400">
-                                        {entry.MetadataLine}
-                                      </div>
+                                      {(() => {
+                                        const zhName =
+                                          contentTab === "已安装模组"
+                                            ? modNames[entry.Name]
+                                            : undefined;
+
+                                        return (
+                                          <>
+                                            <div
+                                              className={`truncate text-[13px] font-semibold text-gray-800 dark:text-gray-200 ${entry.IsDisabled ? "line-through opacity-60" : ""}`}
+                                              title={
+                                                zhName ? entry.Name : undefined
+                                              }
+                                            >
+                                              {zhName || entry.Name}
+                                            </div>
+                                            <div className="truncate text-[11px] text-gray-400">
+                                              {zhName
+                                                ? `${entry.Name} · ${entry.MetadataLine}`
+                                                : entry.MetadataLine}
+                                            </div>
+                                          </>
+                                        );
+                                      })()}
                                     </div>
                                     {/* 更新角标：可更新 / 未知 / 检查失败 各有区分，
                                         点击打开明细弹层 */}
@@ -3094,10 +3610,13 @@ const InstancesPage: React.FC = () => {
         </ModalContent>
       </Modal>
 
-      {/* Rewind：存档 / 实例快照时间线 */}
+      {/* Rewind：存档 / 实例快照时间线（实例入口附带存档清单，可直接切换查看各存档） */}
       <RewindDialog
         isOpen={!!rewindEntry}
         kind={rewindEntry?.kind ?? "save"}
+        saves={
+          rewindEntry?.kind === "instance" ? (details?.Saves ?? []) : undefined
+        }
         targetName={rewindEntry?.name ?? ""}
         targetPath={rewindEntry?.path ?? null}
         onClose={() => setRewindEntry(null)}
@@ -3266,6 +3785,112 @@ const InstancesPage: React.FC = () => {
         onClose={() => setVersionTarget(null)}
         onSwitched={(message) => void onVersionSwitched(message)}
       />
+
+      {/* 右键菜单浮层 */}
+      <ContextMenuOverlay state={ctxMenu} onClose={() => setCtxMenu(null)} />
+
+      {/* 右键菜单触发的重命名/复制输入弹层（复用设置页的重命名/复制逻辑） */}
+      <Modal
+        isOpen={menuAction !== null}
+        size="sm"
+        onClose={() => setMenuAction(null)}
+        {...modalBehaviorProps}
+      >
+        <ModalContent>
+          {(onClose) => (
+            <ModalShell
+              title={menuAction === "rename" ? t("重命名实例") : t("复制实例")}
+              onClose={onClose}
+            >
+              <div className="flex flex-col gap-3">
+                <Input
+                  placeholder={t("输入新的实例名称")}
+                  size="sm"
+                  value={menuAction === "rename" ? newName : copyName}
+                  variant="bordered"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      const action = menuAction;
+
+                      onClose();
+                      setMenuAction(null);
+                      if (action === "rename") void renameInstance();
+                      else if (action === "copy") void copyInstance();
+                    }
+                  }}
+                  onValueChange={
+                    menuAction === "rename" ? setNewName : setCopyName
+                  }
+                  aria-label={t("实例名称")}
+                  /* eslint-disable-next-line jsx-a11y/no-autofocus -- 弹出即输入的场景需要立即聚焦 */
+                  autoFocus
+                />
+                <div className="flex justify-end gap-2">
+                  <Button size="sm" variant="flat" onPress={onClose}>
+                    {t("取消")}
+                  </Button>
+                  <Button
+                    color="primary"
+                    size="sm"
+                    onPress={() => {
+                      const action = menuAction;
+
+                      onClose();
+                      setMenuAction(null);
+                      if (action === "rename") void renameInstance();
+                      else if (action === "copy") void copyInstance();
+                    }}
+                  >
+                    {menuAction === "rename" ? t("重命名") : t("复制")}
+                  </Button>
+                </div>
+              </div>
+            </ModalShell>
+          )}
+        </ModalContent>
+      </Modal>
+
+      {/* 拖入 zip 的类别选择弹层（无法自动识别为存档时） */}
+      <Modal
+        isOpen={dropChoice !== null}
+        size="sm"
+        onClose={() => {
+          setDropChoice(null);
+          pendingDropPaths.current = [];
+        }}
+        {...modalBehaviorProps}
+      >
+        <ModalContent>
+          {(onClose) => (
+            <ModalShell
+              subtitle={dropChoice ?? ""}
+              title={t("把拖入的文件装到哪？")}
+              onClose={() => {
+                onClose();
+                setDropChoice(null);
+                pendingDropPaths.current = [];
+              }}
+            >
+              <div className="flex flex-col gap-2">
+                <Button
+                  startContent={<FolderIcon />}
+                  variant="flat"
+                  onPress={() => void finishDropChoice("resourcepacks")}
+                >
+                  {t("资源包")}
+                </Button>
+                <Button
+                  startContent={<SparkleIcon />}
+                  variant="flat"
+                  onPress={() => void finishDropChoice("shaderpacks")}
+                >
+                  {t("光影包")}
+                </Button>
+              </div>
+            </ModalShell>
+          )}
+        </ModalContent>
+      </Modal>
     </div>
   );
 };

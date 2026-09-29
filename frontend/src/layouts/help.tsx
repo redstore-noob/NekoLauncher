@@ -20,6 +20,7 @@ import {
   Search20Regular,
   Settings20Regular,
   Apps20Regular,
+  Bot20Regular as BotIcon,
 } from "@fluentui/react-icons";
 
 import { navigateToPage } from "../lib/navigation";
@@ -32,6 +33,8 @@ interface HelpEntry {
   title: string;
   body: string[];
   action?: { label: string; pageId: string; detail?: string };
+  /** 设置后在该条目下渲染「AI 诊断」按钮：跳转 AI 页并预填提示词 */
+  aiPrompt?: string;
 }
 
 /** 帮助内容。增删条目只改这里；section 的顺序即展示顺序。 */
@@ -68,6 +71,8 @@ export const HELP_ENTRIES: HelpEntry[] = [
       "常见三类原因：Java 主版本与游戏不符、内存分配过小（大型整合包建议 4 GB 以上）、模组冲突或缺少前置。",
     ],
     action: { label: "打开运行日志", pageId: "settings" },
+    aiPrompt:
+      "我的游戏启动失败了，请帮我诊断最近的崩溃原因：先看启动日志和崩溃报告，告诉我具体哪里出了问题、怎么修。",
   },
   {
     id: "microsoft-login",
@@ -124,6 +129,8 @@ export const HELP_ENTRIES: HelpEntry[] = [
       "更新模组：实例页「内容」页签的「检查更新」能批量比对 Modrinth；点每个模组旁的版本管理按钮还能自由升级或降级到任意版本（原文件会先备份）。",
     ],
     action: { label: "去实例页", pageId: "instances" },
+    aiPrompt:
+      "我装的模组没有生效，请帮我检查当前实例的模组列表和启动日志，找出加载失败或缺少前置的模组。",
   },
   {
     id: "java",
@@ -344,6 +351,18 @@ const HelpPage: React.FC = () => {
                         {t(line)}
                       </p>
                     ))}
+                    {entry.aiPrompt ? (
+                      <Button
+                        className="self-start"
+                        color="secondary"
+                        size="sm"
+                        startContent={<BotIcon />}
+                        variant="flat"
+                        onPress={() => navigateToPage("ai", entry.aiPrompt)}
+                      >
+                        {t("AI 诊断")}
+                      </Button>
+                    ) : null}
                     {entry.action ? (
                       <Button
                         className="self-start"

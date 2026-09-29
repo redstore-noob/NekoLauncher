@@ -27,6 +27,11 @@ import (
 // soloMagic 尾标魔数（8 字节）。带版本字节：格式破坏性变更时递增。
 const soloMagic = "NKSOLO1\x01"
 
+// soloMagicV2 在线安装包（v2）的尾标魔数：offset/length 指向 exe 内嵌的
+// remote-manifest.json（载荷 zip 改为发布在 GitHub Releases 等外部地址，
+// 安装时由安装器下载），CRC32 为该清单 JSON 的校验。
+const soloMagicV2 = "NKSOLO2\x02"
+
 // trailerSize 尾标总长（字节）。
 const trailerSize = 32
 
@@ -35,32 +40,46 @@ type Trailer struct {
 	Offset int64
 	Length int64
 	CRC32  uint32
+	// V2 为 true 表示在线安装包：Offset/Length 指向内嵌远程清单而非载荷 zip
+	V2 bool
 }
 
 // AppendTrailer 把尾标写到 w（导出与测试共用）。
 func AppendTrailer(w io.Writer, payloadOffset, payloadLength int64, crc uint32) error {
+	return appendTrailer(w, soloMagic, payloadOffset, payloadLength, crc)
+}
+
+// AppendTrailerV2 写 v2（在线安装包）尾标：Offset/Length/CRC 描述内嵌的远程清单。
+func AppendTrailerV2(w io.Writer, manifestOffset, manifestLength int64, crc uint32) error {
+	return appendTrailer(w, soloMagicV2, manifestOffset, manifestLength, crc)
+}
+
+func appendTrailer(w io.Writer, magic string, offset, length int64, crc uint32) error {
 	buf := make([]byte, trailerSize)
-	copy(buf[0:8], soloMagic)
-	binary.LittleEndian.PutUint64(buf[8:16], uint64(payloadOffset))
-	binary.LittleEndian.PutUint64(buf[16:24], uint64(payloadLength))
+	copy(buf[0:8], magic)
+	binary.LittleEndian.PutUint64(buf[8:16], uint64(offset))
+	binary.LittleEndian.PutUint64(buf[16:24], uint64(length))
 	binary.LittleEndian.PutUint32(buf[24:28], crc)
 	// [28:32] 保留位保持 0
 	_, err := w.Write(buf)
 	return err
 }
 
-// ParseTrailer 从 32 字节尾标数据解析；魔数不符返回错误。
+// ParseTrailer 从 32 字节尾标数据解析；魔数不符返回错误。v1/v2 均可解析，
+// 是否为在线安装包由 V2 字段区分。
 func ParseTrailer(data []byte) (Trailer, error) {
 	if len(data) != trailerSize {
 		return Trailer{}, fmt.Errorf("尾标长度异常：%d（应为 %d）", len(data), trailerSize)
 	}
-	if string(data[0:8]) != soloMagic {
+	magic := string(data[0:8])
+	if magic != soloMagic && magic != soloMagicV2 {
 		return Trailer{}, errors.New("不是有效的 NekoSolo 安装包（尾标魔数不符）")
 	}
 	return Trailer{
 		Offset: int64(binary.LittleEndian.Uint64(data[8:16])),
 		Length: int64(binary.LittleEndian.Uint64(data[16:24])),
 		CRC32:  binary.LittleEndian.Uint32(data[24:28]),
+		V2:     magic == soloMagicV2,
 	}, nil
 }
 

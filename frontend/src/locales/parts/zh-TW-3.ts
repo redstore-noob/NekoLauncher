@@ -256,8 +256,8 @@ const dict: Record<string, string> = {
   "文本转 Minecraft 体素方块文字，可旋转预览、描边并用透明背景导出 PNG":
     "文字轉 Minecraft 體素方塊文字，可旋轉預覽、描邊並用透明背景匯出 PNG",
   资源搜索: "資源搜尋",
-  "搜索并以镜像回退下载资源，支持 Modrinth 与 CurseForge":
-    "搜尋並以鏡像回退下載資源，支援 Modrinth 與 CurseForge",
+  "搜索并以镜像回退下载资源，支持 Modrinth":
+    "搜尋並以鏡像回退下載資源，支援 Modrinth",
   "（未配置 Key）": "（未設定 Key）",
   "接口 {0}，失败自动回退 {1}": "介面 {0}，失敗自動回退 {1}",
   "搜索资源（留空浏览热门）": "搜尋資源（留空瀏覽熱門）",

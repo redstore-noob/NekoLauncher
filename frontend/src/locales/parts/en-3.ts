@@ -261,8 +261,8 @@ const dict: Record<string, string> = {
   "文本转 Minecraft 体素方块文字，可旋转预览、描边并用透明背景导出 PNG":
     "Convert text to Minecraft voxel block text; rotate to preview, add a stroke, and export as PNG with a transparent background",
   资源搜索: "Resource search",
-  "搜索并以镜像回退下载资源，支持 Modrinth 与 CurseForge":
-    "Search resources and download with automatic mirror fallback; supports Modrinth and CurseForge",
+  "搜索并以镜像回退下载资源，支持 Modrinth":
+    "Search resources and download with automatic mirror fallback; supports Modrinth",
   "（未配置 Key）": "(no API key)",
   "接口 {0}，失败自动回退 {1}": "API {0}; falls back to {1}",
   "搜索资源（留空浏览热门）":

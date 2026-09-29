@@ -1,5 +1,5 @@
 /*
- * 内置扩展点：19 个主页小组件 + 10 个侧边栏页面。
+ * 内置扩展点：20 个主页小组件 + 10 个侧边栏页面。
  *
  * 内置实现与第三方插件走完全相同的注册通道（registerWidget / registerPage），
  * 区别只是没有 "<插件id>:" 前缀——这几个 id 已经写在用户的 launcher.yaml 里，
@@ -18,6 +18,7 @@ import {
   FoodFish20Regular,
   Globe20Regular,
   HardDrive20Regular,
+  History20Regular,
   Home20Regular,
   Image20Regular,
   MusicNote220Regular,
@@ -57,6 +58,7 @@ import QuickDownloadCard from "../components/home/QuickDownloadCard";
 import QuickServerCard from "../components/home/QuickServerCard";
 import QuickSettingsCard from "../components/home/QuickSettingsCard";
 import RecentWorldsCard from "../components/home/RecentWorldsCard";
+import RewindCard from "../components/home/RewindCard";
 import ScreenshotWallCard from "../components/home/ScreenshotWallCard";
 import SkinViewCard from "../components/home/SkinViewCard";
 import AppearanceQuickCard from "../components/home/AppearanceQuickCard";
@@ -309,6 +311,16 @@ export function registerBuiltins() {
         records={context.playtimeRecords}
       />
     ),
+  });
+
+  registerWidget({
+    id: "rewind",
+    title: t("时光回溯"),
+    description: t("快照总数、存储占用与最近快照时间线，直达实例页管理"),
+    icon: <History20Regular />,
+    tileClass:
+      "from-emerald-400 via-teal-500 to-cyan-500 shadow-teal-500/30",
+    render: () => <RewindCard />,
   });
 
   registerWidget({

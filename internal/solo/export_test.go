@@ -7,6 +7,7 @@ package solo
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"hash/crc32"
 	"io"
@@ -224,6 +225,94 @@ func TestExportSoloEndToEnd(t *testing.T) {
 	}
 	if zipHasEntry(reader, "jre/jmods/java.base.jmod") || zipHasEntry(reader, "jre/src.zip") {
 		t.Fatal("捆绑 Java 不应包含 jmods / src.zip")
+	}
+}
+
+// v2 在线安装包：exe 只含 stub + 远程清单 + v2 尾标；载荷 zip 落在输出旁待上传。
+func TestExportSoloRemoteEndToEnd(t *testing.T) {
+	storage := t.TempDir()
+	if err := config.SetStorageDirectory(storage); err != nil {
+		t.Fatalf("重定向存储目录失败：%v", err)
+	}
+	world := t.TempDir()
+	versionsRoot, contentDirectory, _ := buildFakeWorld(t, world)
+
+	stubBytes := "FAKE-STUB-PE-IMAGE"
+	stubPath := filepath.Join(t.TempDir(), "NekoSolo.Installer.exe")
+	writeFile(t, stubPath, stubBytes)
+	t.Setenv(stubEnvKey, stubPath)
+
+	launcherBytes := "FAKE-NEKOLAUNCHER-EXE"
+	launcherPath := filepath.Join(t.TempDir(), "NekoLauncher.exe")
+	writeFile(t, launcherPath, launcherBytes)
+	previous := launcherExecutable
+	launcherExecutable = func() (string, error) { return launcherPath, nil }
+	defer func() { launcherExecutable = previous }()
+
+	outputPath := filepath.Join(t.TempDir(), "Demo-Setup.exe")
+	options := SoloExportOptions{
+		PackName:           "我的究极生存包",
+		PackVersion:        "2.4.0",
+		MinecraftVersion:   "1.20.1",
+		IncludedPaths:      []string{"mods/jei.jar", "config"},
+		ContentDirectory:   contentDirectory,
+		VersionDirectory:   filepath.Join(versionsRoot, "1.20.1-forge-47.2.0"),
+		VersionID:          "1.20.1-forge-47.2.0",
+		RemoteDistribution: true,
+		PayloadURL:         "https://github.com/acme/pack/releases/download/v1/payload.zip",
+	}
+	result, err := ExportSolo(t.Context(), options, outputPath, nil)
+	if err != nil {
+		t.Fatalf("ExportSolo 失败：%v", err)
+	}
+	if result.PayloadPath == "" || result.PayloadSizeBytes <= 0 {
+		t.Fatalf("远程导出应返回载荷路径与大小：%+v", result)
+	}
+	if _, err := os.Stat(result.PayloadPath); err != nil {
+		t.Fatalf("载荷 zip 不存在：%v", err)
+	}
+
+	// exe 体积应远小于载荷：尾标 v2，内嵌清单可解析且指向载荷 URL
+	trailer, err := ReadTrailerFromFile(outputPath)
+	if err != nil {
+		t.Fatalf("解析尾标失败：%v", err)
+	}
+	if !trailer.V2 {
+		t.Fatal("远程安装包应使用 v2 尾标")
+	}
+	manifestData, err := OpenPayloadRange(outputPath, trailer)
+	if err != nil {
+		t.Fatalf("定位内嵌清单失败：%v", err)
+	}
+	raw, err := io.ReadAll(manifestData)
+	manifestData.Close()
+	if err != nil {
+		t.Fatalf("读取内嵌清单失败：%v", err)
+	}
+	if crc32.ChecksumIEEE(raw) != trailer.CRC32 {
+		t.Fatal("内嵌清单 CRC 校验失败")
+	}
+	var remote RemoteManifest
+	if err := json.Unmarshal(raw, &remote); err != nil {
+		t.Fatalf("内嵌清单不是有效 JSON：%v", err)
+	}
+	if remote.PayloadURL != options.PayloadURL ||
+		remote.PackVersion != "2.4.0" ||
+		remote.VersionID != "1.20.1-forge-47.2.0" ||
+		remote.PayloadSize != result.PayloadSizeBytes {
+		t.Fatalf("远程清单字段不符：%+v", remote)
+	}
+
+	// 载荷 zip 本身可按清单校验（模拟安装器下载后的校验路径）
+	payloadData, err := os.ReadFile(result.PayloadPath)
+	if err != nil {
+		t.Fatalf("读取载荷 zip 失败：%v", err)
+	}
+	if int64(len(payloadData)) != remote.PayloadSize || crc32.ChecksumIEEE(payloadData) != remote.PayloadCRC32 {
+		t.Fatal("载荷 zip 大小或 CRC 与清单不符")
+	}
+	if _, err := zip.NewReader(bytes.NewReader(payloadData), int64(len(payloadData))); err != nil {
+		t.Fatalf("载荷 zip 无效：%v", err)
 	}
 }
 

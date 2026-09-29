@@ -39,3 +39,20 @@ frontend-vue-backup/package.json.md5
 # NekoSolo 安装器构建产物
 NekoSolo/NekoSolo.Installer/bin/
 NekoSolo/NekoSolo.Installer/obj/
+# 其它 .NET 风格构建目录（bin/obj）与临时输出
+**/bin/
+**/obj/
+/out/
+
+# 宣传素材（大体积视频/音频/渲染产物，本地制作不入库）
+/promo/
+
+# AI 工具的本地目录（各家编码助手的工作区文件，因人而异不入库）
+.claude/
+.cursor/
+.continue/
+.codeium/
+.windsurf/
+.trae/
+.aider*
+.copilot*

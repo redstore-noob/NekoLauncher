@@ -12,6 +12,17 @@ import (
 // PayloadFormat 载荷/标记格式的当前版本号。
 const PayloadFormat = 1
 
+// RemoteManifest 在线安装包（尾标 v2）内嵌的远程清单：
+// 载荷 zip 不打进 exe，而是发布在 GitHub Releases 等外部地址；
+// 安装器按 PayloadURL 下载后校验大小与 CRC32，再走与 v1 完全相同的安装流程。
+type RemoteManifest struct {
+	// Manifest 内嵌展开：与载荷 manifest.json 字段一致
+	Manifest
+	PayloadURL   string `json:"payloadUrl"`
+	PayloadSize  int64  `json:"payloadSize"`
+	PayloadCRC32 uint32 `json:"payloadCrc32"`
+}
+
 // Manifest 载荷内的 manifest.json：安装器据此展示信息并生成 neko-solo.json。
 type Manifest struct {
 	Format       int    `json:"format"`

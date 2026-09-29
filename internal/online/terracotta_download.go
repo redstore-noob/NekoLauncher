@@ -103,7 +103,7 @@ func terracottaUserAgentVersion() string {
 		return value
 	}
 
-	return "Nya_Rebuild"
+	return "0.2.0"
 }
 
 // assetPlatformScore 给资产名打分：平台 + 架构都对上才给正分。

@@ -98,6 +98,11 @@ type ModpackExportResult struct {
 	DeclaredFiles int
 	OverrideFiles int
 	Warnings      []string
+	// PayloadPath 仅 NekoSolo 在线安装包（v2）：随安装包一起生成、
+	// 需要作者手动上传到 PayloadURL 所指位置（如 GitHub Releases）的载荷 zip。
+	PayloadPath string
+	// PayloadSizeBytes 载荷 zip 的字节数（上传后与清单校验一致）。
+	PayloadSizeBytes int64
 }
 
 // ModpackExportOptions 导出参数。

@@ -10,6 +10,10 @@ export function CheckInstanceContentUpdates(arg1, arg2, arg3) {
   return window['go']['bindings']['ContentAPI']['CheckInstanceContentUpdates'](arg1, arg2, arg3);
 }
 
+export function CopyFileIntoDirectory(arg1, arg2) {
+  return window['go']['bindings']['ContentAPI']['CopyFileIntoDirectory'](arg1, arg2);
+}
+
 export function CreateInstanceSnapshot(arg1, arg2, arg3) {
   return window['go']['bindings']['ContentAPI']['CreateInstanceSnapshot'](arg1, arg2, arg3);
 }
@@ -58,6 +62,10 @@ export function ListSaveSnapshots(arg1) {
   return window['go']['bindings']['ContentAPI']['ListSaveSnapshots'](arg1);
 }
 
+export function LookupModNameTranslations(arg1) {
+  return window['go']['bindings']['ContentAPI']['LookupModNameTranslations'](arg1);
+}
+
 export function ReadMods(arg1) {
   return window['go']['bindings']['ContentAPI']['ReadMods'](arg1);
 }
@@ -74,8 +82,16 @@ export function ReadShaders(arg1) {
   return window['go']['bindings']['ContentAPI']['ReadShaders'](arg1);
 }
 
+export function RefreshModNameTranslations(arg1) {
+  return window['go']['bindings']['ContentAPI']['RefreshModNameTranslations'](arg1);
+}
+
 export function RemoveCustomIcon(arg1, arg2) {
   return window['go']['bindings']['ContentAPI']['RemoveCustomIcon'](arg1, arg2);
+}
+
+export function RewindSummary() {
+  return window['go']['bindings']['ContentAPI']['RewindSummary']();
 }
 
 export function RollbackInstanceSnapshot(arg1, arg2) {

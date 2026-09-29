@@ -310,6 +310,27 @@ const AboutSection: React.FC = () => {
         <SettingRow label={t("贡献者")}>
           <Contributors />
         </SettingRow>
+
+        <SettingRow label={t("模组中文名")}>
+          <div className="max-w-md text-right text-[11px] text-gray-400">
+            <p>
+              {t(
+                "「已安装模组」列表中的中文译名通过模组文件名检索 MC百科（mcmod.cn）获得，数据与译名版权归 MC百科 所有。",
+              )}
+            </p>
+            <a
+              className="text-primary underline decoration-dotted"
+              href="https://www.mcmod.cn"
+              rel="noreferrer"
+              target="_blank"
+            >
+              www.mcmod.cn
+            </a>
+            <p className="mt-1 opacity-70">
+              {t("实现方式参考了 PCL2 的同名功能，特此致谢。")}
+            </p>
+          </div>
+        </SettingRow>
       </Section>
 
       <LicenseDialog

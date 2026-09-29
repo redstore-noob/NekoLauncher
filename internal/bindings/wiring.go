@@ -20,6 +20,7 @@ import (
 	"nekolauncher/internal/download"
 	"nekolauncher/internal/instance"
 	"nekolauncher/internal/launch"
+	"nekolauncher/internal/modname"
 	"nekolauncher/internal/music"
 )
 
@@ -213,4 +214,11 @@ func (a *API) wireMusic() {
 	music.Shared.OnTrackFinished = func() {
 		emit(a.Music.ctx, "music:trackFinished")
 	}
+}
+
+// wireModName 模组中文名缓存更新回调 → Wails 事件（前端收到后重查缓存刷新列表）。
+func (a *API) wireModName() {
+	modname.SetNotifier(func() {
+		emit(a.Content.ctx, "modname:updated")
+	})
 }

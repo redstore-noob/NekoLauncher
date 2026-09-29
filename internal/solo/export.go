@@ -65,6 +65,12 @@ type SoloExportOptions struct {
 	BundleJava bool
 	// SimpleMode 安装后启动器默认进入 NekoLauncher-S 模式
 	SimpleMode bool
+	// RemoteDistribution 在线安装包（尾标 v2）：载荷 zip 不打进 exe，
+	// 而是生成独立的 zip 供作者上传（如 GitHub Releases），安装器安装时下载。
+	RemoteDistribution bool
+	// PayloadURL 在线安装包的载荷下载地址（必须 https；通常为
+	// https://github.com/<owner>/<repo>/releases/download/<tag>/<file>）
+	PayloadURL string
 }
 
 // ExportSolo 导出 NekoSolo 安装包到 outputPath（.exe）。
@@ -87,6 +93,9 @@ func ExportSolo(
 	}
 	if strings.TrimSpace(options.MinecraftVersion) == "" {
 		return result, fmt.Errorf("无法确定 Minecraft 版本")
+	}
+	if options.RemoteDistribution && !strings.HasPrefix(strings.TrimSpace(options.PayloadURL), "https://") {
+		return result, fmt.Errorf("在线安装包需要 https:// 开头的载荷下载地址（如 GitHub Releases 资产直链）")
 	}
 	versionID := strings.TrimSpace(options.VersionID)
 	if versionID == "" {
@@ -172,11 +181,33 @@ func ExportSolo(
 		return result, err
 	}
 
-	// ---- 组装最终 exe：stub + payload + trailer ----
+	// ---- 组装最终 exe ----
 	stubInfo, err := os.Stat(stubPath)
 	if err != nil {
 		return result, err
 	}
+	if options.RemoteDistribution {
+		// v2 在线安装包：exe = stub + 远程清单 JSON + v2 尾标（体积只有几 MB）；
+		// 载荷 zip 保留在输出目录旁，由作者上传到 PayloadURL（如 GitHub Releases）。
+		payloadPath, payloadSize, err := assembleRemoteInstaller(stubPath, stubInfo.Size(), payloadTemp,
+			payloadLength, payloadCRC, manifest, options, temporaryPath, outputPath)
+		if err != nil {
+			return result, err
+		}
+		warnings = append(warnings,
+			"在线安装包：请把 "+payloadPath+" 上传到 PayloadURL 指向的位置（如 GitHub Releases 资产），玩家安装时将从此地址下载。")
+		emitProgress(progress, "完成", 1, 1)
+
+		return modpack.ModpackExportResult{
+			OutputPath:       outputPath,
+			DeclaredFiles:    len(versionEntries),
+			OverrideFiles:    len(contentEntries),
+			Warnings:         warnings,
+			PayloadPath:      payloadPath,
+			PayloadSizeBytes: payloadSize,
+		}, nil
+	}
+
 	if err := assembleInstaller(stubPath, stubInfo.Size(), payloadTemp, payloadLength, payloadCRC, temporaryPath); err != nil {
 		return result, err
 	}
@@ -191,6 +222,76 @@ func ExportSolo(
 		OverrideFiles: len(contentEntries),
 		Warnings:      warnings,
 	}, nil
+}
+
+// assembleRemoteInstaller 生成 v2 在线安装包：stub + 远程清单 JSON + v2 尾标。
+// 载荷 zip（payloadTemp）被移动到 outputPath 同目录下的 "<包名>-payload.zip"，
+// 由作者上传到 GitHub Releases 等托管地址。返回载荷 zip 路径与大小。
+func assembleRemoteInstaller(
+	stubPath string,
+	stubSize int64,
+	payloadTemp string,
+	payloadLength int64,
+	payloadCRC uint32,
+	manifest Manifest,
+	options SoloExportOptions,
+	temporaryPath, outputPath string,
+) (string, int64, error) {
+	url := strings.TrimSpace(options.PayloadURL)
+	if !strings.HasPrefix(url, "https://") {
+		return "", 0, fmt.Errorf("在线安装包的载荷下载地址必须是 https:// 开头的 URL")
+	}
+	remote := RemoteManifest{
+		Manifest:     manifest,
+		PayloadURL:   url,
+		PayloadSize:  payloadLength,
+		PayloadCRC32: payloadCRC,
+	}
+	manifestJSON, err := marshalSoloJSON(remote)
+	if err != nil {
+		return "", 0, err
+	}
+
+	stub, err := os.Open(stubPath)
+	if err != nil {
+		return "", 0, err
+	}
+	defer stub.Close()
+	output, err := os.OpenFile(temporaryPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+	if err != nil {
+		return "", 0, err
+	}
+	if _, err := io.Copy(output, stub); err != nil {
+		output.Close()
+		return "", 0, err
+	}
+	manifestBytes := []byte(manifestJSON)
+	manifestOffset := stubSize
+	if _, err := output.Write(manifestBytes); err != nil {
+		output.Close()
+		return "", 0, err
+	}
+	if err := AppendTrailerV2(output, manifestOffset, int64(len(manifestBytes)), crc32.ChecksumIEEE(manifestBytes)); err != nil {
+		output.Close()
+		return "", 0, err
+	}
+	if err := output.Sync(); err != nil {
+		output.Close()
+		return "", 0, err
+	}
+	if err := output.Close(); err != nil {
+		return "", 0, err
+	}
+	if err := os.Rename(temporaryPath, outputPath); err != nil {
+		return "", 0, err
+	}
+
+	// 载荷 zip 移动到输出目录旁（扩展名 .zip 便于直接作为 Release 资产上传）
+	payloadPath := strings.TrimSuffix(outputPath, ".exe") + "-payload.zip"
+	if err := os.Rename(payloadTemp, payloadPath); err != nil {
+		return "", 0, err
+	}
+	return payloadPath, payloadLength, nil
 }
 
 // payloadEntry 待写入载荷的单个文件：载荷内路径 + 源文件绝对路径。

@@ -1,4 +1,4 @@
-# NekoSolo 安装包格式规范 v1
+# NekoSolo 安装包格式规范（v1 内嵌 / v2 在线）
 
 本文定义 NekoSolo 安装包（`.exe`）的二进制布局、载荷结构与首启标记。
 导出方：NekoLauncher `internal/solo`；消费方：NekoSolo.Installer（C#）。
@@ -126,3 +126,61 @@
   "不覆盖配置"由安装器（只写标记）与启动器（只在未配置时接管）共同保证
 - 已知取舍：捆绑 JRE 放在共享的 `runtime/jre`，多包共存时沿用首个包的 Java
   （跨 Java 大版本的多包场景留待后续按包分目录）
+
+## 7. v2：在线安装包（远程载荷）
+
+v2 解决"exe 太大、更新要重下整包"的问题：安装器模板不变，**载荷 zip 不打进
+exe**，而是发布到外部 https 地址（首选 GitHub Releases 资产）。exe 里只内嵌
+一份很小的远程清单，安装时由安装器动态下载。
+
+### 7.1 文件布局与尾标
+
+```
++---------------------------+
+| 安装器模板（stub，PE）     |
++---------------------------+
+| 远程清单 remote-manifest  |  ← JSON，非 zip
++---------------------------+
+| 尾标（32 字节）           |  ← 魔数 "NKSOLO2\x02"
++---------------------------+
+```
+
+尾标字段与 v1 完全同布局：Offset/Length/CRC32 此时描述**远程清单 JSON**
+（不再是载荷 zip）。安装器按尾标版本字节（0x01/0x02）区分两种模式。
+
+### 7.2 远程清单 remote-manifest.json
+
+```json
+{
+  "format": 1,
+  "packId": "…", "packName": "…", "packVersion": "…",
+  "author": "…", "description": "…",
+  "mcVersion": "1.20.1", "loaderName": "…", "loaderVersion": "…",
+  "versionId": "1.20.1-forge-47.2.0",
+  "simpleMode": true, "hasJava": true,
+  "updateLink": "…",
+  "payloadUrl": "https://github.com/<owner>/<repo>/releases/download/<tag>/payload.zip",
+  "payloadSize": 734003200,
+  "payloadCrc32": 3123456789
+}
+```
+
+- 前 13 个字段与载荷 manifest.json **完全一致**（同一 SoloManifest 模型）；
+- `payloadUrl` 必须 https；`payloadSize` 与 `payloadCrc32` 用于下载后校验。
+
+### 7.3 安装流程
+
+1. 欢迎页：直接展示清单里的元数据（此时无图标——图标在载荷里）；
+2. 点安装 → 下载 `payloadUrl` 到临时文件（进度条复用），逐块校验
+   `payloadSize`，完成后校验 CRC32；
+3. 校验通过后按与 v1 **完全相同**的方式打开 zip 并执行第 6 节的三模式安装，
+   写入的 neko-solo.json 也与 v1 无差别——启动器侧零改动。
+
+### 7.4 导出方约定（NekoLauncher）
+
+- 导出同时产出两个文件：`XXX-Setup.exe`（几 MB）与 `XXX-Setup-payload.zip`；
+- 作者需把 payload.zip **先**上传到 `payloadUrl` 指向的位置（GitHub Releases
+  的推荐流程：先建 Release 与标签 → 上传资产 → 再导出安装包填入资产直链），
+  然后才分发 exe；
+- 载荷 zip 内部布局与 v1 载荷完全一致（第 3、4 节），未来可平滑升级为
+  按文件增量下载（v3）而无需再改分发方式。

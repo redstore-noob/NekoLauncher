@@ -1,4 +1,4 @@
-﻿/*
+/*
  * 安装器主窗口：三步向导（欢迎 → 安装 → 完成）。
  * 启动时解析自身尾标定位载荷；整合包图标解压到临时文件展示。
  * 完成页可勾选"立即启动"——Process.Start 拉起 NekoLauncher.exe，
@@ -15,7 +15,7 @@ namespace NekoSolo.Installer
 {
     public partial class MainWindow : Window
     {
-        private SoloPayload _payload;
+        private IPayloadPackage _payload;
         private SoloManifest _manifest;
         private bool _installing;
         private bool _finished;
@@ -87,6 +87,16 @@ namespace NekoSolo.Installer
             catch { return; }
             if (string.IsNullOrWhiteSpace(root)) return;
 
+            // v2 在线安装包：提示安装时需要联网下载整合包内容
+            if (_manifest.IsRemote)
+            {
+                string sizeText = _manifest.PayloadSize > 0
+                    ? string.Format("（约 {0:0.#} MB）", _manifest.PayloadSize / 1048576.0)
+                    : "";
+                SoloHint.Text = "本安装包为在线安装：安装时需要联网下载整合包内容" + sizeText +
+                    "，下载完成后自动校验并安装。";
+            }
+
             switch (InstallerEngine.DetectInstallMode(root))
             {
                 case InstallMode.AddPack:
@@ -112,6 +122,8 @@ namespace NekoSolo.Installer
         private void ShowIcon(SoloManifest manifest)
         {
             if (string.IsNullOrEmpty(manifest.IconPath)) return;
+            // 在线安装包：图标在载荷里，尚未下载，欢迎页用占位图标
+            if (_payload is RemotePayload) return;
             try
             {
                 string temp = InstallerEngine.ExtractIconToTemp(_payload);

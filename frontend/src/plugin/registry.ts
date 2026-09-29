@@ -109,6 +109,7 @@ export function unregisterPlugin(pluginId: string) {
 export const DEFAULT_WIDGET_IDS = [
   "playtime",
   "worlds",
+  "rewind",
   "quickjoin",
   "log",
   "quick-download",

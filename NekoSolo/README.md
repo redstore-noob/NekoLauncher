@@ -33,9 +33,13 @@ NekoSolo = **NekoLauncher 启动器 + 捆绑 Java（可选）+ 整合包** 三�
 2. 启动器「创作中心 → 整合包制作」→ 打包格式选 **NekoSolo（.exe）**
    - 勾选「捆绑当前 Java 运行时」→ 玩家离线也能玩（推荐）
    - 不勾 → 玩家首次启动时需要自备 Java（启动器会提示）
+   - 勾选「在线安装包」→ exe 只有几 MB：把导出的 payload.zip 上传到
+     GitHub Releases 等地址（推荐先建 Release 再导出，填资产直链），
+     玩家安装时动态下载并自动校验（格式见 FORMAT.md 第 7 节）
 3. 导出得到 `包名-版本-Setup.exe`，扔网盘/QQ群即完成分发
 4. 整合包更新后重新导出同名 exe，玩家**重跑安装包即增量更新**
-   （存档 `saves/` 与 `options.txt` 自动保留）
+   （存档 `saves/` 与 `options.txt` 自动保留）；在线安装包则只需更新
+   托管地址上的 payload.zip
 
 ## 构建安装器模板
 

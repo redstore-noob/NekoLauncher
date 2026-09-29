@@ -430,11 +430,14 @@ const ResourceSearchDialog: React.FC<Props> = ({
     return () => off();
   }, [open]);
 
-  const sourceOptions = sources.length
+  // CurseForge 搜索暂时隐藏（发布版暂不放出，Key 引导体验待打磨）；
+  // 放开时删掉这行过滤即可，后端数据源列表与引导卡片无需改动。
+  const sourceOptions = (sources.length
     ? sources
     : ([
         { id: "modrinth", name: "Modrinth" },
-      ] as unknown as models.ResourceSourceInfo[]);
+      ] as unknown as models.ResourceSourceInfo[])
+  ).filter((item) => item.id !== "curseforge");
 
   const targetOptions = asArray<string>(snapshot?.VersionIds).map((id) => ({
     value: id,
@@ -464,7 +467,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
     >
       <ModalContent className="h-full overflow-y-auto">
         <ModalShell
-          subtitle={t("搜索并以镜像回退下载资源，支持 Modrinth 与 CurseForge")}
+          subtitle={t("搜索并以镜像回退下载资源，支持 Modrinth")}
           title={t("资源搜索")}
           onClose={onClose}
         >

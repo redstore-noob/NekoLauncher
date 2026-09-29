@@ -8,6 +8,8 @@ export function ApplyContentUpdate(arg1:string,arg2:string,arg3:string):Promise<
 
 export function CheckInstanceContentUpdates(arg1:string,arg2:string,arg3:string):Promise<download.ContentUpdateCheckResult>;
 
+export function CopyFileIntoDirectory(arg1:string,arg2:string):Promise<string>;
+
 export function CreateInstanceSnapshot(arg1:string,arg2:string,arg3:string):Promise<content.SaveSnapshot>;
 
 export function CreateSaveSnapshot(arg1:string,arg2:string,arg3:string):Promise<content.SaveSnapshot>;
@@ -32,6 +34,8 @@ export function ListInstanceSnapshots(arg1:string):Promise<Array<content.SaveSna
 
 export function ListSaveSnapshots(arg1:string):Promise<Array<content.SaveSnapshot>>;
 
+export function LookupModNameTranslations(arg1:Array<string>):Promise<Record<string, string>>;
+
 export function ReadMods(arg1:string):Promise<Array<content.GameContentEntry>>;
 
 export function ReadResourcePacks(arg1:string):Promise<Array<content.GameContentEntry>>;
@@ -40,7 +44,11 @@ export function ReadSaves(arg1:string):Promise<Array<content.GameContentEntry>>;
 
 export function ReadShaders(arg1:string):Promise<Array<content.GameContentEntry>>;
 
+export function RefreshModNameTranslations(arg1:Array<string>):Promise<void>;
+
 export function RemoveCustomIcon(arg1:string,arg2:string):Promise<boolean>;
+
+export function RewindSummary():Promise<content.RewindSummary>;
 
 export function RollbackInstanceSnapshot(arg1:string,arg2:string):Promise<content.SaveSnapshot>;
 

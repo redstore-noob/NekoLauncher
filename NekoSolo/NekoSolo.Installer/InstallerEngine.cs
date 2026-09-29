@@ -71,7 +71,7 @@ namespace NekoSolo.Installer
                 || Directory.Exists(Path.Combine(root, DataDirectoryName));
         }
 
-        public static string ExtractIconToTemp(SoloPayload payload)
+        public static string ExtractIconToTemp(IPayloadPackage payload)
         {
             if (string.IsNullOrEmpty(payload.Manifest.IconPath)) return null;
             using (var zip = payload.OpenZip())
@@ -92,13 +92,17 @@ namespace NekoSolo.Installer
             return null;
         }
 
-        public static void Install(SoloPayload payload, string root, Action<InstallProgress> progress)
+        public static void Install(IPayloadPackage payload, string root, Action<InstallProgress> progress)
         {
             var manifest = payload.Manifest;
             InstallMode mode = DetectInstallMode(root);
             string dataDirectory = Path.Combine(root, DataDirectoryName);
             string markerDirectory = ResolveMarkerDirectory(root, mode);
             string markerPath = Path.Combine(markerDirectory, MarkerFileName);
+
+            // v2 在线安装包：先下载载荷 zip（进度复用同一回调），后续流程与 v1 完全一致
+            if (payload is RemotePayload remote)
+                remote.EnsureDownloaded(progress);
 
             // 已有捆绑 JRE 时不覆盖（v1 已知取舍：多包共用同一 JRE，见 FORMAT.md）
             string javaExe = Path.Combine(dataDirectory, "runtime", "jre", "bin", "java.exe");

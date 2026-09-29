@@ -14,9 +14,15 @@
  * limitations under the License.
  */
 import React, { useEffect, useState } from "react";
-import { Select, SelectItem } from "@heroui/react";
+import { Button, Select, SelectItem } from "@heroui/react";
+import { ArrowClockwise20Regular } from "@fluentui/react-icons";
 
-import { GetValue, SetValue } from "../../../wailsjs/go/bindings/ConfigAPI";
+import {
+  ClearValue,
+  GetValue,
+  SetValue,
+} from "../../../wailsjs/go/bindings/ConfigAPI";
+import { OOBE_COMPLETED_KEY } from "../../components/oobe/OobeProvider";
 import { popoverMotionProps } from "../../lib/motion";
 import { t } from "../../i18n";
 
@@ -46,6 +52,19 @@ const BehaviorSection: React.FC = () => {
     setHint(ok ? t("已保存。") : t("保存失败。"));
   };
 
+  // 重放首次引导：删掉完成标记后整页重载，OobeProvider 读不到键就会
+  // 重新弹出欢迎三选页（含跟随小窗流程）。重载与语言切换同款做法。
+  const replayOobe = async () => {
+    const ok = await ClearValue(OOBE_COMPLETED_KEY);
+
+    if (!ok) {
+      setHint(t("操作失败，请重试。"));
+
+      return;
+    }
+    window.location.reload();
+  };
+
   return (
     <Section
       aliases={[
@@ -54,8 +73,11 @@ const BehaviorSection: React.FC = () => {
         t("退出"),
         t("最小化"),
         t("行为"),
+        t("引导"),
+        t("新手"),
         "tray",
         "close",
+        "oobe",
       ]}
       title={t("启动器行为")}
     >
@@ -87,6 +109,19 @@ const BehaviorSection: React.FC = () => {
           </Select>
           {hint ? <span className="text-xs text-gray-400">{hint}</span> : null}
         </div>
+      </SettingRow>
+      <SettingRow
+        hint={t("重新查看萌新 / 创作者引导，不影响任何现有配置")}
+        label={t("首次启动引导")}
+      >
+        <Button
+          size="sm"
+          startContent={<ArrowClockwise20Regular />}
+          variant="flat"
+          onPress={() => void replayOobe()}
+        >
+          {t("重新运行引导")}
+        </Button>
       </SettingRow>
     </Section>
   );

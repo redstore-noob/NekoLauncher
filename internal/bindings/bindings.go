@@ -68,4 +68,5 @@ func New() *API {
 func (a *API) init() {
 	a.wireInstance()
 	a.wireMusic()
+	a.wireModName()
 }

@@ -15,7 +15,7 @@ using System.Text;
 
 namespace NekoSolo.Installer
 {
-    internal sealed class SoloPayload : IDisposable
+    internal sealed class SoloPayload : IDisposable, IPayloadPackage
     {
         private readonly FileStream _stream;
         private readonly long _payloadStart;
@@ -43,7 +43,7 @@ namespace NekoSolo.Installer
             if (_stream != null) _stream.Dispose();
         }
 
-        public static SoloPayload Open(string exePath)
+        public static IPayloadPackage Open(string exePath)
         {
             var stream = new FileStream(exePath, FileMode.Open, FileAccess.Read, FileShare.Read);
             try
@@ -55,9 +55,12 @@ namespace NekoSolo.Installer
                 stream.Seek(-32, SeekOrigin.End);
                 ReadExact(stream, trailer, trailer.Length);
 
+                // 魔数 "NKSOLOn" + 版本字节：0x01 = 载荷内嵌（v1），0x02 = 在线安装包（v2）
+                bool v2 = trailer[7] == 0x02;
                 if (trailer[0] != (byte)'N' || trailer[1] != (byte)'K' || trailer[2] != (byte)'S' ||
                     trailer[3] != (byte)'O' || trailer[4] != (byte)'L' || trailer[5] != (byte)'O' ||
-                    trailer[6] != (byte)'1' || trailer[7] != 0x01)
+                    trailer[6] != (byte)'1' && trailer[6] != (byte)'2' ||
+                    trailer[7] != 0x01 && trailer[7] != 0x02)
                     throw new InvalidDataException("不是有效的 NekoSolo 安装包（尾标魔数不符）。");
 
                 long offset = BitConverter.ToInt64(trailer, 8);
@@ -67,23 +70,43 @@ namespace NekoSolo.Installer
                 if (offset < 0 || length < 0 || offset + length > stream.Length - 32)
                     throw new InvalidDataException("NekoSolo 安装包尾标非法（载荷越界），文件可能已损坏。");
 
+                if (v2)
+                {
+                    // v2：该区间是远程清单 JSON（元数据 + 载荷下载地址），安装时再下载载荷
+                    stream.Seek(offset, SeekOrigin.Begin);
+                    var manifestBytes = new byte[length];
+                    ReadExact(stream, manifestBytes, manifestBytes.Length);
+                    var crc32 = new Crc32();
+                    crc32.Update(manifestBytes, 0, manifestBytes.Length);
+                    if (crc32.Value != crc)
+                        throw new InvalidDataException("在线安装包清单校验失败（CRC 不符），文件可能已损坏，请重新下载。");
+
+                    var manifest = ParseManifest(Encoding.UTF8.GetString(manifestBytes));
+                    if (manifest.Format != 1)
+                        throw new InvalidDataException(
+                            "不支持的 NekoSolo 清单格式：" + manifest.Format + "。请获取更新版本的安装器。");
+                    if (!manifest.IsRemote)
+                        throw new InvalidDataException("在线安装包缺少载荷下载地址（payloadUrl），文件可能已损坏。");
+                    return new RemotePayload(manifest);
+                }
+
                 // CRC32（IEEE）校验：网盘下载损坏是分发的头号事故
                 stream.Seek(offset, SeekOrigin.Begin);
-                var crc32 = new Crc32();
+                var payloadCrc32 = new Crc32();
                 var buffer = new byte[81920];
                 long remaining = length;
                 while (remaining > 0)
                 {
                     int read = stream.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
                     if (read <= 0) throw new IOException("读取载荷时文件意外结束。");
-                    crc32.Update(buffer, 0, read);
+                    payloadCrc32.Update(buffer, 0, read);
                     remaining -= read;
                 }
-                if (crc32.Value != crc)
+                if (payloadCrc32.Value != crc)
                     throw new InvalidDataException("载荷校验失败（CRC 不符），安装包可能下载不完整，请重新下载。");
 
-                var manifest = ReadManifest(stream, offset, length);
-                return new SoloPayload(stream, offset, length, manifest);
+                var payloadManifest = ReadManifest(stream, offset, length);
+                return new SoloPayload(stream, offset, length, payloadManifest);
             }
             catch
             {
