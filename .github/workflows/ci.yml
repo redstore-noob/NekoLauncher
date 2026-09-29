@@ -3,7 +3,8 @@ name: NekoLauncher CI
 on:
   push:
     branches: [main, master]
-    tags: ['v*']
+    # 版本标签两种风格都接受：v1.2.3 与 0.2.0（纯数字开头）
+    tags: ['v*', '0.*', '[1-9].*']
   pull_request:
     branches: [main, master]
   workflow_dispatch:
@@ -201,7 +202,8 @@ jobs:
   release:
     name: Release
     needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    # 触发自版本标签（on.push.tags 过滤：v1.2.3 或 0.2.0 风格）即发布
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
