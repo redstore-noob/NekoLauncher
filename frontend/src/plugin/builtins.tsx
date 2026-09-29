@@ -318,8 +318,7 @@ export function registerBuiltins() {
     title: t("时光回溯"),
     description: t("快照总数、存储占用与最近快照时间线，直达实例页管理"),
     icon: <History20Regular />,
-    tileClass:
-      "from-emerald-400 via-teal-500 to-cyan-500 shadow-teal-500/30",
+    tileClass: "from-emerald-400 via-teal-500 to-cyan-500 shadow-teal-500/30",
     render: () => <RewindCard />,
   });
 

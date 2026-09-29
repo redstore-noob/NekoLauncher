@@ -2245,12 +2245,12 @@ const InstancesPage: React.FC = () => {
   return (
     <div
       className="relative h-full w-full flex flex-col overflow-hidden"
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target) setDragActive(false);
+      }}
       onDragOver={(e) => {
         e.preventDefault();
         setDragActive(true);
-      }}
-      onDragLeave={(e) => {
-        if (e.currentTarget === e.target) setDragActive(false);
       }}
       // 实际的落点由 Wails OnFileDrop 处理（能拿到绝对路径），这里只做视觉提示
     >
@@ -2361,7 +2361,8 @@ const InstancesPage: React.FC = () => {
           <div
             ref={listRef}
             className="relative flex-1 overflow-y-auto flex flex-col gap-0.5 outline-none"
-            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- 让实例列表可用 ↑/↓ 键切换
+            // 显式 listbox 角色：这个列表支持 ↑/↓ 键切换与双击（a11y 要求）
+            role="listbox"
             tabIndex={0}
             onDoubleClick={(e) => {
               // 双击列表空白处 → 去下载页装新实例
@@ -3804,6 +3805,9 @@ const InstancesPage: React.FC = () => {
             >
               <div className="flex flex-col gap-3">
                 <Input
+                  /* eslint-disable-next-line jsx-a11y/no-autofocus -- 弹出即输入的场景需要立即聚焦 */
+                  autoFocus
+                  aria-label={t("实例名称")}
                   placeholder={t("输入新的实例名称")}
                   size="sm"
                   value={menuAction === "rename" ? newName : copyName}
@@ -3821,9 +3825,6 @@ const InstancesPage: React.FC = () => {
                   onValueChange={
                     menuAction === "rename" ? setNewName : setCopyName
                   }
-                  aria-label={t("实例名称")}
-                  /* eslint-disable-next-line jsx-a11y/no-autofocus -- 弹出即输入的场景需要立即聚焦 */
-                  autoFocus
                 />
                 <div className="flex justify-end gap-2">
                   <Button size="sm" variant="flat" onPress={onClose}>

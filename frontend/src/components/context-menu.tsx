@@ -97,12 +97,12 @@ export const ContextMenuOverlay: React.FC<{
         className="absolute min-w-44 overflow-hidden rounded-xl border nya-border nya-panel py-1.5 shadow-xl"
         id="nya-context-menu"
         role="menu"
-        tabIndex={-1}
         style={{ left: (pos ?? state).x, top: (pos ?? state).y }}
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
           if (e.key === "Escape") onClose();
         }}
-        onClick={(e) => e.stopPropagation()}
       >
         {state.items.map((item, index) =>
           item.divider ? (
