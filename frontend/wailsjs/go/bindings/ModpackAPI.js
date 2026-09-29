@@ -6,6 +6,10 @@ export function CollectExportContent(arg1) {
   return window['go']['bindings']['ModpackAPI']['CollectExportContent'](arg1);
 }
 
+export function DownloadSoloStub() {
+  return window['go']['bindings']['ModpackAPI']['DownloadSoloStub']();
+}
+
 export function ExportModpack(arg1, arg2, arg3) {
   return window['go']['bindings']['ModpackAPI']['ExportModpack'](arg1, arg2, arg3);
 }

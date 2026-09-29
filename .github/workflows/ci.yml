@@ -128,9 +128,17 @@ jobs:
         shell: bash
         run: |
           wails build -platform windows/amd64 -webview2 embed
-          # 额外产出 NSIS/便携 zip：压缩 build/bin 下除安装器外的主要内容
-          7z a -tzip "NekoLauncher-windows-amd64-portable.zip" \
-            "./build/bin/NekoLauncher.exe"
+          # ---- NekoSolo 安装器模板：随启动器一起分发 ----
+          # runner 自带 .NET SDK，能构建 net48 的 stub；模板打进 portable zip 的
+          # tools/NekoSolo/（启动器导出 exe 的查找位置之一），并单独作为 Release 资产
+          # 上传，供旧版启动器的"自动下载模板"兜底。
+          dotnet build NekoSolo/NekoSolo.Installer/NekoSolo.Installer.csproj -c Release
+          mkdir -p build/tools/NekoSolo dist
+          cp NekoSolo/NekoSolo.Installer/bin/Release/net48/NekoSolo.Installer.exe \
+            build/tools/NekoSolo/NekoSolo.Installer.exe
+          cp build/tools/NekoSolo/NekoSolo.Installer.exe dist/NekoSolo.Installer.exe
+          cd build && 7z a -tzip ../NekoLauncher-windows-amd64-portable.zip \
+            bin/NekoLauncher.exe tools/NekoSolo/NekoSolo.Installer.exe
 
       - name: Build (Linux)
         if: runner.os == 'Linux'

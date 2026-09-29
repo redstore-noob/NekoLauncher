@@ -6,6 +6,8 @@ import {context} from '../models';
 
 export function CollectExportContent(arg1:string):Promise<Array<modpack.ModpackContentItem>>;
 
+export function DownloadSoloStub():Promise<solo.StubStatus>;
+
 export function ExportModpack(arg1:modpack.ModpackExportOptions,arg2:string,arg3:string):Promise<modpack.ModpackExportResult>;
 
 export function ExportSoloPack(arg1:solo.SoloExportOptions,arg2:string):Promise<modpack.ModpackExportResult>;

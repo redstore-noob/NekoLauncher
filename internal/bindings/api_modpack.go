@@ -43,6 +43,16 @@ func (a *ModpackAPI) GetSoloStubStatus() solo.StubStatus {
 	return solo.StubTemplateStatus()
 }
 
+// DownloadSoloStub 在线获取安装器模板（从启动器的 GitHub Releases 下载到
+// 存储目录），成功后 GetSoloStubStatus 即为就绪。
+func (a *ModpackAPI) DownloadSoloStub() (solo.StubStatus, error) {
+	path, err := solo.DownloadStubTemplate(callCtx(a.ctx))
+	if err != nil {
+		return solo.StubStatus{}, err
+	}
+	return solo.StubStatus{Found: true, Path: path}, nil
+}
+
 // ExportSoloPack 导出 NekoSolo 安装包（启动器 + 可选捆绑 Java + 整合包三合一 exe）；
 // 进度复用 modpack:exportProgress 事件推送。
 func (a *ModpackAPI) ExportSoloPack(options solo.SoloExportOptions, outputPath string) (modpack.ModpackExportResult, error) {

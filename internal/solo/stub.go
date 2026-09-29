@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"nekolauncher/internal/config"
 )
 
 // stubEnvKey 指定模板路径的环境变量（测试与高级用户覆盖用）。
@@ -73,6 +75,8 @@ func defaultStubSearchBases() []string {
 			filepath.Join(exeDir, "NekoSolo"),
 		)
 	}
+	// 存储目录：动态下载的模板落点（DownloadStubTemplate），随用户数据走
+	bases = append(bases, filepath.Join(config.StorageDirectory(), "tools", "NekoSolo"))
 	if cwd, err := os.Getwd(); err == nil {
 		bases = append(bases, filepath.Join(cwd, "NekoSolo", "build"))
 	}

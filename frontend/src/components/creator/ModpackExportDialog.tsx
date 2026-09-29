@@ -35,6 +35,7 @@ import {
   RadioGroup,
   Select,
   SelectItem,
+  Spinner,
   Textarea,
 } from "@heroui/react";
 import { FolderZip20Regular } from "@fluentui/react-icons";
@@ -52,6 +53,7 @@ import {
   ExportModpack,
   ExportSoloPack,
   GetSoloStubStatus,
+  DownloadSoloStub,
   LoadExportProfile,
   NewExportOptions,
   SaveExportProfile,
@@ -181,6 +183,9 @@ const ModpackExportDialog: React.FC<{
     typeof exportPrefs.bundleJava === "boolean" ? exportPrefs.bundleJava : true,
   );
   const [stubFound, setStubFound] = useState(true);
+  // 模板缺失时在线补下（启动器 Release 的 NekoSolo.Installer.exe 资产）
+  const [stubDownloading, setStubDownloading] = useState(false);
+  const [stubMessage, setStubMessage] = useState("");
   // 在线安装包（v2）：载荷 zip 上传到 GitHub Releases 等 https 地址，
   // exe 只有小体积安装器 + 远程清单，玩家安装时动态下载
   const [remoteDist, setRemoteDist] = useState(false);
@@ -195,6 +200,22 @@ const ModpackExportDialog: React.FC<{
 
   const progressPercent =
     progressTotal > 0 ? (100 * progressCurrent) / progressTotal : 0;
+
+  // 在线补下安装器模板（存储目录 tools/NekoSolo/），成功后导出立即可用
+  const downloadStub = async () => {
+    setStubDownloading(true);
+    setStubMessage("");
+    try {
+      await DownloadSoloStub();
+      setStubFound(true);
+    } catch (ex) {
+      setStubMessage(
+        ex instanceof Error ? ex.message : t("下载失败，请稍后重试。"),
+      );
+    } finally {
+      setStubDownloading(false);
+    }
+  };
 
   const instanceSummary = (() => {
     if (!details) return contentDir || t("选择一个实例版本后开始制作");
@@ -1029,10 +1050,31 @@ const ModpackExportDialog: React.FC<{
                           )}
                         </div>
                         {!stubFound ? (
-                          <div className="break-words rounded-lg bg-danger-50 p-2 px-2.5 text-[11px] text-danger-500 dark:bg-danger-50/10">
-                            {t(
-                              "未找到 NekoSolo 安装器模板（NekoSolo/build/NekoSolo.Installer.exe），请先构建 NekoSolo 安装器，否则导出会失败。",
+                          <div className="flex flex-col gap-1.5 break-words rounded-lg bg-danger-50 p-2 px-2.5 text-[11px] text-danger-500 dark:bg-danger-50/10">
+                            <span>
+                              {t(
+                                "未找到 NekoSolo 安装器模板（NekoSolo/build/NekoSolo.Installer.exe），导出会失败。可以从启动器的 Release 自动下载（约 10 MB）。",
+                              )}
+                            </span>
+                            {stubDownloading ? (
+                              <span className="flex items-center gap-1.5">
+                                <Spinner size="sm" />
+                                {t("正在下载安装器模板…")}
+                              </span>
+                            ) : (
+                              <Button
+                                className="self-start"
+                                color="primary"
+                                size="sm"
+                                variant="flat"
+                                onPress={() => void downloadStub()}
+                              >
+                                {t("自动下载安装器模板")}
+                              </Button>
                             )}
+                            {stubMessage ? (
+                              <span className="break-words">{stubMessage}</span>
+                            ) : null}
                           </div>
                         ) : null}
                         <Checkbox
