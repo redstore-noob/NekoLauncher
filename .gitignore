@@ -36,6 +36,9 @@ frontend-vue-backup/package.json.md5
 /.gocache/
 /.gomodcache/
 
+# 沙箱 ACL 修复产生的本地产物（诊断工具的输出，与仓库内容无关）
+/.acl-recovery/
+
 # NekoSolo 安装器构建产物
 NekoSolo/NekoSolo.Installer/bin/
 NekoSolo/NekoSolo.Installer/obj/
@@ -56,3 +59,4 @@ NekoSolo/NekoSolo.Installer/obj/
 .trae/
 .aider*
 .copilot*
+.zcode/

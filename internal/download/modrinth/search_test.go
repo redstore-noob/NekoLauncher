@@ -158,12 +158,17 @@ func TestSearchWithLoaderSendsFiltersAndParsesHits(t *testing.T) {
 // TestSearchFallsBackToMirrorWhenOfficialFails 防的回归：
 // 官方 5xx 之后不再尝试镜像（国内网络下等于"搜索永远失败"），
 // 或者回退成功却不记录 UsedMirror（界面无法提示"已走镜像"）。
+//
+// 注：这些用例原本经 SearchQuery 进入，而 SearchQuery 只是
+// SearchFull(ctx, type, query, "", limit) 的薄包装且没有任何生产调用方，
+// 已删除。镜像回退逻辑在 SearchFull 里，因此用例改为直接打 SearchFull，
+// 覆盖度不变。
 func TestSearchFallsBackToMirrorWhenOfficialFails(t *testing.T) {
 	official := newStubEndpoint(t, http.StatusInternalServerError, "")
 	mirror := newStubEndpoint(t, http.StatusOK, searchPayload)
 	useStubEndpoints(t, official, mirror)
 
-	hits, err := SearchQuery(context.Background(), "mod", "sodium", 10)
+	hits, err := SearchFull(context.Background(), "mod", "sodium", "", 10)
 	if err != nil {
 		t.Fatalf("镜像可用时不该失败：%v", err)
 	}
@@ -188,10 +193,10 @@ func TestSearchPrefersMirrorAfterFallbackSuccess(t *testing.T) {
 	mirror := newStubEndpoint(t, http.StatusOK, searchPayload)
 	useStubEndpoints(t, official, mirror)
 
-	if _, err := SearchQuery(context.Background(), "mod", "sodium", 10); err != nil {
+	if _, err := SearchFull(context.Background(), "mod", "sodium", "", 10); err != nil {
 		t.Fatalf("第一次搜索应靠镜像成功：%v", err)
 	}
-	if _, err := SearchQuery(context.Background(), "mod", "lithium", 10); err != nil {
+	if _, err := SearchFull(context.Background(), "mod", "lithium", "", 10); err != nil {
 		t.Fatalf("第二次搜索应靠镜像成功：%v", err)
 	}
 
@@ -211,7 +216,7 @@ func TestSearchDoesNotFallbackOnNotFound(t *testing.T) {
 	mirror := newStubEndpoint(t, http.StatusOK, searchPayload)
 	useStubEndpoints(t, official, mirror)
 
-	if _, err := SearchQuery(context.Background(), "mod", "不存在的项目", 10); err == nil {
+	if _, err := SearchFull(context.Background(), "mod", "不存在的项目", "", 10); err == nil {
 		t.Fatal("404 必须报错，不能伪装成空结果")
 	}
 	if got := official.count(); got != 1 {
@@ -229,7 +234,7 @@ func TestSearchErrorMentionsBothEndpointsAndNetwork(t *testing.T) {
 	mirror := newStubEndpoint(t, http.StatusBadGateway, "")
 	useStubEndpoints(t, official, mirror)
 
-	_, err := SearchQuery(context.Background(), "mod", "sodium", 10)
+	_, err := SearchFull(context.Background(), "mod", "sodium", "", 10)
 	if err == nil {
 		t.Fatal("两个地址都失败时必须返回错误")
 	}
@@ -247,7 +252,7 @@ func TestSearchWithoutMirrorReportsOfficialOnlyHint(t *testing.T) {
 	official := newStubEndpoint(t, http.StatusInternalServerError, "")
 	useStubEndpoints(t, official, nil)
 
-	_, err := SearchQuery(context.Background(), "mod", "sodium", 10)
+	_, err := SearchFull(context.Background(), "mod", "sodium", "", 10)
 	if err == nil {
 		t.Fatal("官方失败且无镜像时必须返回错误")
 	}
@@ -326,27 +331,6 @@ func TestGetVersionsParseFailureReturnsEmptyList(t *testing.T) {
 	}
 	if got := mirror.count(); got != 0 {
 		t.Fatalf("镜像请求次数 = %d，期望 0（解析失败不该回退）", got)
-	}
-}
-
-// TestGetSupportedGameVersionsSortsNumerically 防的回归：
-// 支持的 MC 版本按字符串排序（1.9.4 排在 1.10.2 之后），下拉框顺序错乱。
-func TestGetSupportedGameVersionsSortsNumerically(t *testing.T) {
-	official := newStubEndpoint(t, http.StatusOK, versionsPayload)
-	useStubEndpoints(t, official, nil)
-
-	versions, err := GetSupportedGameVersions(context.Background(), "AANobbMI")
-	if err != nil {
-		t.Fatalf("查询支持版本不应失败：%v", err)
-	}
-	want := []string{"1.21.1", "1.21", "1.20.1"}
-	if len(versions) != len(want) {
-		t.Fatalf("支持版本 = %v，期望 %v", versions, want)
-	}
-	for index := range want {
-		if versions[index] != want[index] {
-			t.Fatalf("支持版本 = %v，期望 %v", versions, want)
-		}
 	}
 }
 

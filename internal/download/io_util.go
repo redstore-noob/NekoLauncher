@@ -90,6 +90,23 @@ func isHTTPStatusError(err error) bool {
 	return errors.As(err, &statusErr)
 }
 
+// isHTTPStatus 判断错误链中是否包含指定状态码的 HTTP 状态错误。
+func isHTTPStatus(err error, statusCode int) bool {
+	var statusErr *httpStatusError
+	return errors.As(err, &statusErr) && statusErr.StatusCode == statusCode
+}
+
+// forgeCDNFallbackURL CurseForge CDN 双域名兜底：downloadUrl 给的是
+// edge.forgecdn.net，但该域名的 GET 在部分网络下直接 404（HEAD 才 302 跳转
+// 到 mediafilez，实测 2026-09）；mediafilez.forgecdn.net 与它路径同构且可达。
+// 输入是 edge 域名时返回换好域名的地址，其余返回空串（无需兜底）。
+func forgeCDNFallbackURL(downloadURL string) string {
+	if strings.Contains(downloadURL, "://edge.forgecdn.net/") {
+		return strings.Replace(downloadURL, "://edge.forgecdn.net/", "://mediafilez.forgecdn.net/", 1)
+	}
+	return ""
+}
+
 // rangeMismatchError 断点续传的临时文件与远端内容不一致（416 且长度对不上）。
 // 断点信息已被丢弃，错误本身按瞬时失败处理：重试一次即可从零完整下载。
 type rangeMismatchError struct{}

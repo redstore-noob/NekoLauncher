@@ -97,8 +97,15 @@ func (w *pluginStyleWatcher) poll(root string) []styleChange {
 	return groupStyleChanges(stable)
 }
 
+// pluginStyleWatchMaxDepth 递归深度上限：CSS 不会埋得再深，挡住异常目录树。
+const pluginStyleWatchMaxDepth = 8
+
 // scanPluginStyles 扫描插件根目录下全部 .css 文件，返回 "插件id/相对路径" → 指纹。
 // 根目录不存在返回空表（还没装过插件不算错误）。
+//
+// 用递归 ReadDir 而不是 filepath.Walk：ReadDir 在 Windows 上自带目录项元数据，
+// 只对 .css 文件调 Info()，不必为每个无关文件付一次 stat；插件目录里可能
+// 塞着几万个内容文件，这笔账不能省。
 func scanPluginStyles(root string) (map[string]styleStamp, error) {
 	stamps := make(map[string]styleStamp)
 	entries, err := os.ReadDir(root)
@@ -114,27 +121,43 @@ func scanPluginStyles(root string) (map[string]styleStamp, error) {
 			continue
 		}
 		pluginID := entry.Name()
-		if err := filepath.Walk(filepath.Join(root, pluginID), func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil {
-				return nil // 单个文件不可读不阻塞整轮
-			}
-			if info.IsDir() || !strings.EqualFold(filepath.Ext(path), ".css") {
-				return nil
-			}
-			relative, err := filepath.Rel(filepath.Join(root, pluginID), path)
-			if err != nil {
-				return nil
-			}
-			stamps[pluginID+"/"+filepath.ToSlash(relative)] = styleStamp{
-				modTime: info.ModTime().UnixNano(),
-				size:    info.Size(),
-			}
-			return nil
-		}); err != nil {
-			continue
-		}
+		pluginDir := filepath.Join(root, pluginID)
+		scanPluginStylesDir(pluginDir, pluginDir, pluginID, 0, stamps)
 	}
 	return stamps, nil
+}
+
+// scanPluginStylesDir 递归收录 directory 下的 .css 文件（relative 取相对插件目录的路径）。
+func scanPluginStylesDir(directory, pluginDir, pluginID string, depth int, stamps map[string]styleStamp) {
+	if depth > pluginStyleWatchMaxDepth {
+		return
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return // 单个目录不可读不阻塞整轮
+	}
+	for _, entry := range entries {
+		path := filepath.Join(directory, entry.Name())
+		if entry.IsDir() {
+			scanPluginStylesDir(path, pluginDir, pluginID, depth+1, stamps)
+			continue
+		}
+		if !strings.EqualFold(filepath.Ext(entry.Name()), ".css") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue // 单个文件不可读不阻塞整轮
+		}
+		relative, err := filepath.Rel(pluginDir, path)
+		if err != nil {
+			continue
+		}
+		stamps[pluginID+"/"+filepath.ToSlash(relative)] = styleStamp{
+			modTime: info.ModTime().UnixNano(),
+			size:    info.Size(),
+		}
+	}
 }
 
 // groupStyleChanges 把 "id/文件" 键按插件分组（顺序保持传入序）。

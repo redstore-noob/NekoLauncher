@@ -12,21 +12,6 @@ import (
 
 // ---- 内容扫描 ----
 
-// ReadMods 读取目录下全部 Mod。
-func (a *ContentAPI) ReadMods(directory string) []content.GameContentEntry {
-	return content.ReadMods(callCtx(a.ctx), directory)
-}
-
-// ReadResourcePacks 读取资源包。
-func (a *ContentAPI) ReadResourcePacks(directory string) []content.GameContentEntry {
-	return content.ReadResourcePacks(callCtx(a.ctx), directory)
-}
-
-// ReadShaders 读取光影包。
-func (a *ContentAPI) ReadShaders(directory string) []content.GameContentEntry {
-	return content.ReadShaders(callCtx(a.ctx), directory)
-}
-
 // ReadSaves 读取存档。
 func (a *ContentAPI) ReadSaves(directory string) []content.GameContentEntry {
 	return content.ReadSaves(callCtx(a.ctx), directory)

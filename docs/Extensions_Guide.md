@@ -121,15 +121,21 @@ styles:                     # 样式文件（相对插件目录、限 .css）：
 |---|---|
 | `storage` | `config.get / set / clear` |
 | `launch` | `launchSelected` / `launchVersion` |
-| `instances` | `getInstances` / `getSaves` / `selectInstance` / `getVersionProfile` / `saveVersionProfile` / `getVersionDetails` / `getScreenshots` |
+| `instances` | 只读查询：`getInstances` / `getSaves` / `getVersionProfile` / `getVersionDetails` / `getScreenshots` |
+| `instances-write` | 改全局状态：`selectInstance` / `saveVersionProfile`（兼容旧的 `instances`，但新插件请显式声明写权限） |
 | `accounts` | `getAccounts` |
-| `launcher-config` | `getLauncherSettings` / `saveLauncherSettings` |
+| `launcher-config` | `getLauncherSettings` |
+| `launcher-config-write` | `saveLauncherSettings`（兼容旧的 `launcher-config`，但新插件请显式声明写权限） |
 | `notifications` | `notify.*` |
 | `clipboard` | `setClipboard` |
 | `open-url` | `openUrl` |
 | `open-path` | `openPath`（叠加"仅插件目录内"的宿主侧限制） |
 | `server-status` | `getServerStatus` |
 | `styles` | `styles.inject` / `styles.remove`（全局 CSS 注入，可自定义任意控件样式） |
+
+读 / 写权限拆分（`instances-write`、`launcher-config-write`）的动机：让用户在安装页
+就能看出插件**会不会改全局状态**。只声明读权限的存量插件调用写 API 仍会放行并记
+一条控制台警告，但新插件应直接声明写权限，后续版本可能移除该兼容。
 
 无需权限（永远可用）：元信息、`react/h/Fragment/ui/icons/HomeCard`、`registerWidget` / `registerPage`、`log`、`t`、`confirm`、`getLaunchState`、`onLaunchPhaseChange`、`onInstancesChanged`、`onCleanup`。插件管理页会展示每个插件声明的权限列表。
 
@@ -152,16 +158,16 @@ styles:                     # 样式文件（相对插件目录、限 .css）：
 | 系统 | `setClipboard` | `clipboard` | 只写不读 |
 | 系统 | `openUrl` | `open-url` | 仅 http(s) |
 | 系统 | `openPath` | `open-path` | 仅插件目录内 |
-| 查询 | `getInstances` / `getSaves` / `getVersionDetails` / `getScreenshots` | `instances` | 只读；`getVersionDetails` 含加载器信息与全部内容列表 |
-| 写入 | `selectInstance`（切换全局选中）/ `getVersionProfile` / `saveVersionProfile`（实例启动档案） | `instances` | 应基于 get 的返回值原样修改后写回 |
+| 查询 | `getInstances` / `getSaves` / `getVersionProfile` / `getVersionDetails` / `getScreenshots` | `instances` | 只读；`getVersionDetails` 含加载器信息与全部内容列表 |
+| 写入 | `selectInstance`（切换全局选中）/ `saveVersionProfile`（实例启动档案） | `instances-write`（兼容旧 `instances`） | 应基于 get 的返回值原样修改后写回 |
 | 查询 | `getAccounts` | `accounts` | 只读摘要（含头像），**凭据不出宿主** |
 | 查询 | `getLaunchState` | — | 只读启动状态 |
 | 查询 | `getServerStatus` | `server-status` | 连接失败抛错由插件接住 |
-| 写入 | `getLauncherSettings` / `saveLauncherSettings`（全局启动设置） | `launcher-config` | 应基于 get 的返回值原样修改后写回 |
+| 写入 | `saveLauncherSettings`（全局启动设置） | `launcher-config-write`（兼容旧 `launcher-config`） | 应基于 get 的返回值原样修改后写回 |
 | 启动 | `launchSelected` / `launchVersion` | `launch` | 与手点同管线；`launchVersion` 校验版本存在且**不改变**用户当前选中 |
 | 事件 | `onLaunchPhaseChange` / `onInstancesChanged` | — | 返回取消订阅函数；卸载/重载时宿主自动清理 |
-| 设置 | `config.get / set / clear` | `storage` | 键前缀隔离；仅字符串值；种子来自清单 `settings` |
-| 样式 | `styles.inject(css, key?)` / `styles.remove(key)` | `styles` | 注入全局 CSS（可改任意控件样式）；同 key 重复注入为替换；卸载/重载/停用时宿主自动移除该插件全部样式。静态样式文件直接用清单 `styles` 字段（宿主监听文件变化，保存即热生效），无需写代码 |
+| 设置 | `config.get / set / clear` | `storage` | 键前缀隔离；仅字符串值；种子来自清单 `settings`；**卸载插件时会一并删除其全部配置键** |
+| 样式 | `styles.inject(css, key?)` / `styles.remove(key)` | `styles` | 注入全局 CSS（可改任意控件样式，含圆角变量 `--nya-radius-*`，见 CSS_STYLE_TABLE）；同 key 重复注入为替换；卸载/重载/停用时宿主自动移除该插件全部样式。静态样式文件直接用清单 `styles` 字段（宿主监听文件变化，保存即热生效），无需写代码。宿主会对注入内容做约束：单条上限 256 KB、`@import` 语句一律移除（`<style>` 里的 `@import` 只有指向外网的才有意义，宿主不允许插件借此发外部请求） |
 
 `WidgetRenderContext`（小组件注入）自 v1 封版：只增不改名，改名/删除即升主版本。
 

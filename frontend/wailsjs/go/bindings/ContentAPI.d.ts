@@ -36,13 +36,7 @@ export function ListSaveSnapshots(arg1:string):Promise<Array<content.SaveSnapsho
 
 export function LookupModNameTranslations(arg1:Array<string>):Promise<Record<string, string>>;
 
-export function ReadMods(arg1:string):Promise<Array<content.GameContentEntry>>;
-
-export function ReadResourcePacks(arg1:string):Promise<Array<content.GameContentEntry>>;
-
 export function ReadSaves(arg1:string):Promise<Array<content.GameContentEntry>>;
-
-export function ReadShaders(arg1:string):Promise<Array<content.GameContentEntry>>;
 
 export function RefreshModNameTranslations(arg1:Array<string>):Promise<void>;
 

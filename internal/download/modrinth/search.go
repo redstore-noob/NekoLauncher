@@ -16,11 +16,6 @@ func Search(ctx context.Context, projectType string, limit int) ([]models.Modrin
 	return SearchFull(ctx, projectType, "", "", limit)
 }
 
-// SearchQuery 通用搜索（带关键词）。
-func SearchQuery(ctx context.Context, projectType, query string, limit int) ([]models.ModrinthProject, error) {
-	return SearchFull(ctx, projectType, query, "", limit)
-}
-
 // SearchFull 通用搜索（带关键词 + MC 版本过滤）。
 // projectType: mod / modpack / shader / resourcepack；
 // gameVersion: 按 MC 版本过滤（可选）；limit: 返回数量上限。
@@ -115,24 +110,4 @@ func uniqueNonEmpty(values []string) []string {
 		result = append(result, trimmed)
 	}
 	return result
-}
-
-// GetMods Mods 列表。
-func GetMods(ctx context.Context, limit int) ([]models.ModrinthProject, error) {
-	return Search(ctx, "mod", limit)
-}
-
-// GetModpacks 整合包列表。
-func GetModpacks(ctx context.Context, limit int) ([]models.ModrinthProject, error) {
-	return Search(ctx, "modpack", limit)
-}
-
-// GetShaders 光影包列表。
-func GetShaders(ctx context.Context, limit int) ([]models.ModrinthProject, error) {
-	return Search(ctx, "shader", limit)
-}
-
-// GetResourcePacks 材质包列表。
-func GetResourcePacks(ctx context.Context, limit int) ([]models.ModrinthProject, error) {
-	return Search(ctx, "resourcepack", limit)
 }

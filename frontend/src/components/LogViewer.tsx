@@ -65,7 +65,6 @@ const LogViewer: React.FC<LogViewerProps> = ({ isOpen, onClose }) => {
     return () => window.clearInterval(timer);
   }, [isOpen, reload]);
 
-  // 去掉结尾空行
   const lines = useMemo(() => {
     const arr = content.split("\n");
 

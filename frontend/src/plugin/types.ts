@@ -241,7 +241,7 @@ export interface PluginApi {
   /**
    * 切换"当前选中"的实例——这是显式的全局选择变更（主页展示、用户手点
    * 启动都会跟着变；与 launchVersion 的"不落选中"相反）。版本不存在或
-   * 实例扫描未就绪时抛错。需要权限：instances
+   * 实例扫描未就绪时抛错。需要权限：instances-write（兼容旧的 instances）
    */
   selectInstance: (versionId: string) => Promise<void>;
   /**
@@ -254,7 +254,7 @@ export interface PluginApi {
   ) => Promise<config.GameVersionProfile>;
   /**
    * 保存实例启动档案：应基于 getVersionProfile 的返回值原样修改后写回。
-   * 需要权限：instances
+   * 需要权限：instances-write（兼容旧的 instances）
    */
   saveVersionProfile: (profile: config.GameVersionProfile) => Promise<void>;
   /**
@@ -262,7 +262,7 @@ export interface PluginApi {
    * 需要权限：launcher-config
    */
   getLauncherSettings: () => Promise<config.GlobalLaunchSettings>;
-  /** 保存启动器全局启动设置（应基于 getLauncherSettings 的返回值原样修改）。需要权限：launcher-config */
+  /** 保存启动器全局启动设置（应基于 getLauncherSettings 的返回值原样修改）。需要权限：launcher-config-write（兼容旧的 launcher-config） */
   saveLauncherSettings: (
     settings: config.GlobalLaunchSettings,
   ) => Promise<void>;

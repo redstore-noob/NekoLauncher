@@ -217,6 +217,7 @@ const dict: Record<string, string> = {
   打开: "Open",
   "打开 Java 下载页": "Open Java download page",
   "打开{0}": "Open {0}",
+  打开播放页: "Open now playing",
   打开仓库主页: "Open repository page",
   打开插件目录: "Open plugin directory",
   "打开插件目录失败：{0}": "Failed to open plugin directory: {0}",

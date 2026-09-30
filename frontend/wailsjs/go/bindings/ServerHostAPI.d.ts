@@ -58,8 +58,6 @@ export function RestartServer(arg1:string):Promise<void>;
 
 export function RestoreServerBackup(arg1:string,arg2:string):Promise<void>;
 
-export function RunRCONCommand(arg1:string,arg2:string):Promise<string>;
-
 export function RunServerPlayerCommand(arg1:string,arg2:string):Promise<void>;
 
 export function SaveBackupSettings(arg1:mcserver.BackupSettings):Promise<void>;

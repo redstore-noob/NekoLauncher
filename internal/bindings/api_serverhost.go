@@ -101,12 +101,6 @@ func (a *ServerHostAPI) SendServerCommand(id, command string) error {
 	return mcserver.Default().SendServerCommand(id, command)
 }
 
-// RunRCONCommand 通过 RCON 执行指令并返回响应（广播、查玩家等；
-// 比写 stdin 稳，能拿到结构化响应）。未启用 RCON 时返回错误。
-func (a *ServerHostAPI) RunRCONCommand(id, command string) (string, error) {
-	return mcserver.Default().RunRCONCommand(id, command)
-}
-
 // ---- 服务端内容（mods / plugins） ----
 
 // ServerContentKindForCore 服务器核心对应的内容目录类型（mods / plugins）。

@@ -192,7 +192,6 @@ const ModpackExportDialog: React.FC<{
   const [remoteDist, setRemoteDist] = useState(false);
   const [payloadUrl, setPayloadUrl] = useState("");
 
-  // 状态
   const [packing, setPacking] = useState(false);
   // cancelRequested 已点过「取消」：防重入，也让 catch 区分主动取消与真实失败
   const [cancelRequested, setCancelRequested] = useState(false);

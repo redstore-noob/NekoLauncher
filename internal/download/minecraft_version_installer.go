@@ -923,12 +923,18 @@ func resolveRelativePath(root, relativePath string) (string, error) {
 	return target, nil
 }
 
-func isSHA1(value string) bool {
-	if len(value) != 40 {
+// isHexDigest 该字符串是否为给定字符长度的十六进制摘要（大小写均可）。
+// 用于在比对前挡掉占位符/写坏的哈希值（长度不对、含非十六进制字符）。
+func isHexDigest(value string, size int) bool {
+	if len(value) != size {
 		return false
 	}
 	_, err := hex.DecodeString(value)
 	return err == nil
+}
+
+func isSHA1(value string) bool {
+	return isHexDigest(value, sha1.Size*2)
 }
 
 func calculateSpeed(completedBytes int64, started time.Time) float64 {

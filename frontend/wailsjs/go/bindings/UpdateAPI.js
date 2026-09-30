@@ -18,10 +18,6 @@ export function GetAutoUpdateEnabled() {
   return window['go']['bindings']['UpdateAPI']['GetAutoUpdateEnabled']();
 }
 
-export function GetLauncherVersion() {
-  return window['go']['bindings']['UpdateAPI']['GetLauncherVersion']();
-}
-
 export function GetUpdateChannel() {
   return window['go']['bindings']['UpdateAPI']['GetUpdateChannel']();
 }

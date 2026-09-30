@@ -58,6 +58,9 @@ func TestLiveModrinthSearchAndVersions(t *testing.T) {
 
 // TestLiveModrinthMirrorOnly 真连国内镜像：把主地址设成镜像、禁用回退，
 // 验证"官方不通时镜像这条路真的能走通"（这是 X-3 国内可用性的核心假设）。
+//
+// 注：原本经 SearchQuery 进入，而 SearchQuery 已作为无调用方的薄包装删除，
+// 这里改为直接打 SearchFull（镜像回退逻辑所在），覆盖度不变。
 func TestLiveModrinthMirrorOnly(t *testing.T) {
 	liveResourcesEnabled(t)
 	SetEndpoints(MirrorAPIRoot, "")
@@ -66,7 +69,7 @@ func TestLiveModrinthMirrorOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	hits, err := SearchQuery(ctx, "mod", "sodium", 3)
+	hits, err := SearchFull(ctx, "mod", "sodium", "", 3)
 	if err != nil {
 		t.Fatalf("镜像 %s 搜索失败：%v", MirrorAPIRoot, err)
 	}

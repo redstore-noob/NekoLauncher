@@ -101,9 +101,6 @@ import {
   ReadTextFile,
 } from "../../wailsjs/go/bindings/SystemAPI";
 
-// ------------------------------------------------------------------
-// 类型定义
-// ------------------------------------------------------------------
 
 interface AiProvider {
   id: string;
@@ -197,9 +194,6 @@ interface AiSettings {
   showToolCalls: boolean;
 }
 
-// ------------------------------------------------------------------
-// 常量与默认值
-// ------------------------------------------------------------------
 
 const BUILTIN_PROVIDERS: AiProvider[] = [
   {
@@ -765,9 +759,6 @@ const ANTHROPIC_TOOLS = TOOL_SPECS.map((s) => ({
   input_schema: jsonSchemaOf(s),
 }));
 
-// ------------------------------------------------------------------
-// 工具函数
-// ------------------------------------------------------------------
 // API 错误分类与友好提示
 // ------------------------------------------------------------------
 
@@ -2287,9 +2278,6 @@ function buildSystemPrompt(settings: AiSettings): string {
   return `${settings.systemPrompt}\n\n## 当前权限状态（用户可在 AI 设置 → 实例操作权限中修改）\n${permissionStatus}`;
 }
 
-// ------------------------------------------------------------------
-// 主组件
-// ------------------------------------------------------------------
 
 const AiPage: React.FC = () => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -2381,7 +2369,6 @@ const AiPage: React.FC = () => {
     };
   }, [activeSession, settings.systemPrompt, settings.contextWindow]);
 
-  // 初始化加载
   useEffect(() => {
     // 其它页面（实例右键「让 AI 分析」、帮助页「AI 诊断」）带来的预填问题
     const preset = consumePendingDetail("ai");
@@ -2433,7 +2420,6 @@ const AiPage: React.FC = () => {
     };
   }, []);
 
-  // 持久化
   useEffect(() => {
     saveToStorage(STORAGE_KEYS.sessions, sessions);
   }, [sessions]);
@@ -2446,7 +2432,6 @@ const AiPage: React.FC = () => {
     saveToStorage(STORAGE_KEYS.activeSession, activeSessionId);
   }, [activeSessionId]);
 
-  // 会话操作
   const createSession = useCallback(() => {
     const newSession: ChatSession = {
       id: uid(),
@@ -2513,7 +2498,6 @@ const AiPage: React.FC = () => {
     [],
   );
 
-  // 处理文件选择
   const handleFileSelect = useCallback((files: FileList | null) => {
     if (!files || files.length === 0) return;
 
@@ -2543,7 +2527,6 @@ const AiPage: React.FC = () => {
     });
   }, []);
 
-  // 移除附件
   const removeAttachment = useCallback((id: string) => {
     setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
   }, []);
@@ -3252,7 +3235,6 @@ const AiPage: React.FC = () => {
     ],
   );
 
-  // 停止生成
   const stopStreaming = useCallback(() => {
     abortControllerRef.current?.abort();
   }, []);
@@ -3355,9 +3337,6 @@ const AiPage: React.FC = () => {
     }));
   };
 
-  // ------------------------------------------------------------------
-  // 渲染
-  // ------------------------------------------------------------------
 
   return (
     <section className="flex h-full w-full min-h-0 overflow-hidden">

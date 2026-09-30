@@ -710,7 +710,6 @@ function serializeOptionsFile(
       result.push(line);
     }
   }
-  // 添加新的键
   for (const [key, value] of Object.entries(options)) {
     if (!usedKeys.has(key)) {
       result.push(`${key}:${value}`);

@@ -34,11 +34,6 @@ func GameVersionIsolationResolve(snapshot GameInstanceSnapshot, versionID string
 	)
 }
 
-// GameVersionIsolationIsEnabled 指定实例是否处于版本隔离布局。
-func GameVersionIsolationIsEnabled(snapshot GameInstanceSnapshot, versionID string) bool {
-	return GameVersionIsolationResolve(snapshot, versionID).IsIsolated
-}
-
 // GameVersionIsolationGetGameDirectory 隔离布局下的游戏目录；共享目录布局返回空串（沿用根目录）。
 func GameVersionIsolationGetGameDirectory(snapshot GameInstanceSnapshot, versionID string) string {
 	layout := GameVersionIsolationResolve(snapshot, versionID)
@@ -51,9 +46,4 @@ func GameVersionIsolationGetGameDirectory(snapshot GameInstanceSnapshot, version
 // GameVersionIsolationGetContentDirectory 指定实例的内容目录（隔离或共享）。
 func GameVersionIsolationGetContentDirectory(snapshot GameInstanceSnapshot, versionID string) string {
 	return GameVersionIsolationResolve(snapshot, versionID).ContentDirectory
-}
-
-// GameVersionIsolationIsVersionDirectorySource 判断路径是否为 versions/<版本> 实例目录。
-func GameVersionIsolationIsVersionDirectorySource(sourcePath string) bool {
-	return IsVersionDirectorySource(sourcePath)
 }

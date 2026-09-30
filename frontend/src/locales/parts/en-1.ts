@@ -18,7 +18,6 @@ const dict: Record<string, string> = {
   第三方账户: "Third-party account",
   "点击或长按连敲 · 今日已积":
     "Tap or hold to strike repeatedly · Accrued today",
-  "点我干嘛呀，痒痒的喵": "Why are you poking me? That tickles, meow",
   "点一下会弹跳，气泡里冒出随机的话":
     "Tap it to bounce; random lines pop up in the bubble",
   电子木鱼: "Digital wooden fish",
@@ -105,7 +104,7 @@ const dict: Record<string, string> = {
   "该皮肤站开启了验证码：已在浏览器打开皮肤站，请完成一次登录验证后回来重试。":
     "This skin site requires a captcha: the site has been opened in your browser. Complete a login verification there, then come back and retry.",
   该账号暂未拥有披风: "This account does not own a cape yet",
-  "打开所在目录": "Open containing folder",
+  打开所在目录: "Open containing folder",
   "在 Modrinth 搜索": "Search on Modrinth",
   "在 CurseForge 搜索": "Search on CurseForge",
   "在 CurseForge 打开项目主页": "Open project page on CurseForge",
@@ -113,6 +112,7 @@ const dict: Record<string, string> = {
   干草块侧面: "Hay Block Side",
   刚刚: "Just now",
   高度: "Height",
+  "歌词加载中…": "Loading lyrics…",
   格式化: "Format",
   隔离: "Isolated",
   个: " items",
@@ -175,7 +175,6 @@ const dict: Record<string, string> = {
   黑色描边: "Black outline",
   黑石: "Blackstone",
   黑曜石: "Obsidian",
-  "嘿嘿，被我萌到了吧": "Hehe, charmed by me, aren't you",
   红沙: "Red Sand",
   红砂岩: "Red Sandstone",
   红石灯: "Redstone Lamp",
@@ -292,7 +291,27 @@ const dict: Record<string, string> = {
   "便携模式：数据跟着程序目录走":
     "Portable mode: data lives next to the program",
   // ---- 看板娘台词（闲聊 + 启动器功能 Tips） ----
+  "点我干嘛呀，痒痒的喵": "Why are you poking me? That tickles, meow",
+  "又在偷偷看我，喵~": "Peeking at me again, meow~",
+  "呜…再戳就要生气了喵": "Mew… poke me again and I'll get angry, meow",
+  摸摸头也不是不可以啦: "Head pats aren't out of the question",
   "喵呜~ 被你发现啦": "Nyaa~ you found me",
+  "游戏加载中…要不要撸猫？": "Game loading… Wanna pet a cat?",
+  "嘿嘿，被我萌到了吧": "Hehe, charmed by me, aren't you",
+  "欢迎回来，今天想玩点什么喵？":
+    "Welcome back! What are we playing today, meow?",
+  "祝你好运，开局就能找到钻石喵":
+    "Good luck — may you find diamonds right away, meow",
+  "游戏加载中…记得放松一下眼睛喵":
+    "Give your eyes a rest while things load, meow",
+  "帮助页面有很多教程，遇到问题去看看喵":
+    "The help page has plenty of guides — check there if something goes wrong, meow",
+  "设置里可以换主题色，换个心情也不错喵":
+    "You can change the theme color in settings — a fresh look feels nice, meow",
+  "玩一小时就起来活动一下，劳逸结合喵":
+    "Take a stretch every hour — balance play and rest, meow",
+  "新快照刚发布哦，敢不敢第一个尝鲜喵":
+    "A new snapshot just dropped — dare to try it first, meow?",
   "别熬夜啦，对身体不好喵": "Don't stay up late — it's bad for you, meow",
   "实例的存档管理里有 Rewind 备份功能，手滑删档也不怕喵":
     "The save manager has Rewind backups, so accidental deletes are no big deal, meow",

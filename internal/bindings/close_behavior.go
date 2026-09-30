@@ -1,5 +1,3 @@
-// 本文件已经过验证。
-// 文件将读取yaml中的CloseAction，根据键值做出不同判断.
 package bindings
 
 import (

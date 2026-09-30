@@ -111,6 +111,7 @@ const dict: Record<string, string> = {
     "Guests on Redstone Online need nothing installed — just connect.",
   "红石联机的房客不用装任何东西：点下面的「一键进服」，或在游戏里手动连接上面的地址。":
     "Redstone Online guests need nothing installed: use “Join in one click” below, or connect to the address above in game.",
+  多人: "Multiplayer",
   联机: "Online",
   "联机会话由启动器后台维持：切到别的页面也不会断，退出启动器时会自动收尾。":
     "The session runs in the launcher's background: switching pages won't drop it, and it is cleaned up when you quit.",

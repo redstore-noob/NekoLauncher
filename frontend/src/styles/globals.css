@@ -275,12 +275,16 @@ body,
 }
 
 /* 浮层菜单（Popover / Dropdown / Select / Autocomplete）：毛玻璃。
- * HeroUI 的浮层表面靠 DOM 属性选择：content 槽渲染为 [data-slot="content"]
- * （Tooltip 同名，但它恒带 data-disabled，用 :not 排除），Select 的
- * popoverContent 槽渲染为 [data-slot="popover"]。本文件规则未分层，
- * 级联优先于 utilities 层的 bg-content1，无需逐组件传 classNames。 */
-[data-slot="content"]:not([data-disabled]),
-[data-slot="popover"] {
+ * 所有浮层表面统一是 [data-slot="content"]（Tooltip 同名，但它恒带
+ * data-disabled，用 :not 排除）。本文件规则未分层，级联优先于
+ * utilities 层的 bg-content1，无需逐组件传 classNames。
+ *
+ * 注意：不要选择 [data-slot="popover"]。Select 虽把该属性传给
+ * FreeSoloPopover，但 Popover 内部的 getDialogProps 会把它覆盖为
+ * [data-slot="base"]，因此该属性不会出现在最终 DOM 上——历史版本这里
+ * 写成 [data-slot="popover"]，导致 Select 面板的毛玻璃与圆角全部失效。
+ * src/styles/globals.test.ts 会守住这个契约。 */
+[data-slot="content"]:not([data-disabled]) {
   background-color: hsl(var(--nya-surface-1) / var(--nya-glass-alpha, 0.8));
   backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1))) saturate(150%);
   -webkit-backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1)))
@@ -288,10 +292,10 @@ body,
   border: 1px solid hsl(var(--nya-border-c) / 0.6);
 }
 
-/* Select / Dropdown 的弹出面板：HeroUI 只给触发器圆角，popover 本体默认直角
- * （slot 默认类只有 "w-full p-1 overflow-hidden"），这里统一补圆角，
- * 否则下拉列表出现生硬的直角边。 */
-[data-slot="popover"] {
+/* Select / Dropdown 的弹出面板：HeroUI 只给触发器圆角，content 本体默认直角
+ * （Select 的 popoverContent 槽默认类只有 "w-full p-1 overflow-hidden"），
+ * 这里统一补圆角，否则下拉列表出现生硬的直角边。 */
+[data-slot="content"]:not([data-disabled]) {
   border-radius: 0.875rem;
   overflow: hidden;
 }
@@ -311,8 +315,7 @@ html[data-panel-blur="off"] .nya-panel-strong,
 html[data-panel-blur="off"] .nya-panel-inner,
 html[data-panel-blur="off"] .nya-modal-surface,
 html[data-panel-blur="off"] .nya-neon-card,
-html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]),
-html[data-panel-blur="off"] [data-slot="popover"] {
+html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]) {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
@@ -334,8 +337,7 @@ html[data-panel-blur="off"] .nya-modal-surface {
 html[data-panel-blur="off"] .nya-neon-card {
   background-color: hsl(var(--nya-surface-2) / 0.96);
 }
-html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]),
-html[data-panel-blur="off"] [data-slot="popover"] {
+html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]) {
   background-color: hsl(var(--nya-surface-1) / 0.98);
 }
 

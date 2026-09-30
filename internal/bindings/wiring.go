@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -49,6 +50,48 @@ func emit(ctx context.Context, eventName string, payload ...interface{}) {
 		return
 	}
 	wailsruntime.EventsEmit(ctx, eventName, payload...)
+}
+
+// logLineBatcher 把逐行日志合并成批量事件再推送。
+//
+// 游戏日志刷屏（异常堆栈、mod 加载日志）时每行一个事件同样会灌满 macOS 主队列。
+// 事件名仍是 launch:logLine，但载荷变为 LogLineEvent 数组；前端按数组追加，
+// 单行事件（数组长度 1）天然兼容。
+type logLineBatcher struct {
+	ctxFunc    func() context.Context
+	flushEvery time.Duration
+
+	mu      sync.Mutex
+	pending []LogLineEvent
+	timer   *time.Timer
+}
+
+func newLogLineBatcher(ctxFunc func() context.Context) *logLineBatcher {
+	return &logLineBatcher{ctxFunc: ctxFunc, flushEvery: 150 * time.Millisecond}
+}
+
+func (b *logLineBatcher) push(tag, line string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	b.pending = append(b.pending, LogLineEvent{Tag: tag, Line: line})
+	if b.timer == nil {
+		b.timer = time.AfterFunc(b.flushEvery, b.flush)
+	}
+	b.mu.Unlock()
+}
+
+func (b *logLineBatcher) flush() {
+	b.mu.Lock()
+	lines := b.pending
+	b.pending = nil
+	b.timer = nil
+	b.mu.Unlock()
+	if len(lines) == 0 {
+		return
+	}
+	emit(b.ctxFunc(), "launch:logLine", lines)
 }
 
 // callCtx 返回可用的 context：优先 Startup 注入的 a.ctx，未注入时回退 Background。
@@ -126,6 +169,11 @@ func (a *API) wireInstance() {
 		}, versionID)
 	}
 
+	// CurseForge CDN 鉴权钩子：CDN 直链自 2026-07-16 起要求 x-api-key。
+	// 内置 Key 是编译期写进 bindings 包的变量，download 包读不到，
+	// 只能由这里把「用户配置 → 内置」的完整取值逻辑挂过去。
+	download.CurseForgeCDNKeyHook = effectiveCurseForgeAPIKey
+
 	// 实例基础版本 / 加载器解析钩子（X-4 更新检测）：
 	// 检测侧要用它把「最新版本」限定在当前实例可用的范围内（1.21.1 + Fabric），
 	// 否则会把别的 MC 版本的新版本报成本实例的更新。
@@ -166,6 +214,18 @@ func (a *API) wireInstance() {
 		emit(a.Download.ctx, "download:pauseChanged", download.IsDownloadPaused())
 	}
 
+	// 内容下载任务列表 → download:contentTasks 事件（右下角下载中心；
+	// 注册表内部已按 200ms 合并推送，避免 macOS 主队列被事件灌满）
+	download.OnContentTasksChanged = func() {
+		emit(a.Download.ctx, "download:contentTasks", download.ContentTasksList())
+	}
+
+	// 兼容旧事件：单条内容下载进度 → download:contentProgress（弹层内进度条用；
+	// 注册表内部按任务 100ms 节流）
+	download.OnContentTaskProgress = func(downloaded, total int64) {
+		emit(a.Download.ctx, "download:contentProgress", map[string]int64{"downloaded": downloaded, "total": total})
+	}
+
 	// 下载任务快照 → download:progress 事件
 	a.Download.service.OnChanged = func(snapshot download.GameDownloadSnapshot) {
 		emit(a.Download.ctx, "download:progress", snapshot)
@@ -186,10 +246,10 @@ func (a *API) wireInstance() {
 		emit(a.Launcher.ctx, "launch:changed", snapshot)
 	}
 
-	// 逐行日志 → launch:logLine 事件（前端增量追加，不再全量轮询日志文本）
-	a.Launcher.service.OnLogLine = func(tag, line string) {
-		emit(a.Launcher.ctx, "launch:logLine", LogLineEvent{Tag: tag, Line: line})
-	}
+	// 逐行日志 → launch:logLine 事件（批量推送；前端增量追加，
+	// 不再全量轮询日志文本）。ctx 经闭包动态读取：Startup 覆盖前丢弃。
+	logBatcher := newLogLineBatcher(func() context.Context { return a.Launcher.ctx })
+	a.Launcher.service.OnLogLine = logBatcher.push
 }
 
 // wireMusic 音乐播放器：状态机用 Go 侧 music.Shared（重新挂上前端音频桥接），

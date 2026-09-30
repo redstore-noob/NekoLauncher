@@ -6,6 +6,8 @@ import {context} from '../models';
 
 export function ApplyVersionFilter(arg1:Array<models.MinecraftVersion>,arg2:string):Promise<Array<models.MinecraftVersion>>;
 
+export function CancelContentTask(arg1:string):Promise<boolean>;
+
 export function CancelDownload():Promise<boolean>;
 
 export function CreateDefaultInstanceName(arg1:download.ModLoaderType,arg2:string,arg3:string):Promise<string>;
@@ -22,9 +24,9 @@ export function GetActiveDownloadSourceName():Promise<string>;
 
 export function GetAllDownloadSources():Promise<Array<download.DownloadSource>>;
 
-export function GetCurrentDownloadSnapshot():Promise<download.GameDownloadSnapshot>;
+export function GetContentTasks():Promise<Array<download.ContentTaskSnapshot>>;
 
-export function GetCurseForgeAPIKey():Promise<string>;
+export function GetCurrentDownloadSnapshot():Promise<download.GameDownloadSnapshot>;
 
 export function GetFallbackDownloadSourceName():Promise<string>;
 

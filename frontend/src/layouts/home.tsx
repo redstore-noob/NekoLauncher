@@ -160,14 +160,12 @@ const HomePage: React.FC = () => {
   // S 模式禁用小组件功能：隐藏组件列 / 组件库 / 添加入口，主页变成居中的纯启动页
   const { simpleMode } = useSimpleMode();
 
-  // 版本
   const [versions, setVersions] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState<string>("");
   const [minecraftDirectory, setMinecraftDirectory] = useState<string>("");
   const [selectedVersion, setSelectedVersion] = useState<string>("");
 
-  // 账户
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [selectedAccountKey, setSelectedAccountKey] = useState("");
   const [avatarMap, setAvatarMap] = useState<Record<string, string>>({});

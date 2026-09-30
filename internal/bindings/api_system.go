@@ -37,9 +37,6 @@ func (a *ServerAPI) ParseServerAddress(input string) (network.ServerAddress, err
 
 // ---- SystemAPI ----
 
-// GetAppVersion 纯版本字符串，如 "1.0.0-preview4"。
-func (a *SystemAPI) GetAppVersion() string { return info.Version() }
-
 // GetFormattedVersion 格式化版本号，如 "NekoLauncher版本号:1.0.0-preview4"。
 func (a *SystemAPI) GetFormattedVersion() string { return info.FormatVersionString() }
 

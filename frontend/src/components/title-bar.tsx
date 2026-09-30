@@ -31,7 +31,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   const { t } = useI18n();
   const [isMax, setIsMax] = useState(false);
 
-  //窗口控制函数
   const minimize = () => {
     if (window.runtime?.WindowMinimise) {
       window.runtime.WindowMinimise();
@@ -41,7 +40,6 @@ export const TitleBar: React.FC<TitleBarProps> = ({
   const maximize = async () => {
     if (window.runtime?.WindowToggleMaximise) {
       await window.runtime.WindowToggleMaximise();
-      //更新状态
       if (window.runtime?.WindowIsMaximised) {
         const max = await window.runtime.WindowIsMaximised();
 

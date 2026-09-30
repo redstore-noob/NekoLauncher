@@ -990,6 +990,7 @@ export namespace download {
 	    Versions: models.ResourceVersion[];
 	    MatchedCount: number;
 	    Notice: string;
+	    NeedsAPIKey: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ContentVersionOptions(source);
@@ -1009,6 +1010,7 @@ export namespace download {
 	        this.Versions = this.convertValues(source["Versions"], models.ResourceVersion);
 	        this.MatchedCount = source["MatchedCount"];
 	        this.Notice = source["Notice"];
+	        this.NeedsAPIKey = source["NeedsAPIKey"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1087,6 +1089,34 @@ export namespace download {
 	        this.BytesPerSecond = source["BytesPerSecond"];
 	    }
 	}
+	export class ContentTaskSnapshot {
+	    id: string;
+	    name: string;
+	    kind: string;
+	    phase: number;
+	    detail: string;
+	    downloadedBytes: number;
+	    totalBytes: number;
+	    bytesPerSecond: number;
+	    etaSeconds: number;
+
+	    static createFrom(source: any = {}) {
+	        return new ContentTaskSnapshot(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.kind = source["kind"];
+	        this.phase = source["phase"];
+	        this.detail = source["detail"];
+	        this.downloadedBytes = source["downloadedBytes"];
+	        this.totalBytes = source["totalBytes"];
+	        this.bytesPerSecond = source["bytesPerSecond"];
+	        this.etaSeconds = source["etaSeconds"];
+	    }
+	}
 	export class InstalledJavaRuntime {
 	    DirectoryPath: string;
 	    JavaExecutablePath: string;
@@ -1153,6 +1183,12 @@ export namespace download {
 	    InstalledFiles: number;
 	    DownloadedMods: number;
 	    Errors: string[];
+	    Warnings: string[];
+	    DeclaredMinecraftVersion: string;
+	    DeclaredLoaderName: string;
+	    DeclaredLoaderVersion: string;
+	    DeclaredLoaderSupported: boolean;
+	    DetectedFormat: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ModpackInstallResult(source);
@@ -1163,6 +1199,12 @@ export namespace download {
 	        this.InstalledFiles = source["InstalledFiles"];
 	        this.DownloadedMods = source["DownloadedMods"];
 	        this.Errors = source["Errors"];
+	        this.Warnings = source["Warnings"];
+	        this.DeclaredMinecraftVersion = source["DeclaredMinecraftVersion"];
+	        this.DeclaredLoaderName = source["DeclaredLoaderName"];
+	        this.DeclaredLoaderVersion = source["DeclaredLoaderVersion"];
+	        this.DeclaredLoaderSupported = source["DeclaredLoaderSupported"];
+	        this.DetectedFormat = source["DetectedFormat"];
 	    }
 	}
 	export class ModpackRequirements {
@@ -1413,11 +1455,12 @@ export namespace launch {
 	    Suspected: string[];
 	    Suggestions: string[];
 	    Summary: string;
-	
+	    Details: string[];
+
 	    static createFrom(source: any = {}) {
 	        return new CrashDiagnosis(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ReportPath = source["ReportPath"];
@@ -1426,6 +1469,7 @@ export namespace launch {
 	        this.Suspected = source["Suspected"];
 	        this.Suggestions = source["Suggestions"];
 	        this.Summary = source["Summary"];
+	        this.Details = source["Details"];
 	    }
 	}
 	export class GameLaunchSnapshot {
@@ -1436,11 +1480,13 @@ export namespace launch {
 	    VersionId: string;
 	    AccountName: string;
 	    ProcessId: number;
-	
+	    ExitCode: number;
+	    StoppedManually: boolean;
+
 	    static createFrom(source: any = {}) {
 	        return new GameLaunchSnapshot(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Revision = source["Revision"];
@@ -1450,6 +1496,8 @@ export namespace launch {
 	        this.VersionId = source["VersionId"];
 	        this.AccountName = source["AccountName"];
 	        this.ProcessId = source["ProcessId"];
+	        this.ExitCode = source["ExitCode"];
+	        this.StoppedManually = source["StoppedManually"];
 	    }
 	}
 	export class LaunchResult {

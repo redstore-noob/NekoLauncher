@@ -17,6 +17,50 @@ export const PLUGIN_ROOT = "/plugins/";
 /** 各插件已注入的样式：<插件id, <key, <style> 元素>> */
 const pluginStyleElements = new Map<string, Map<string, HTMLStyleElement>>();
 
+/** 单条注入样式的长度上限：正常插件样式远小于此，超限基本是失控或恶意输入 */
+const MAX_STYLE_LENGTH = 256 * 1024;
+
+/**
+ * sanitizePluginCSS 注入前的内容约束：
+ *   - 超过长度上限直接拒绝（记警告，返回空串）；
+ *   - 摘掉 @import 语句：内联 <style> 里的 @import 相对文档地址解析，
+ *     相对路径无意义、外部样式表不应被插件引入。注意这不是外发请求的
+ *     总闸——url(...) 同样能发请求，而插件 JS 本就有完整网络能力，
+ *     这里只是不让样式通道成为引入外部级联的后门。
+ */
+function sanitizePluginCSS(id: string, css: string): string {
+  if (css.length > MAX_STYLE_LENGTH) {
+    console.warn(
+      t("[plugins] {0} 的样式超长（{1} 字符，上限 {2}），已拒绝注入", {
+        "0": id,
+        "1": css.length,
+        "2": MAX_STYLE_LENGTH,
+      }),
+    );
+
+    return "";
+  }
+
+  let blockedImports = 0;
+  // @im\port 这类 CSS 标识符转义对浏览器等价于 @import，一并匹配
+  const filtered = css.replace(/@im\\?port[^;{}]*;?/gi, () => {
+    blockedImports++;
+
+    return "";
+  });
+
+  if (blockedImports > 0) {
+    console.warn(
+      t("[plugins] {0} 的样式含 {1} 条 @import，宿主不支持，已移除", {
+        "0": id,
+        "1": blockedImports,
+      }),
+    );
+  }
+
+  return filtered;
+}
+
 /**
  * injectPluginStyle 注入（或按 key 替换）一条全局样式。
  * key 缺省为 "inline"；插件想单独更新/移除某条样式时自己起一个稳定 key。
@@ -26,7 +70,12 @@ export function injectPluginStyle(
   css: string,
   key = "inline",
 ): void {
-  const text = typeof css === "string" ? css : String(css ?? "");
+  const text = sanitizePluginCSS(
+    id,
+    typeof css === "string" ? css : String(css ?? ""),
+  );
+
+  if (!text) return;
   let bucket = pluginStyleElements.get(id);
   let element = bucket?.get(key);
 
@@ -67,10 +116,15 @@ export function removePluginStyles(id: string): void {
  * injectPluginStyleFiles 注入清单 styles 声明的样式文件（相对插件目录的 .css）。
  * 单个文件缺失或读取失败只记警告并跳过——样式缺失不该让整个插件加载失败。
  * 路径先经 sanitizeStylePath 规范化，越界写法直接丢弃。
+ *
+ * guard 可选：每条样式在 await fetch 并读完响应体之后用插件 id 复查一次，
+ * 返回 false 时丢弃——供 loader 传入 isPluginActive，挡住"等待期间插件被
+ * 停用/卸载"的迟到响应，避免注入无人清理的孤儿 <style>。
  */
 export async function injectPluginStyleFiles(
   id: string,
   styles: string[],
+  guard?: (pluginId: string) => boolean,
 ): Promise<void> {
   for (const declared of styles) {
     const file = sanitizeStylePath(declared);
@@ -86,7 +140,11 @@ export async function injectPluginStyleFiles(
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
-      injectPluginStyle(id, await response.text(), `file:${file}`);
+      const text = await response.text();
+
+      // 读响应体可能跨越停用/卸载：注入前再复查一次
+      if (guard && !guard(id)) return;
+      injectPluginStyle(id, text, `file:${file}`);
     } catch (error) {
       console.warn(
         t("[plugins] {0} 的样式文件 {1} 注入失败：{2}", {

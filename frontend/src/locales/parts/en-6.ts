@@ -226,6 +226,7 @@ const dict: Record<string, string> = {
   暂无预览: "No preview",
   "召唤 /summon": "Summon /summon",
   正午: "Noon",
+  正在播放: "Now playing",
   正在导出服务器包: "Exporting server pack",
   正在导入服务器包: "Importing server pack",
   指令生成器: "Command Generator",

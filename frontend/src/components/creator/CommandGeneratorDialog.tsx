@@ -357,7 +357,6 @@ const CommandGeneratorDialog: React.FC<CommandGeneratorDialogProps> = ({
   const [enchant, setEnchant] = useState("sharpness");
   const [enchantLevel, setEnchantLevel] = useState(5);
 
-  // effect
   const [effect, setEffect] = useState("speed");
   const [seconds, setSeconds] = useState(60);
   const [amplifier, setAmplifier] = useState(1);

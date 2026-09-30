@@ -29,8 +29,10 @@ import {
   Box20Regular,
   Delete20Regular,
   Folder20Regular,
+  FolderOpen20Regular,
   PuzzleCube20Regular,
   Save20Regular,
+  Search20Regular,
 } from "@fluentui/react-icons";
 import { AnimatePresence, motion } from "framer-motion";
 
@@ -52,8 +54,10 @@ import {
 import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
 import { listItemVariants } from "../lib/motion";
 import {
+  isPluginActive,
   reloadPlugins,
   setPluginEnabled,
+  unloadPluginRuntime,
   usePluginRuntimeStates,
   type PluginRuntimeState,
 } from "../plugin";
@@ -125,9 +129,11 @@ function pluginIconUrl(info: bindings.PluginInfo): string {
 const PERMISSION_LABELS: Record<string, string> = {
   storage: "存储",
   launch: "启动游戏",
-  instances: "实例",
+  instances: "实例（只读）",
+  "instances-write": "实例（写入）",
   accounts: "账号",
-  "launcher-config": "启动器设置",
+  "launcher-config": "启动器设置（只读）",
+  "launcher-config-write": "启动器设置（写入）",
   notifications: "通知",
   clipboard: "剪贴板",
   "open-url": "打开链接",
@@ -135,24 +141,13 @@ const PERMISSION_LABELS: Record<string, string> = {
   "server-status": "服务器状态",
 };
 
-/** permissionSummary 把声明的权限键拼成可读列表；未声明任何权限时给出提示。 */
-function permissionSummary(capabilities: string[] | undefined): string {
-  if (!capabilities || capabilities.length === 0) {
-    return t("未声明（受限 API 调用会直接报错）");
-  }
-
-  return capabilities
-    .map((permission) => PERMISSION_LABELS[permission] ?? permission)
-    .map((label) => t(label))
-    .join("、");
-}
-
 const PluginsPage: React.FC = () => {
   const [plugins, setPlugins] = useState<bindings.PluginInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState("");
   const [status, setStatus] = useState("");
   const [selectedId, setSelectedId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [pendingUninstall, setPendingUninstall] =
     useState<bindings.PluginInfo | null>(null);
   // 清单编辑表单（改已安装插件的元数据；新建骨架在创作中心）
@@ -189,6 +184,19 @@ const PluginsPage: React.FC = () => {
     () => plugins.find((item) => item.ID === selectedId) ?? null,
     [plugins, selectedId],
   );
+
+  // 列表搜索：按名称 / id / 作者过滤（大小写不敏感）
+  const filteredPlugins = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+
+    if (!query) return plugins;
+
+    return plugins.filter((item) =>
+      `${item.Name ?? ""} ${item.ID} ${item.Author ?? ""}`
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [plugins, searchQuery]);
 
   // 选中项变化时把清单字段填进表单（用户改动在下次切换时才被覆盖）
   useEffect(() => {
@@ -368,13 +376,25 @@ const PluginsPage: React.FC = () => {
   const toggleEnabled = async (info: bindings.PluginInfo, enabled: boolean) => {
     setBusy(info.ID);
     try {
-      await setPluginEnabled(info.ID, enabled);
+      const result = await setPluginEnabled(info.ID, enabled);
+
       // 开关是受控的：只写状态串不更新列表，拨过去会被"弹"回原位
       setPlugins((prev) =>
         prev.map((item) =>
           item.ID === info.ID ? { ...item, Disabled: !enabled } : item,
         ),
       );
+      // 启用可能加载失败（清单坏 / 入口抛错）：不能照常报"已启用"
+      if (enabled && result && !result.ok) {
+        setStatus(
+          t("启用「{0}」失败：{1}", {
+            "0": info.Name || info.ID,
+            "1": result.error ?? "",
+          }),
+        );
+
+        return;
+      }
       setStatus(
         enabled
           ? t("已启用「{0}」", { "0": info.Name || info.ID })
@@ -394,11 +414,17 @@ const PluginsPage: React.FC = () => {
     setPendingUninstall(null);
     setBusy(target.ID);
     try {
+      // 先摘掉前端运行时再删磁盘：中间窗口里插件的事件订阅不再响应，
+      // 不会去 fetch 已被删除的资源
+      if (isPluginActive(target.ID)) unloadPluginRuntime(target.ID);
       await UninstallPlugin(target.ID);
       await reloadPlugins();
       await refresh();
       setStatus(t("已卸载「{0}」", { "0": target.Name || target.ID }));
     } catch (error) {
+      // 运行时已经摘了但磁盘删除失败（文件被占用等）：重新加载一次，
+      // 让插件恢复运行，状态徽章与磁盘真实情况对齐
+      await reloadPlugins().catch(() => undefined);
       setStatus(t("卸载失败：{0}", { "0": messageOf(error) }));
     } finally {
       setBusy("");
@@ -431,12 +457,32 @@ const PluginsPage: React.FC = () => {
           <Button
             isDisabled={busy !== ""}
             size="sm"
+            startContent={<FolderOpen20Regular />}
+            variant="flat"
+            onPress={() => void installFromFolder()}
+          >
+            {t("从文件夹安装")}
+          </Button>
+          <Divider className="h-6 w-px mx-1" orientation="vertical" />
+          <Button
+            isDisabled={busy !== "" || !selected}
+            size="sm"
+            startContent={<PuzzleCube20Regular />}
+            variant="flat"
+            onPress={() => setManifestOpen(true)}
+          >
+            {t("编辑清单")}
+          </Button>
+          <Button
+            isDisabled={busy !== ""}
+            size="sm"
             startContent={<Box20Regular />}
             variant="flat"
             onPress={() => void packagePlugin()}
           >
             {t("打包插件")}
           </Button>
+          <Divider className="h-6 w-px mx-1" orientation="vertical" />
           <Button
             isDisabled={busy !== ""}
             size="sm"
@@ -454,24 +500,6 @@ const PluginsPage: React.FC = () => {
           >
             {t("打开插件目录")}
           </Button>
-          <Button
-            isDisabled={busy !== ""}
-            size="sm"
-            startContent={<Folder20Regular />}
-            variant="flat"
-            onPress={() => void installFromFolder()}
-          >
-            {t("从文件夹安装")}
-          </Button>
-          <Button
-            isDisabled={busy !== "" || !selected}
-            size="sm"
-            startContent={<PuzzleCube20Regular />}
-            variant="flat"
-            onPress={() => setManifestOpen(true)}
-          >
-            {t("编辑清单")}
-          </Button>
           {busy !== "" ? <Spinner size="sm" /> : null}
         </div>
       </div>
@@ -481,13 +509,24 @@ const PluginsPage: React.FC = () => {
         {/* 左：插件列表（顶层面板用 nya-panel；nya-panel-inner 是给面板内
             嵌套小面板用的，底色更实会盖住毛玻璃） */}
         <div className="flex max-h-44 w-full flex-shrink-0 flex-col rounded-xl border nya-border nya-panel p-2 md:max-h-none md:w-56">
-          <div className="px-2 pb-1.5 pt-1 text-[13px] font-semibold text-gray-600 dark:text-gray-300">
-            {t("已安装（")}
-            {plugins.length}）
+          <div className="px-1 pb-1.5 pt-1 flex items-center justify-between gap-2">
+            <span className="text-[13px] font-semibold text-gray-600 dark:text-gray-300">
+              {t("已安装（")}
+              {plugins.length}）
+            </span>
           </div>
+          <Input
+            aria-label={t("搜索插件")}
+            className="mb-1.5"
+            size="sm"
+            startContent={<Search20Regular className="h-4 w-4" />}
+            value={searchQuery}
+            variant="flat"
+            onValueChange={setSearchQuery}
+          />
           <div className="flex-1 overflow-y-auto flex flex-col gap-0.5">
             <AnimatePresence initial={false}>
-              {plugins.map((info) => {
+              {filteredPlugins.map((info) => {
                 const itemStatus = describeStatus(info, runtimeStates[info.ID]);
                 const isActive = info.ID === selectedId;
                 const icon = pluginIconUrl(info);
@@ -521,8 +560,13 @@ const PluginsPage: React.FC = () => {
                           <PuzzleCube20Regular />
                         </span>
                       )}
-                      <span className="min-w-0 flex-1 truncate text-[13px]">
-                        {info.Name || info.ID}
+                      <span className="min-w-0 flex-1 leading-tight">
+                        <span className="block truncate text-[13px]">
+                          {info.Name || info.ID}
+                        </span>
+                        <span className="block truncate text-[10px] text-gray-400">
+                          {info.Version || info.ID}
+                        </span>
                       </span>
                       <span
                         className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${
@@ -544,6 +588,11 @@ const PluginsPage: React.FC = () => {
             {!loading && plugins.length === 0 ? (
               <div className="px-2 py-6 text-center text-[11px] leading-relaxed text-gray-400">
                 {t("暂无插件")}
+              </div>
+            ) : null}
+            {!loading && plugins.length > 0 && filteredPlugins.length === 0 ? (
+              <div className="px-2 py-6 text-center text-[11px] leading-relaxed text-gray-400">
+                {t("没有匹配的插件")}
               </div>
             ) : null}
           </div>
@@ -618,6 +667,34 @@ const PluginsPage: React.FC = () => {
                 </p>
               ) : null}
 
+              {/* 信任模型一级警示：插件系统没有沙箱，权限列表只是用途声明 */}
+              <div className="mt-3 rounded-lg border border-amber-200/70 bg-amber-50/70 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300">
+                {t(
+                  "插件以与启动器相同的权限运行（无沙箱），可访问本机文件与网络。请只安装信任来源的插件。",
+                )}
+              </div>
+
+              {selected.Capabilities && selected.Capabilities.length > 0 ? (
+                <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-gray-400">{t("权限")}</span>
+                  {selected.Capabilities.map((permission) => (
+                    <Chip
+                      key={permission}
+                      className="text-[11px]"
+                      color="default"
+                      size="sm"
+                      variant="flat"
+                    >
+                      {t(PERMISSION_LABELS[permission] ?? permission)}
+                    </Chip>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-3 text-[11px] text-gray-400">
+                  {t("未声明（受限 API 调用会直接报错）")}
+                </p>
+              )}
+
               <Divider className="my-4" />
 
               <dl className="grid grid-cols-[92px_1fr] gap-x-4 gap-y-2 text-[12px]">
@@ -626,7 +703,6 @@ const PluginsPage: React.FC = () => {
                   [t("作者"), selected.Author || "—"],
                   [t("API 版本"), selected.APIVersion || "—"],
                   [t("入口"), selected.Entry || "index.js"],
-                  [t("权限"), permissionSummary(selected.Capabilities)],
                   [
                     t("体积"),
                     t("{0} · {1} 个文件", {

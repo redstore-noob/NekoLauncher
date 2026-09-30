@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"strings"
 
-	"nekolauncher/internal/config"
 	"nekolauncher/internal/download"
 )
 
@@ -107,8 +106,7 @@ func (a *ContentAPI) GetContentVersionOptions(
 ) (*download.ContentVersionOptions, error) {
 	gameVersion, loaderName := resolveInstanceGameInfo(minecraftDirectory, sourcePath, versionID)
 	return download.GetContentVersionOptions(
-		callCtx(a.ctx), filePath, gameVersion, loaderName,
-		strings.TrimSpace(config.GetValue(curseForgeAPIKeyConfigKey)))
+		callCtx(a.ctx), filePath, gameVersion, loaderName, effectiveCurseForgeAPIKey())
 }
 
 // resolveInstanceGameInfo 解析实例的基础 MC 版本与加载器显示名（未接线时空串）。

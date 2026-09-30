@@ -711,6 +711,50 @@ func TestVerifyInstanceModpackOverridesPath(t *testing.T) {
 	}
 }
 
+// TestVerifyInstanceModpackContentRootPrefixes 防的回归：
+// 校验侧此前只认 overrides/ 这一种内容根前缀，client-overrides/ 与
+// .minecraft/ 布局会被整包误报成"文件缺失"——同一份前缀知识在安装侧与
+// 校验侧各写了一遍，改了一边就漂移。现在两侧共用 modpackContentRoots。
+func TestVerifyInstanceModpackContentRootPrefixes(t *testing.T) {
+	cases := []struct {
+		name  string
+		files []testFile
+	}{
+		{
+			name:  "overrides 前缀",
+			files: []testFile{{"overrides/mods/a.jar", "content-a"}},
+		},
+		{
+			name:  "client-overrides 前缀",
+			files: []testFile{{"client-overrides/mods/a.jar", "content-a"}},
+		},
+		{
+			name:  ".minecraft 前缀",
+			files: []testFile{{".minecraft/mods/a.jar", "content-a"}},
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := buildContentDirectory(t, testCase.files)
+			index := mrpackIndexJSON("前缀整合包", "1.0.0", []map[string]any{
+				indexEntry("mods/a.jar", sha1OfText("content-a")),
+			})
+			if err := os.WriteFile(filepath.Join(root, "modrinth.index.json"), []byte(index), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			result := download.VerifyInstanceModpack(root, nil)
+			if result.MissingCount != 0 {
+				t.Errorf("带 %s 的文件不应判为缺失：missing=%d", testCase.name, result.MissingCount)
+			}
+			if result.CurrentCount != 1 {
+				t.Errorf("一致数量 = %d，期望 1（状态 %s）", result.CurrentCount, result.Status)
+			}
+		})
+	}
+}
+
 // TestVerifyInstanceModpackCurseForgeIsHonest 防的回归：
 // 对 CurseForge 的 manifest.json 假装能校验（报"全部一致"），
 // 而它只有 projectID/fileID、没有哈希，离线根本没法验。
@@ -780,7 +824,7 @@ func TestModpackSnapshotRoundTripThroughInstall(t *testing.T) {
 	})
 	target := buildContentDirectory(t, []testFile{{"mods/snapshot.jar", content}})
 
-	result, err := download.InstallModpack(context.Background(), mrpackPath, target, nil)
+	result, err := download.InstallModpack(context.Background(), "", mrpackPath, target, nil)
 	if err != nil {
 		t.Fatalf("安装失败：%v", err)
 	}

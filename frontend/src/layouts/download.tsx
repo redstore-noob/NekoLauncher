@@ -42,8 +42,6 @@ import {
   Sparkle20Regular,
   Image20Regular,
   WindowDevTools20Regular,
-  ChevronLeft20Regular,
-  ChevronRight20Regular,
   ArrowDownload20Regular,
   Heart20Regular,
   Search20Regular,
@@ -56,14 +54,19 @@ import {
 } from "@fluentui/react-icons";
 
 import SegmentedTabs from "../components/segmented-tabs";
+import Pager from "../components/pager";
+import EmptyState from "../components/empty-state";
+import LoadingRow from "../components/loading-row";
 import { asArray } from "../lib/guards";
 import { consumePendingDetail, onNavigate } from "../lib/navigation";
 import { popoverMotionProps } from "../lib/motion";
 import {
   ApplyVersionFilter,
   CancelDownload,
+  GetResourceSources,
   GetCurrentDownloadSnapshot,
   GetVersions,
+  SaveCurseForgeAPIKey,
   SearchResources,
   StartDownload,
   StartModLoaderDownload,
@@ -107,6 +110,14 @@ const TAB_NAMES = [
 ];
 const MODRINTH_TABS = ["Mod", "整合包", "光影包", "材质包"];
 
+// 资源平台筛选：Modrinth 免 Key 直接用；CurseForge 需要在设置里填 API Key
+// （未配置时界面就地给引导，不报错）。后端按 source 走对应站点接口，
+// 官方失败都会自动回退国内镜像。
+const CONTENT_SOURCES = [
+  { id: "modrinth", label: "Modrinth" },
+  { id: "curseforge", label: "CurseForge" },
+] as const;
+
 // 加载器筛选（原资源搜索弹层；空串 = 不过滤，Go 侧把空串当"全部"）
 const MOD_LOADER_OPTIONS = ["", "fabric", "forge", "neoforge", "quilt"];
 
@@ -132,6 +143,7 @@ const MODRINTH_CONFIG: Record<
 function toProjectLike(hit: models.ResourceHit): ProjectLike {
   return {
     project_id: hit.projectId,
+    source: hit.source,
     title: hit.title,
     description: hit.description,
     icon_url: hit.iconUrl,
@@ -266,12 +278,26 @@ const DownloadPage: React.FC = () => {
 
   versionTypeFilterRef.current = versionTypeFilter;
 
-  // ---------- Modrinth ----------
+  // ---------- Modrinth / CurseForge ----------
   const [contentQuery, setContentQuery] = useState("");
   const [contentPage, setContentPage] = useState(1);
+  // 资源平台筛选（modrinth / curseforge）；缓存键 = 平台:标签页
+  const [contentSource, setContentSource] = useState("modrinth");
   const [contentCache, setContentCache] = useState<
-    Record<string, { all: ProjectLike[]; loading: boolean; error?: string }>
+    Record<
+      string,
+      {
+        all: ProjectLike[];
+        loading: boolean;
+        error?: string;
+        needsApiKey?: boolean;
+        message?: string;
+      }
+    >
   >({});
+  // 数据源元信息（CurseForge 是否已配置 Key、申请地址等）
+  const [sources, setSources] = useState<models.ResourceSourceInfo[]>([]);
+  const [apiKeyDraft, setApiKeyDraft] = useState("");
 
   // ---------- 弹层与下载进度 ----------
   // Modrinth 列表筛选（原资源搜索弹层的两项）：游戏版本 + 加载器（仅 Mod）
@@ -362,28 +388,33 @@ const DownloadPage: React.FC = () => {
     }
   };
 
-  // ---------- Modrinth 搜索（300ms 防抖；走后端绑定，自动镜像回退） ----------
+  // ---------- 资源搜索（300ms 防抖；走后端绑定，自动镜像回退） ----------
   // 搜索是"打字即发"的：慢的旧请求可能后于新请求返回，把列表刷成过期结果，
   // 所以用一个自增序号，回来时不是最新那次就丢弃。
   //
-  // 为什么不再由前端直接 fetch api.modrinth.com：官方域名在国内经常超时，
-  // 后端会先试官方、再回退国内镜像（并把"已走镜像"如实回报）；展示串也统一由
-  // Go 侧生成，避免同一份格式化逻辑在两端各写一遍。
+  // 为什么不由前端直接 fetch api.modrinth.com / api.curseforge.com：
+  // 官方域名在国内经常超时，后端会先试官方、再回退国内镜像（并把"已走镜像"
+  // 如实回报）；展示串也统一由 Go 侧生成，避免同一份格式化逻辑在两端各写一遍。
   const modrinthSeqRef = useRef(0);
 
-  const searchModrinth = async (tab: string, query: string) => {
+  const searchModrinth = async (
+    tab: string,
+    query: string,
+    source: string = contentSource,
+  ) => {
     const config = MODRINTH_CONFIG[tab];
 
     if (!config) return;
     const seq = ++modrinthSeqRef.current;
+    const cacheKey = `${source}:${tab}`;
 
     setContentCache((cache) => ({
       ...cache,
-      [tab]: { all: [], loading: true },
+      [cacheKey]: { all: [], loading: true },
     }));
     try {
       const request: models.ResourceSearchRequest = {
-        source: "modrinth",
+        source,
         projectType: config.type,
         query,
         // 原资源搜索弹层的筛选：游戏版本（可选）与加载器（仅 Mod 标签页）
@@ -397,9 +428,11 @@ const DownloadPage: React.FC = () => {
       if (seq !== modrinthSeqRef.current) return;
       setContentCache((cache) => ({
         ...cache,
-        [tab]: {
+        [cacheKey]: {
           all: asArray<models.ResourceHit>(result?.hits).map(toProjectLike),
           loading: false,
+          needsApiKey: !!result?.needsApiKey,
+          message: result?.message ?? "",
         },
       }));
     } catch (ex) {
@@ -407,7 +440,7 @@ const DownloadPage: React.FC = () => {
       if (seq !== modrinthSeqRef.current) return;
       setContentCache((cache) => ({
         ...cache,
-        [tab]: {
+        [cacheKey]: {
           all: [],
           loading: false,
           error: (ex as Error)?.message ?? String(ex),
@@ -419,12 +452,50 @@ const DownloadPage: React.FC = () => {
   const switchTab = (tab: string) => {
     setActiveTab(tab);
     setContentPage(1);
-    if (MODRINTH_TABS.includes(tab) && !contentCache[tab]) {
+    if (
+      MODRINTH_TABS.includes(tab) &&
+      !contentCache[`${contentSource}:${tab}`]
+    ) {
       void searchModrinth(tab, contentQuery.trim());
     }
   };
 
-  // 搜索词 / 筛选变化：重置页码 + 对 Modrinth 标签页做 300ms 防抖重查
+  // 切换资源平台：清页码，搜索由 contentSource 变化的 effect 触发
+  const switchContentSource = (source: string) => {
+    if (source === contentSource) return;
+    setContentSource(source);
+    setContentPage(1);
+  };
+
+  // 就地保存 CurseForge API Key（成功后刷新数据源状态并重查当前标签页）
+  const saveContentKey = async () => {
+    const key = apiKeyDraft.trim();
+
+    if (!key) {
+      setTaskStatusText(t("请先粘贴 CurseForge API Key。"));
+
+      return;
+    }
+    try {
+      const ok = await SaveCurseForgeAPIKey(key);
+
+      if (!ok) {
+        setTaskStatusText(t("保存失败：配置文件不可写。"));
+
+        return;
+      }
+      setApiKeyDraft("");
+      setSources(asArray(await GetResourceSources()));
+      setTaskStatusText("");
+      void searchModrinth(activeTab, contentQuery.trim());
+    } catch (ex) {
+      setTaskStatusText(
+        t("保存失败：{0}", { "0": (ex as Error)?.message ?? ex }),
+      );
+    }
+  };
+
+  // 搜索词 / 筛选 / 平台变化：重置页码 + 对资源标签页做 300ms 防抖重查
   const firstQueryRender = useRef(true);
 
   useEffect(() => {
@@ -444,11 +515,15 @@ const DownloadPage: React.FC = () => {
       if (searchTimer.current) clearTimeout(searchTimer.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contentQuery, contentGameVersion, contentLoader]);
+  }, [contentQuery, contentGameVersion, contentLoader, contentSource]);
 
   // ?? 的右值每次渲染都是新对象，会让下面的 useMemo 依赖永远变化；
   // 固定成一个常量作为空态
-  const contentState = contentCache[activeTab] ?? EMPTY_CONTENT_STATE;
+  const contentState =
+    contentCache[`${contentSource}:${activeTab}`] ?? EMPTY_CONTENT_STATE;
+  const activeSourceInfo =
+    sources.find((item) => item.id === contentSource) ?? null;
+  const apiKeyApplyUrl = activeSourceInfo?.apiKeyApplyUrl ?? "";
 
   // ---------- 资源中文名（MC百科） ----------
   // 下载大厅的资源标题是英文原名；复用实例页同一套 MC百科（mcmod.cn）译名服务：
@@ -634,6 +709,10 @@ const DownloadPage: React.FC = () => {
         console.error(t("读取下载快照失败"), ex);
       }
     })();
+    // 资源平台元信息（CurseForge Key 是否已配置、申请地址），失败不阻塞页面
+    void GetResourceSources()
+      .then((list) => setSources(asArray<models.ResourceSourceInfo>(list)))
+      .catch(() => {});
     // 逐个退订：EventsOff 会连下载浮标 / 主页下载卡片的订阅一起清掉
     const offProgress = EventsOn("download:progress", applyDownloadSnapshot);
 
@@ -657,55 +736,7 @@ const DownloadPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 分页条（图标箭头 + 页码）
-  const renderPager = (
-    page: number,
-    totalPages: number,
-    setPage: (updater: (p: number) => number) => void,
-  ) => (
-    <div className="flex items-center justify-center gap-2 pt-1">
-      <Button
-        isIconOnly
-        aria-label={t("上一页")}
-        isDisabled={page <= 1}
-        radius="full"
-        size="sm"
-        variant="flat"
-        onPress={() => setPage((p) => Math.max(1, p - 1))}
-      >
-        <ChevronLeft20Regular />
-      </Button>
-      <span className="min-w-[64px] text-center text-xs text-gray-400 tabular-nums">
-        {page} / {totalPages}
-      </span>
-      <Button
-        isIconOnly
-        aria-label={t("下一页")}
-        isDisabled={page >= totalPages}
-        radius="full"
-        size="sm"
-        variant="flat"
-        onPress={() => setPage((p) => Math.min(totalPages, p + 1))}
-      >
-        <ChevronRight20Regular />
-      </Button>
-    </div>
-  );
-
-  const emptyState = (
-    text: string,
-    icon: React.ReactNode = <Box20Regular className="w-8 h-8" />,
-  ) => (
-    <div className="my-12 flex flex-col items-center gap-3 text-center text-gray-400">
-      <div className="flex size-16 items-center justify-center rounded-3xl bg-gradient-to-br from-default-200 to-default-100 dark:from-gray-800 dark:to-gray-800/50 shadow-inner">
-        {icon}
-      </div>
-      <span className="text-[15px] font-semibold text-gray-500 dark:text-gray-400">
-        {text}
-      </span>
-    </div>
-  );
-
+  // 分页条 / 空态 / 加载行统一走共享组件（components/pager | empty-state | loading-row）
   return (
     <div className="relative flex h-full min-h-0 w-full flex-col gap-4 overflow-hidden px-6 py-5">
       {/* 标题区 */}
@@ -844,14 +875,12 @@ const DownloadPage: React.FC = () => {
                 </Select>
               </div>
               {versionLoading ? (
-                <div className="flex items-center gap-2 my-10 justify-center text-xs text-gray-400">
-                  <Spinner size="sm" /> {t("正在获取版本清单…")}
-                </div>
+                <LoadingRow text={t("正在获取版本清单…")} />
               ) : versionPageItems.length === 0 ? (
-                emptyState(
-                  t("没有找到匹配的版本"),
-                  <Cube20Regular className="w-8 h-8" />,
-                )
+                <EmptyState
+                  icon={<Cube20Regular className="h-8 w-8" />}
+                  text={t("没有找到匹配的版本")}
+                />
               ) : (
                 <div className="flex flex-col gap-2">
                   {versionPageItems.map((v) => {
@@ -890,14 +919,42 @@ const DownloadPage: React.FC = () => {
               <div className="text-center text-xs text-gray-400">
                 {t("共")} {versionFiltered.length} {t("个版本")}
               </div>
-              {renderPager(versionPage, versionTotalPages, setVersionPage)}
+              <Pager
+                page={versionPage}
+                totalPages={versionTotalPages}
+                onChange={setVersionPage}
+              />
             </>
           )}
 
-          {/* ===== Modrinth 内容类 ===== */}
+          {/* ===== Modrinth / CurseForge 内容类 ===== */}
           {MODRINTH_TABS.includes(activeTab) && (
             <>
               <div className="flex flex-none items-center gap-3">
+                {/* 资源平台筛选：Modrinth / CurseForge 双平台切换 */}
+                <SegmentedTabs
+                  className="flex flex-none items-center gap-0.5 self-stretch rounded-full border nya-border nya-panel p-0.5"
+                  items={CONTENT_SOURCES.map((item) => {
+                    const info = sources.find((s) => s.id === item.id);
+
+                    return {
+                      key: item.id,
+                      label: (
+                        <>
+                          <span>{item.label}</span>
+                          {info?.requiresApiKey && !info.apiKeyConfigured ? (
+                            <span className="text-[10px] opacity-80">
+                              {t("（未配置 Key）")}
+                            </span>
+                          ) : null}
+                        </>
+                      ),
+                    };
+                  })}
+                  layoutId="download-source-tab"
+                  value={contentSource}
+                  onChange={switchContentSource}
+                />
                 <Input
                   aria-label={t("搜索{0}", { "0": t(activeTab) })}
                   className="min-w-0 flex-1"
@@ -962,10 +1019,43 @@ const DownloadPage: React.FC = () => {
                   </Button>
                 )}
               </div>
-              {contentState.loading ? (
-                <div className="flex items-center gap-2 my-10 justify-center text-xs text-gray-400">
-                  <Spinner size="sm" /> {t("正在搜索")} {t(activeTab)}…
+              {/* CurseForge 未配置 Key：就地引导，不报错 */}
+              {contentState.needsApiKey ? (
+                <div className="flex flex-col gap-2 rounded-2xl border border-warning-200 nya-panel-inner px-3.5 py-3">
+                  <span className="flex items-center gap-2 text-xs text-warning-600 dark:text-warning-400">
+                    <Warning20Regular />
+                    {contentState.message ||
+                      t("需要先在设置里填写 CurseForge API Key。")}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      aria-label={t("CurseForge API Key")}
+                      className="min-w-0 flex-1"
+                      placeholder={t("粘贴 CurseForge API Key")}
+                      radius="full"
+                      size="sm"
+                      value={apiKeyDraft}
+                      onValueChange={setApiKeyDraft}
+                    />
+                    <Button
+                      className="flex-none"
+                      radius="full"
+                      size="sm"
+                      variant="flat"
+                      onPress={() => void saveContentKey()}
+                    >
+                      {t("保存 Key")}
+                    </Button>
+                  </div>
+                  {apiKeyApplyUrl ? (
+                    <span className="break-all text-[11px] text-gray-400">
+                      {t("申请地址：{0}", { "0": apiKeyApplyUrl })}
+                    </span>
+                  ) : null}
                 </div>
+              ) : null}
+              {contentState.loading ? (
+                <LoadingRow text={`${t("正在搜索")} ${t(activeTab)}…`} />
               ) : contentState.error ? (
                 <div className="my-10 flex flex-col items-center gap-3 text-center">
                   <div className="flex items-center gap-2 text-xs text-danger">
@@ -989,10 +1079,10 @@ const DownloadPage: React.FC = () => {
                   </Button>
                 </div>
               ) : contentPageItems.length === 0 ? (
-                emptyState(
-                  t("没有找到匹配的{0}", { "0": t(activeTab) }),
-                  TAB_ICONS[activeTab],
-                )
+                <EmptyState
+                  icon={TAB_ICONS[activeTab]}
+                  text={t("没有找到匹配的{0}", { "0": t(activeTab) })}
+                />
               ) : (
                 <div className="flex flex-col gap-2">
                   {contentPageItems.map((p) => (
@@ -1045,9 +1135,18 @@ const DownloadPage: React.FC = () => {
                 </div>
               )}
               <div className="text-center text-xs text-gray-400">
-                {t("来自 Modrinth · 共")} {contentFiltered.length} {t("个结果")}
+                {t("来自 {0} · 共", {
+                  "0":
+                    CONTENT_SOURCES.find((item) => item.id === contentSource)
+                      ?.label ?? "Modrinth",
+                })}{" "}
+                {contentFiltered.length} {t("个结果")}
               </div>
-              {renderPager(contentPage, contentTotalPages, setContentPage)}
+              <Pager
+                page={contentPage}
+                totalPages={contentTotalPages}
+                onChange={setContentPage}
+              />
             </>
           )}
 

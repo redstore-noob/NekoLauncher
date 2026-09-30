@@ -25,14 +25,14 @@ type RemoteManifest struct {
 
 // Manifest 载荷内的 manifest.json：安装器据此展示信息并生成 neko-solo.json。
 type Manifest struct {
-	Format       int    `json:"format"`
-	PackID       string `json:"packId"`
-	PackName     string `json:"packName"`
-	PackVersion  string `json:"packVersion"`
-	Author       string `json:"author,omitempty"`
-	Description  string `json:"description,omitempty"`
-	MCVersion    string `json:"mcVersion"`
-	LoaderName   string `json:"loaderName,omitempty"`
+	Format        int    `json:"format"`
+	PackID        string `json:"packId"`
+	PackName      string `json:"packName"`
+	PackVersion   string `json:"packVersion"`
+	Author        string `json:"author,omitempty"`
+	Description   string `json:"description,omitempty"`
+	MCVersion     string `json:"mcVersion"`
+	LoaderName    string `json:"loaderName,omitempty"`
 	LoaderVersion string `json:"loaderVersion,omitempty"`
 	// VersionID versions/ 下的实例目录名（= 作者导出时选中的版本号）
 	VersionID string `json:"versionId"`
@@ -75,6 +75,10 @@ type Marker struct {
 }
 
 // ParseManifest 校验并解析载荷清单：格式版本必须匹配，关键字段不能为空。
+//
+// 保留原因：export_test.go 用它把产出的载荷里的 manifest.json 解回来，
+// 验证导出侧写出的清单字段（packId/versionId/loader 等）确实对得上。
+// 删掉它，导出格式就只剩"写"没有"回读校验"。
 func ParseManifest(data []byte) (*Manifest, error) {
 	var manifest Manifest
 	if err := json.Unmarshal(data, &manifest); err != nil {

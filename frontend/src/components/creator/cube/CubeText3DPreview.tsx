@@ -343,7 +343,6 @@ const CubeText3DPreview = forwardRef<CubeText3DHandle, CubeText3DPreviewProps>(
         group.add(outlineMesh);
       }
 
-      // 场景背景
       scene.background = config.background
         ? new THREE.Color(config.background)
         : null;

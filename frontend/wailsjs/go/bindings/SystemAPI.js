@@ -30,10 +30,6 @@ export function GetAcrylicBackdropEnabled() {
   return window['go']['bindings']['SystemAPI']['GetAcrylicBackdropEnabled']();
 }
 
-export function GetAppVersion() {
-  return window['go']['bindings']['SystemAPI']['GetAppVersion']();
-}
-
 export function GetBingDailyImagePath() {
   return window['go']['bindings']['SystemAPI']['GetBingDailyImagePath']();
 }

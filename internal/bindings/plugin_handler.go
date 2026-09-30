@@ -97,6 +97,13 @@ func servePluginFile(w http.ResponseWriter, r *http.Request, root, relative stri
 	// 先归一化再拼接：Clean 会把 ".." 折叠掉，"../../x" 变成 "/x"，落在 plugins 内
 	cleaned := strings.TrimPrefix(path.Clean("/"+relative), "/")
 
+	// NTFS 备用数据流（"file:stream"）：文件名可以不带扩展名，绕过下面的
+	// 扩展名拦截后经 ServeFile 嗅探成 text/html 渲染。带 ":" 的一律 404。
+	if strings.ContainsRune(cleaned, ':') {
+		http.NotFound(w, r)
+		return
+	}
+
 	rootAbsolute, rootErr := filepath.Abs(root)
 	target, targetErr := filepath.Abs(filepath.Join(rootAbsolute, filepath.FromSlash(cleaned)))
 	// Clean 之后理论上不会越界，这里再确认一次，防止符号链接等意外情况
@@ -111,8 +118,21 @@ func servePluginFile(w http.ResponseWriter, r *http.Request, root, relative stri
 		http.NotFound(w, r)
 		return
 	}
-	if contentType, ok := pluginContentType(filepath.Ext(target)); ok {
+	// 不投递 HTML：以 text/html 渲染的文档等价于在应用 origin 下执行任意 JS，
+	// 且完全绕过清单/入口校验（任何落进插件目录的 html 都会被执行）。插件 UI
+	// 走 React 扩展点，没有合理场景需要 HTML 文档。
+	ext := strings.ToLower(filepath.Ext(target))
+	if ext == ".html" || ext == ".htm" {
+		http.NotFound(w, r)
+		return
+	}
+	if contentType, ok := pluginContentType(ext); ok {
 		w.Header().Set("Content-Type", contentType)
+	} else {
+		// 未识别的扩展名不交给嗅探：http.ServeFile 会读内容猜 MIME，
+		// 嗅出 text/html 就等于在应用 origin 下渲染执行任意页面
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 	}
 	// 插件是本地文件、随时可能被作者改动，不做缓存
 	w.Header().Set("Cache-Control", "no-store")
@@ -131,8 +151,6 @@ func pluginContentType(ext string) (string, bool) {
 		return "application/yaml; charset=utf-8", true
 	case ".css":
 		return "text/css; charset=utf-8", true
-	case ".html":
-		return "text/html; charset=utf-8", true
 	case ".svg":
 		return "image/svg+xml", true
 	case ".png":

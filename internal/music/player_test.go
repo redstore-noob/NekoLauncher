@@ -347,9 +347,9 @@ func TestPlayerResumeReopensWhenAudioLost(t *testing.T) {
 	}
 }
 
-// TestPlayerResumeFailureStopsAndRecordsError Resume 与重开都失败时记录错误并停止。
+// TestPlayerResumeFailureStopsAndRecordsError Resume 与重开都失败时返回错误并停止。
 // 防的回归：错误被吞掉后界面显示"播放中"但没有任何声音，
-// 用户完全不知道发生了什么（LastError 就是这条链路的可观测出口）。
+// 用户完全不知道发生了什么（返回的 error 就是这条链路的可观测出口）。
 func TestPlayerResumeFailureStopsAndRecordsError(t *testing.T) {
 	service, fake := newPlayerWithTracks(t, `C:\m\a.mp3`)
 	track := MusicTrack{FilePath: `C:\m\a.mp3`}
@@ -367,9 +367,6 @@ func TestPlayerResumeFailureStopsAndRecordsError(t *testing.T) {
 	err := service.Resume()
 	if err == nil {
 		t.Fatal("恢复与重开都失败时应返回错误")
-	}
-	if got := service.LastError(); got != "文件已被删除" {
-		t.Fatalf("LastError 应记录重开失败原因，得到 %q", got)
 	}
 	if state := service.State(); state != StateStopped {
 		t.Fatalf("恢复失败后应回到 Stopped，得到 %q", state)
@@ -394,9 +391,6 @@ func TestPlayerPlayFailureRecordsErrorAndKeepsStopped(t *testing.T) {
 
 	if err := service.Play(MusicTrack{FilePath: `C:\m\missing.mp3`}); err == nil {
 		t.Fatal("底层播放失败时 Play 应返回错误")
-	}
-	if got := service.LastError(); got != "文件不存在" {
-		t.Fatalf("LastError 应记录失败原因，得到 %q", got)
 	}
 	if state := service.State(); state != StateStopped {
 		t.Fatalf("播放失败后状态应为 Stopped，得到 %q", state)
@@ -676,9 +670,6 @@ func TestPlayerNextAndPreviousWrapping(t *testing.T) {
 		fake.playErr = errors.New("下一首文件损坏")
 		if service.Next() {
 			t.Fatal("底层播放失败时 Next 应返回 false")
-		}
-		if got := service.LastError(); got != "下一首文件损坏" {
-			t.Fatalf("LastError 应记录切歌失败原因，得到 %q", got)
 		}
 	})
 }

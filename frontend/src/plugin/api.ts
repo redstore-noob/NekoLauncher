@@ -155,7 +155,7 @@ const PluginHomeCard: React.FC<{
     ),
   );
 
-import { registerPage, registerWidget } from "./registry";
+import { isPluginActive, registerPage, registerWidget } from "./registry";
 import { injectPluginStyle, removePluginStyle } from "./styles";
 
 /** 宿主 API 版本：不兼容的改动才递增，插件在 plugin.yaml 里声明目标版本 */
@@ -292,6 +292,33 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
     }
   };
 
+  // 写操作单独校验：读 / 写拆成两个权限（instances-write 等），用户在安装页
+  // 才能看出插件会不会改全局状态。旧插件只声明了读权限（instances）时按旧
+  // 语义放行并记警告——兼容存量插件，但新插件应直接声明写权限。
+  const requireWritePermission = (
+    writePermission: string,
+    legacyPermission: string,
+    action: string,
+  ): void => {
+    if (declaredPermissions.has(writePermission)) return;
+    if (declaredPermissions.has(legacyPermission)) {
+      console.warn(
+        t(
+          "[plugins] {0} 通过旧权限「{1}」调用了写操作 {2}，建议改声明「{3}」",
+          {
+            "0": manifest.id,
+            "1": legacyPermission,
+            "2": action,
+            "3": writePermission,
+          },
+        ),
+      );
+
+      return;
+    }
+    requirePermission(writePermission, action);
+  };
+
   // 清理登记：插件卸载/重载时由 loader 依次调用（runPluginCleanups）。
   // 事件订阅类 API 在这里自动登记，插件无感知；onCleanup 供插件补自己的清理。
   const cleanups = new Set<() => void>();
@@ -309,6 +336,15 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
   const log = (...args: unknown[]) =>
     // eslint-disable-next-line no-console -- 这是暴露给插件的 log API，必须落到控制台
     console.log(`[plugin:${manifest.id}]`, ...args);
+
+  // 卸载后守卫：插件被卸载/停用后，遗留的定时器、回调仍持有 api 对象。
+  // 走这些入口再注册/注入会留下无人清理的孤儿（组件、<style>），统一拒绝并记警告。
+  const requireActive = (action: string): boolean => {
+    if (isPluginActive(manifest.id)) return true;
+    log(`${action} 被拒绝：插件已卸载或停用`);
+
+    return false;
+  };
 
   // 通知频控：同一插件 5 秒窗口最多 3 条，超出降级为 log——弹横条是共享资源，
   // 不能让一个失控插件把它刷满。
@@ -342,6 +378,8 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
     icons: UI_ICONS,
     HomeCard: PluginHomeCard,
     registerWidget: (definition: WidgetDefinition) => {
+      if (!requireActive("registerWidget")) return;
+
       // 注册层规范化：主页列容器是 pointer-events-none，子元素必须显式恢复
       // 事件才可交互（内置组件由 HomeCard 自带）；样式也须与内置卡片一致。
       // 与其要求每个作者记住这些约定，不如在这里统一包一层标准卡片壳——
@@ -360,12 +398,15 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
           ),
       });
     },
-    registerPage: (definition: PageDefinition) =>
-      registerPage({
+    registerPage: (definition: PageDefinition) => {
+      if (!requireActive("registerPage")) return;
+
+      return registerPage({
         ...definition,
         id: scopedKey(definition.id),
         order: definition.order ?? 1000,
-      }),
+      });
+    },
     config: {
       get: (key: string) => {
         requirePermission("storage", "config.get");
@@ -387,6 +428,7 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
     styles: {
       inject: (css: string, key?: string) => {
         requirePermission("styles", "styles.inject");
+        if (!requireActive("styles.inject")) return;
         injectPluginStyle(manifest.id, css, key);
       },
       remove: (key: string) => {
@@ -523,7 +565,7 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
     },
     // 切换选中是显式的全局状态写入（与 launchVersion 的"不落选中"相对）
     selectInstance: async (versionId: string) => {
-      requirePermission("instances", "selectInstance");
+      requireWritePermission("instances-write", "instances", "selectInstance");
       if (!(await SelectInstance(versionId))) {
         throw new Error(t("切换实例失败：{0}", { "0": versionId }));
       }
@@ -534,7 +576,11 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
       return GetVersionProfile(minecraftDirectory, versionId);
     },
     saveVersionProfile: async (profile: configModels.GameVersionProfile) => {
-      requirePermission("instances", "saveVersionProfile");
+      requireWritePermission(
+        "instances-write",
+        "instances",
+        "saveVersionProfile",
+      );
       if (!(await SaveVersionProfile(profile))) {
         throw new Error(t("保存实例档案失败"));
       }
@@ -547,7 +593,11 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
     saveLauncherSettings: async (
       settings: configModels.GlobalLaunchSettings,
     ) => {
-      requirePermission("launcher-config", "saveLauncherSettings");
+      requireWritePermission(
+        "launcher-config-write",
+        "launcher-config",
+        "saveLauncherSettings",
+      );
       if (!(await SaveGlobalLaunchSettings(settings))) {
         throw new Error(t("保存启动器设置失败"));
       }

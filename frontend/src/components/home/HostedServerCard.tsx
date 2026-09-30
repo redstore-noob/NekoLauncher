@@ -208,7 +208,7 @@ const HostedServerCard: React.FC = () => {
             className="h-7 text-xs"
             size="sm"
             variant="flat"
-            onPress={() => navigateToPage("servers")}
+            onPress={() => navigateToPage("multiplayer", "servers")}
           >
             {t("前往服务器页")}
           </Button>
@@ -306,7 +306,7 @@ const HostedServerCard: React.FC = () => {
                   isDisabled={status === "stopping"}
                   size="sm"
                   variant="light"
-                  onPress={() => navigateToPage("servers")}
+                  onPress={() => navigateToPage("multiplayer", "servers")}
                 >
                   <Open20Regular className="h-3.5 w-3.5" />
                   {t("管理")}

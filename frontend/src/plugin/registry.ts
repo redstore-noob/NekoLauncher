@@ -15,6 +15,28 @@ const widgetRegistry = new Map<string, WidgetDefinition>();
 const pageRegistry = new Map<string, PageDefinition>();
 const listeners = new Set<() => void>();
 
+/* ---------------- 插件活跃状态 ----------------
+ * 当前处于"已加载"状态的插件 id 集合。放在注册表而不是 loader：api.ts 要在
+ * styles.inject / registerWidget / registerPage 里做卸载后复查，而 api.ts 被
+ * loader 反向依赖，直接引用 loader 会成环。由 loader 在加载/卸载路径上维护。 */
+const activePlugins = new Set<string>();
+
+/** markPluginActive loader 在插件完成加载时置 true、卸载/停用/加载失败时置 false */
+export function markPluginActive(pluginId: string, active: boolean): void {
+  if (active) activePlugins.add(pluginId);
+  else activePlugins.delete(pluginId);
+}
+
+/** isPluginActive 插件当前是否处于已加载状态（供异步回调在 await 之后复查） */
+export function isPluginActive(pluginId: string): boolean {
+  return activePlugins.has(pluginId);
+}
+
+/** activePluginIDs 当前全部活跃插件的 id 快照（reloadPlugins 逐个卸载用） */
+export function activePluginIDs(): string[] {
+  return [...activePlugins];
+}
+
 // useSyncExternalStore 要求同一份快照在无变更时保持同一引用，故变更时才重建
 let widgetSnapshot: WidgetDefinition[] = [];
 let pageSnapshot: PageDefinition[] = [];

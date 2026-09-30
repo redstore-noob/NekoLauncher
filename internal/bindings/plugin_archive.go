@@ -30,7 +30,15 @@ const pluginPackageExtension = ".nekoex"
 const pluginManifestMaxBytes = 1 << 20
 
 // InstallPluginArchive 从 .nekoex 插件包安装，返回插件 id。同名插件已存在时报错。
+// 安装/卸载共享 installMu（见 InstallPluginDirectory）。
 func (a *PluginAPI) InstallPluginArchive(archivePath string) (string, error) {
+	a.installMu.Lock()
+	defer a.installMu.Unlock()
+
+	return a.installPluginArchive(archivePath)
+}
+
+func (a *PluginAPI) installPluginArchive(archivePath string) (string, error) {
 	archive := filepath.Clean(strings.TrimSpace(archivePath))
 	if archive == "" || archive == "." {
 		return "", errors.New("未选择插件包")
@@ -340,7 +348,8 @@ func writePluginArchive(writer *zip.Writer, source string) error {
 	})
 }
 
-// cleanArchivePath 把包内路径归一化为斜杠形式，并挡掉绝对路径、盘符与 ".."。
+// cleanArchivePath 把包内路径归一化为斜杠形式，并挡掉绝对路径、盘符、
+// NTFS 备用数据流（ADS）与 ".."。
 func cleanArchivePath(name string) (string, error) {
 	normalized := strings.ReplaceAll(strings.TrimSpace(name), "\\", "/")
 	if normalized == "" {
@@ -352,6 +361,12 @@ func cleanArchivePath(name string) (string, error) {
 	// zip 里同样可能写出 "C:/..." 这类带盘符的路径
 	if len(normalized) >= 2 && normalized[1] == ':' {
 		return "", fmt.Errorf("包内路径含盘符：%q", name)
+	}
+	// 任何位置的 ":" 都拒绝：NTFS 会把 "file:stream" 解析成主文件 file 的
+	// 备用数据流——文件名无扩展名，能绕过投递路由的扩展名拦截（见
+	// plugin_handler.go），也破坏"插件目录内只放常规文件"的假设
+	if strings.ContainsRune(normalized, ':') {
+		return "", fmt.Errorf("包内路径含非法字符 \":\"：%q", name)
 	}
 	cleaned := path.Clean(normalized)
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {

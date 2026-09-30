@@ -21,7 +21,6 @@ import {
   Input,
   Modal,
   ModalContent,
-  Progress,
   Select,
   SelectItem,
   Spinner,
@@ -59,7 +58,6 @@ import {
   OpenInExplorer,
   OpenPath,
 } from "../../../wailsjs/go/bindings/SystemAPI";
-import { EventsOn } from "../../../wailsjs/runtime/runtime";
 import { t } from "../../i18n";
 
 interface Props {
@@ -105,15 +103,14 @@ const ResourceSearchDialog: React.FC<Props> = ({
   initialType,
   initialQuery,
 }) => {
-  // 数据源
   const [sources, setSources] = useState<models.ResourceSourceInfo[]>([]);
-  const [source, setSource] = useState("modrinth");
+  // 平台筛选："all" = 并行搜全部可用平台并合并结果；单平台 = 只搜该站
+  const [platform, setPlatform] = useState("all");
   const [projectType, setProjectType] = useState("mod");
   const [query, setQuery] = useState("");
   const [gameVersion, setGameVersion] = useState("");
   const [loader, setLoader] = useState("");
 
-  // 结果
   const [hits, setHits] = useState<models.ResourceHit[]>([]);
   const [total, setTotal] = useState(0);
   const [searching, setSearching] = useState(false);
@@ -136,7 +133,6 @@ const ResourceSearchDialog: React.FC<Props> = ({
   const [targetId, setTargetId] = useState("");
   const [downloadVersionId, setDownloadVersionId] = useState("");
   const [downloading, setDownloading] = useState(false);
-  const [progressPercent, setProgressPercent] = useState(0);
   const [statusText, setStatusText] = useState("");
   const [savedPath, setSavedPath] = useState("");
   // CurseForge Key 输入框（未配置 Key 时在引导卡片里就地填写）
@@ -146,25 +142,42 @@ const ResourceSearchDialog: React.FC<Props> = ({
   const searchSeq = useRef(0);
   const versionSeq = useRef(0);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const downloadingRef = useRef(false);
-
-  downloadingRef.current = downloading;
 
   const activeSource = useMemo(
-    () => sources.find((item) => item.id === source) ?? null,
-    [sources, source],
+    () => sources.find((item) => item.id === platform) ?? null,
+    [sources, platform],
+  );
+  // 全平台模式下 Key 引导固定指向 CurseForge（只有它会要求 Key）
+  const keyGuideSource = useMemo(
+    () =>
+      needsApiKey
+        ? (sources.find((item) => item.id === "curseforge") ?? activeSource)
+        : activeSource,
+    [needsApiKey, sources, activeSource],
   );
   const supportsModpack = projectType === "modpack";
 
-  /** 搜索（source/projectType/query/gameVersion/loader 任一变化都会重查） */
+  /** 平台筛选对应的待搜数据源 id 列表：全平台时跳过未配置 Key 的站 */
+  function platformsToSearch(nextPlatform: string): string[] {
+    if (nextPlatform !== "all") return [nextPlatform];
+    const eligible = sources.filter(
+      (item) => !item.requiresApiKey || item.apiKeyConfigured,
+    );
+    const ids = (eligible.length ? eligible : sources).map((item) => item.id);
+
+    return ids.length ? ids : ["modrinth"];
+  }
+
+  /** 搜索（platform/projectType/query/gameVersion/loader 任一变化都会重查） */
   async function runSearch(
-    nextSource: string,
+    nextPlatform: string,
     nextType: string,
     nextQuery: string,
     nextGameVersion: string,
     nextLoader: string,
   ) {
     const seq = ++searchSeq.current;
+    const ids = platformsToSearch(nextPlatform);
 
     setSearching(true);
     setSearchError("");
@@ -172,23 +185,72 @@ const ResourceSearchDialog: React.FC<Props> = ({
     setNeedsApiKey(false);
     setSavedPath("");
     try {
-      const request: models.ResourceSearchRequest = {
-        source: nextSource,
-        projectType: nextType,
-        query: nextQuery,
-        gameVersion: nextGameVersion,
-        loader: nextLoader,
-        loaders: [],
-        limit: 40,
-      };
-      const result = await SearchResources(request);
+      // 全平台 = 各站并行搜（单站失败不拖垮整体），结果按站间交错排序
+      const settled = await Promise.allSettled(
+        ids.map((id) =>
+          SearchResources({
+            source: id,
+            projectType: nextType,
+            query: nextQuery,
+            gameVersion: nextGameVersion,
+            loader: nextLoader,
+            loaders: [],
+            limit: 40,
+          }),
+        ),
+      );
 
       if (seq !== searchSeq.current) return;
-      setHits(asArray<models.ResourceHit>(result?.hits));
-      setTotal(result?.total ?? 0);
-      setMessage(result?.message ?? "");
-      setNeedsApiKey(!!result?.needsApiKey);
-      setUsedMirror(!!result?.usedMirror);
+      const fulfilled = settled
+        .filter(
+          (item): item is PromiseFulfilledResult<models.ResourceSearchResult> =>
+            item.status === "fulfilled",
+        )
+        .map((item) => item.value);
+      const rejected = settled.filter(
+        (item): item is PromiseRejectedResult => item.status === "rejected",
+      );
+
+      if (fulfilled.length === 0) {
+        throw (rejected[0] as PromiseRejectedResult).reason;
+      }
+
+      // 站间交错：[Modrinth#1, CurseForge#1, Modrinth#2, …]，同站保持原排序
+      const merged: models.ResourceHit[] = [];
+      let cursor = 0;
+
+      while (
+        merged.length <
+        fulfilled.reduce(
+          (n, r) => n + asArray<models.ResourceHit>(r?.hits).length,
+          0,
+        )
+      ) {
+        for (const result of fulfilled) {
+          const hits = asArray<models.ResourceHit>(result?.hits);
+
+          if (cursor < hits.length) merged.push(hits[cursor]);
+        }
+        cursor += 1;
+      }
+
+      const messages = Array.from(
+        new Set(fulfilled.map((r) => r?.message ?? "").filter((m) => m !== "")),
+      );
+
+      setHits(merged);
+      setTotal(fulfilled.reduce((n, r) => n + (r?.total ?? 0), 0));
+      setMessage(
+        [
+          ...messages,
+          ...rejected.map(
+            (item) =>
+              `${t("部分平台搜索失败")}：${(item.reason as Error)?.message ?? String(item.reason)}`,
+          ),
+        ].join("；"),
+      );
+      setNeedsApiKey(fulfilled.some((r) => !!r?.needsApiKey));
+      setUsedMirror(fulfilled.some((r) => !!r?.usedMirror));
     } catch (ex) {
       if (seq !== searchSeq.current) return;
       setHits([]);
@@ -221,7 +283,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
       setSources(asArray(await GetResourceSources()));
       setMessage("");
       setNeedsApiKey(false);
-      void runSearch(source, projectType, query.trim(), gameVersion, loader);
+      void runSearch(platform, projectType, query.trim(), gameVersion, loader);
     } catch (ex) {
       setMessage(t("保存失败：{0}", { "0": (ex as Error)?.message ?? ex }));
     }
@@ -295,7 +357,6 @@ const ResourceSearchDialog: React.FC<Props> = ({
         )) || snap.MinecraftDirectory;
 
       setDownloading(true);
-      setProgressPercent(0);
       setStatusText(
         t("正在下载 {0}…", { "0": version.fileName || version.displayName }),
       );
@@ -309,7 +370,6 @@ const ResourceSearchDialog: React.FC<Props> = ({
       };
       const result = await DownloadResourceVersion(downloadRequest);
 
-      setProgressPercent(100);
       setSavedPath(result?.savedPath ?? "");
       setStatusText(
         t("已安装 {0}", { "0": result?.fileName || version.fileName }),
@@ -328,7 +388,6 @@ const ResourceSearchDialog: React.FC<Props> = ({
 
     setStatusText("");
     setSavedPath("");
-    setProgressPercent(0);
     setProject(null);
     setVersions([]);
     setVersionError("");
@@ -341,12 +400,6 @@ const ResourceSearchDialog: React.FC<Props> = ({
         const items = asArray<models.ResourceSourceInfo>(list);
 
         setSources(items);
-        // 数据源可用性由后端判定：CurseForge 未配置 Key 时仍可选中（会看到引导）
-        setSource((current) =>
-          items.some((item) => item.id === current)
-            ? current
-            : (items[0]?.id ?? "modrinth"),
-        );
       } catch (ex) {
         console.error(t("读取资源站信息失败"), ex);
       }
@@ -379,7 +432,13 @@ const ResourceSearchDialog: React.FC<Props> = ({
 
     // 打开时按"预填条件（无则用上次的搜索条件）"重查一次：输入框里还留着
     // 上次的关键词，若这里用空词搜索，列表与输入框就对不上了
-    void runSearch(source, presetType, presetQuery.trim(), gameVersion, loader);
+    void runSearch(
+      platform,
+      presetType,
+      presetQuery.trim(),
+      gameVersion,
+      loader,
+    );
 
     return () => {
       cancelled = true;
@@ -399,7 +458,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
     }
     if (searchTimer.current) clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => {
-      void runSearch(source, projectType, query.trim(), gameVersion, loader);
+      void runSearch(platform, projectType, query.trim(), gameVersion, loader);
     }, 300);
 
     return () => {
@@ -412,33 +471,14 @@ const ResourceSearchDialog: React.FC<Props> = ({
     firstQueryRender.current = true;
   }, [open]);
 
-  // 下载进度（download:contentProgress 与其它内容下载共用同一事件）
-  useEffect(() => {
-    if (!open) return;
-    const off = EventsOn(
-      "download:contentProgress",
-      (event: { downloaded?: number; total?: number } | null) => {
-        if (!event || !downloadingRef.current) return;
-        setProgressPercent(
-          event.total && event.total > 0
-            ? Math.min(100, ((event.downloaded ?? 0) * 100) / event.total)
-            : 0,
-        );
-      },
-    );
-
-    return () => off();
-  }, [open]);
-
-  // CurseForge 搜索暂时隐藏（发布版暂不放出，Key 引导体验待打磨）；
-  // 放开时删掉这行过滤即可，后端数据源列表与引导卡片无需改动。
+  // 平台筛选选项：数据源清单没拉到时兜底只给 Modrinth
   const sourceOptions = (
     sources.length
       ? sources
       : ([
           { id: "modrinth", name: "Modrinth" },
         ] as unknown as models.ResourceSourceInfo[])
-  ).filter((item) => item.id !== "curseforge");
+  ).filter((item) => item.id !== "all");
 
   const targetOptions = asArray<string>(snapshot?.VersionIds).map((id) => ({
     value: id,
@@ -468,51 +508,12 @@ const ResourceSearchDialog: React.FC<Props> = ({
     >
       <ModalContent className="h-full overflow-y-auto">
         <ModalShell
-          subtitle={t("搜索并以镜像回退下载资源，支持 Modrinth")}
+          subtitle={t("搜索并以镜像回退下载资源，支持 Modrinth / CurseForge")}
           title={t("资源搜索")}
           onClose={onClose}
         >
-          {/* 数据源 + 类型 + 关键词 */}
+          {/* 关键词 + 平台筛选 + 类型 + 加载器 */}
           <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-              {sourceOptions.map((item) => (
-                <Button
-                  key={item.id}
-                  className="flex-none"
-                  color={source === item.id ? "primary" : "default"}
-                  radius="full"
-                  size="sm"
-                  variant={source === item.id ? "solid" : "flat"}
-                  onPress={() => {
-                    setSource(item.id);
-                    setProject(null);
-                    void runSearch(
-                      item.id,
-                      projectType,
-                      query.trim(),
-                      gameVersion,
-                      loader,
-                    );
-                  }}
-                >
-                  {item.name}
-                  {item.requiresApiKey && !item.apiKeyConfigured ? (
-                    <span className="text-[10px] opacity-80">
-                      {t("（未配置 Key）")}
-                    </span>
-                  ) : null}
-                </Button>
-              ))}
-              {activeSource?.mirrorHost ? (
-                <span className="truncate text-[11px] text-gray-400">
-                  {t("接口 {0}，失败自动回退 {1}", {
-                    "0": activeSource.apiHost,
-                    "1": activeSource.mirrorHost,
-                  })}
-                </span>
-              ) : null}
-            </div>
-
             <div className="flex items-center gap-2">
               <Input
                 aria-label={t("搜索资源")}
@@ -524,6 +525,38 @@ const ResourceSearchDialog: React.FC<Props> = ({
                 value={query}
                 onValueChange={setQuery}
               />
+              <Select
+                aria-label={t("平台")}
+                className="w-36 flex-none"
+                items={[
+                  { key: "all", label: t("全部平台") },
+                  ...sourceOptions.map((item) => ({
+                    key: item.id,
+                    label:
+                      item.requiresApiKey && !item.apiKeyConfigured
+                        ? t("{0}（未配置 Key）", { "0": item.name })
+                        : item.name,
+                  })),
+                ]}
+                popoverProps={{ motionProps: popoverMotionProps }}
+                selectedKeys={[platform]}
+                size="sm"
+                onSelectionChange={(keys) => {
+                  const next = String(Array.from(keys)[0] ?? "all");
+
+                  setPlatform(next);
+                  setProject(null);
+                  void runSearch(
+                    next,
+                    projectType,
+                    query.trim(),
+                    gameVersion,
+                    loader,
+                  );
+                }}
+              >
+                {(item) => <SelectItem key={item.key}>{item.label}</SelectItem>}
+              </Select>
               <Select
                 aria-label={t("资源类型")}
                 className="w-32 flex-none"
@@ -540,7 +573,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
                   setProjectType(next);
                   setProject(null);
                   void runSearch(
-                    source,
+                    platform,
                     next,
                     query.trim(),
                     gameVersion,
@@ -563,7 +596,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
                 onBlur={() => {
                   setProject(null);
                   void runSearch(
-                    source,
+                    platform,
                     projectType,
                     query.trim(),
                     gameVersion,
@@ -589,7 +622,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
                   setLoader(next);
                   setProject(null);
                   void runSearch(
-                    source,
+                    platform,
                     projectType,
                     query.trim(),
                     gameVersion,
@@ -599,6 +632,14 @@ const ResourceSearchDialog: React.FC<Props> = ({
               >
                 {(item) => <SelectItem key={item.key}>{item.label}</SelectItem>}
               </Select>
+              {platform !== "all" && activeSource?.mirrorHost ? (
+                <span className="truncate text-[11px] text-gray-400">
+                  {t("接口 {0}，失败自动回退 {1}", {
+                    "0": activeSource.apiHost,
+                    "1": activeSource.mirrorHost,
+                  })}
+                </span>
+              ) : null}
               {usedMirror ? (
                 <span className="truncate text-[11px] text-warning-500">
                   {t("已自动切换国内镜像")}
@@ -614,7 +655,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
                 <Warning20Regular />
                 {message || t("需要先在设置里填写 CurseForge API Key。")}
               </span>
-              {activeSource?.apiKeyApplyUrl ? (
+              {keyGuideSource?.apiKeyApplyUrl ? (
                 <div className="flex items-center gap-2">
                   <Input
                     aria-label={t("CurseForge API Key")}
@@ -636,9 +677,9 @@ const ResourceSearchDialog: React.FC<Props> = ({
                   </Button>
                 </div>
               ) : null}
-              {activeSource?.apiKeyApplyUrl ? (
+              {keyGuideSource?.apiKeyApplyUrl ? (
                 <span className="break-all text-[11px] text-gray-400">
-                  {t("申请地址：{0}", { "0": activeSource.apiKeyApplyUrl })}
+                  {t("申请地址：{0}", { "0": keyGuideSource.apiKeyApplyUrl })}
                 </span>
               ) : null}
             </div>
@@ -657,7 +698,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
                 variant="flat"
                 onPress={() =>
                   void runSearch(
-                    source,
+                    platform,
                     projectType,
                     query.trim(),
                     gameVersion,
@@ -868,12 +909,10 @@ const ResourceSearchDialog: React.FC<Props> = ({
             ) : null}
 
             {downloading ? (
-              <Progress
-                aria-label={t("下载进度")}
-                className="max-w-full"
-                size="sm"
-                value={progressPercent}
-              />
+              // 进度条统一在右下角下载中心（速度 / 剩余时间 / 取消都在那里）
+              <span className="text-[11px] text-gray-400">
+                {t("实时进度与剩余时间见右下角的下载中心")}
+              </span>
             ) : null}
 
             {statusText ? (

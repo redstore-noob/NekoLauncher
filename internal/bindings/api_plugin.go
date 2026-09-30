@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -118,6 +120,11 @@ type PluginAPI struct {
 	ctx      context.Context
 	root     string
 	disabled pluginDisabledStore
+	// usageMu / usageCache 目录体积统计的缓存（见 pluginDirectoryUsage）。
+	usageMu    sync.Mutex
+	usageCache map[string]pluginUsage
+	// installMu 安装/卸载互斥：存在性检查与落盘不是原子的。
+	installMu sync.Mutex
 }
 
 // Startup 注入 Wails runtime ctx，并启动插件样式热更新轮询。
@@ -187,7 +194,7 @@ func (a *PluginAPI) ListPlugins() ([]PluginInfo, error) {
 			Directory: filepath.Join(root, id),
 			Disabled:  disabled[id],
 		}
-		info.SizeBytes, info.FileCount, info.ModifiedAt = pluginDirectoryUsage(info.Directory)
+		info.SizeBytes, info.FileCount, info.ModifiedAt = a.pluginDirectoryUsage(id, info.Directory)
 
 		manifest, manifestErr := readPluginManifest(info.Directory)
 		switch {
@@ -221,7 +228,17 @@ func (a *PluginAPI) ListPlugins() ([]PluginInfo, error) {
 // InstallPluginDirectory 把 sourceDirectory 安装为插件目录下的 <清单 id>，返回插件 id。
 // 不做覆盖：同名插件已存在、清单不可用、id 不合法或规模超限都会返回错误。
 // 分发场景请用 InstallPluginArchive（.nekoex 包）。
+//
+// 安装/卸载共享 installMu：存在性检查与落盘不是原子的，两个并发安装同名
+// 插件会都通过检查、交错写入同一目录（绑定调用可并发，前端 busy 互斥只管 UI 路径）。
 func (a *PluginAPI) InstallPluginDirectory(sourceDirectory string) (string, error) {
+	a.installMu.Lock()
+	defer a.installMu.Unlock()
+
+	return a.installPluginDirectory(sourceDirectory)
+}
+
+func (a *PluginAPI) installPluginDirectory(sourceDirectory string) (string, error) {
 	source := filepath.Clean(strings.TrimSpace(sourceDirectory))
 	if source == "" || source == "." {
 		return "", errors.New("未选择插件目录")
@@ -261,7 +278,11 @@ func (a *PluginAPI) InstallPluginDirectory(sourceDirectory string) (string, erro
 }
 
 // UninstallPlugin 删除插件目录。id 必须是插件目录下的直接子目录名。
+// 与安装共享 installMu，避免卸载与安装交错操作同一插件目录。
 func (a *PluginAPI) UninstallPlugin(id string) error {
+	a.installMu.Lock()
+	defer a.installMu.Unlock()
+
 	if err := validatePluginID(id); err != nil {
 		return err
 	}
@@ -275,6 +296,24 @@ func (a *PluginAPI) UninstallPlugin(id string) error {
 	}
 	// 顺手从停用列表里摘掉，避免卸载后残留一条无主记录
 	a.disabledStore().Set(id, false)
+	// 清掉插件写在 launcher.yaml 的 "<id>:*" 配置键：残留的话重装同名插件
+	// 会读到旧值，与"全新安装"预期不符
+	config.UpdateInTransaction(func(items map[string]any) bool {
+		changed := false
+		prefix := id + ":"
+		for key := range items {
+			if strings.HasPrefix(key, prefix) {
+				delete(items, key)
+				changed = true
+			}
+		}
+		return changed
+	})
+	// 卸载后体积缓存里的旧条目失效，直接丢弃
+	a.usageMu.Lock()
+	delete(a.usageCache, id)
+	a.usageMu.Unlock()
+
 	return nil
 }
 
@@ -406,8 +445,60 @@ func setPluginDisabled(id string, disabled bool) {
 	config.SetValue(pluginDisabledConfigKey, string(encoded))
 }
 
+// pluginUsageCacheSize 缓存的插件条目上限：插件数量远小于此，超出即整体失效。
+const pluginUsageCacheSize = 256
+
+// pluginUsageCacheTTL 缓存有效期：目录自身的 modtime 只在直接子项增删时变化，
+// 子目录深处改文件不会触发失效，加 TTL 兜底（页面上只是体积/时间展示，允许秒级陈旧）。
+const pluginUsageCacheTTL = 30 * time.Second
+
+// pluginUsage 缓存的一次目录统计结果；dirModTime + 采集时间用于失效判断。
+type pluginUsage struct {
+	sizeBytes  int64
+	fileCount  int
+	modifiedAt int64
+	dirModTime int64
+	fetchedAt  time.Time
+}
+
 // pluginDirectoryUsage 统计目录体积、文件数与最近修改时间（Unix 秒）。
-func pluginDirectoryUsage(directory string) (int64, int, int64) {
+// 结果按插件目录缓存（以目录自身 modtime 失效）：ListPlugins 每次刷新页面
+// 都会调用，插件目录可能有几万文件，全量 Walk 不能每次都来一遍。缓存挂在
+// PluginAPI 实例上（绑定层调用是并发的，加锁）。
+func (a *PluginAPI) pluginDirectoryUsage(id, directory string) (int64, int, int64) {
+	dirInfo, err := os.Stat(directory)
+	if err != nil {
+		return 0, 0, 0
+	}
+	dirModTime := dirInfo.ModTime().UnixNano()
+
+	a.usageMu.Lock()
+	defer a.usageMu.Unlock()
+	// 缓存惰性初始化：PluginAPI 常以零值字面量构造（绑定注册 / 测试）
+	if a.usageCache == nil {
+		a.usageCache = make(map[string]pluginUsage)
+	} else if len(a.usageCache) > pluginUsageCacheSize {
+		a.usageCache = make(map[string]pluginUsage)
+	}
+	if cached, ok := a.usageCache[id]; ok && cached.dirModTime == dirModTime &&
+		time.Since(cached.fetchedAt) < pluginUsageCacheTTL {
+		return cached.sizeBytes, cached.fileCount, cached.modifiedAt
+	}
+
+	size, count, newest := walkPluginDirectoryUsage(directory)
+	a.usageCache[id] = pluginUsage{
+		sizeBytes:  size,
+		fileCount:  count,
+		modifiedAt: newest,
+		dirModTime: dirModTime,
+		fetchedAt:  time.Now(),
+	}
+
+	return size, count, newest
+}
+
+// walkPluginDirectoryUsage 全量 Walk 统计目录体积、文件数与最近修改时间（Unix 秒）。
+func walkPluginDirectoryUsage(directory string) (int64, int, int64) {
 	var size int64
 	var count int
 	var newest int64

@@ -28,11 +28,6 @@ func (a *ConfigAPI) IsPortableMode() bool {
 	return ok
 }
 
-// SetStorageDirectory 设置存储目录（需在启动早期调用）。
-func (a *ConfigAPI) SetStorageDirectory(storageDir string) error {
-	return config.SetStorageDirectory(storageDir)
-}
-
 // ---- 游戏目录 ----
 
 // GetGameDirectory 游戏目录；空串表示未设置。

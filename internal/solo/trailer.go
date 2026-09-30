@@ -84,6 +84,10 @@ func ParseTrailer(data []byte) (Trailer, error) {
 }
 
 // ReadTrailerFromFile 读取文件尾部的 32 字节并解析。
+//
+// 保留原因：它是导出侧的唯一校验入口 —— export_test.go 用它从产出的 exe
+// 反查载荷位置，从而验证 AppendTrailer 真正写出的字节是对的。删掉它，
+// 导出格式就再没有任何东西把关（C# 安装器在另一个仓库/语言里，CI 跑不到）。
 func ReadTrailerFromFile(path string) (Trailer, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -110,6 +114,9 @@ func ReadTrailerFromFile(path string) (Trailer, error) {
 
 // OpenPayloadRange 打开 path 并把读取位置定位到载荷起点；
 // 返回的 reader 从载荷开头开始、恰好可读 Length 字节。调用方负责 Close。
+//
+// 与 ReadTrailerFromFile 同理保留：export_test.go 靠它把产出的 exe 里的载荷
+// 区间当作 zip 打开，验证导出布局（files/ / minecraft/ / jre/）真的写对了。
 func OpenPayloadRange(path string, trailer Trailer) (io.ReadCloser, error) {
 	file, err := os.Open(path)
 	if err != nil {

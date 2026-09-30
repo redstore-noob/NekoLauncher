@@ -378,33 +378,6 @@ func GetInstanceIconOverride(minecraftDirectory, versionId string) *string {
 	return Get(minecraftDirectory, versionId).InstanceIconOverride
 }
 
-// SaveInstanceIconOverride 仅更新实例图标偏好，不触碰其他设置；失败返回 false。
-func SaveInstanceIconOverride(minecraftDirectory, versionId string, overrideValue *string) bool {
-	if strings.TrimSpace(minecraftDirectory) == "" || strings.TrimSpace(versionId) == "" {
-		return false
-	}
-
-	normalized := normalizePathOrOriginal(minecraftDirectory)
-	profileGate.Lock()
-	defer profileGate.Unlock()
-	profiles := loadProfiles()
-	// 只更新最后一条匹配（与 Get 的 LastOrDefault 语义一致），更新后移到末尾
-	index := findProfileIndex(profiles, normalized, versionId)
-	var profile GameVersionProfile
-	if index >= 0 {
-		profile = profiles[index]
-		profile.InstanceIconOverride = overrideValue
-		profiles = append(profiles[:index], profiles[index+1:]...)
-	} else {
-		profile = NewGameVersionProfile()
-		profile.MinecraftDirectory = normalized
-		profile.VersionId = versionId
-		profile.InstanceIconOverride = overrideValue
-	}
-	profiles = append(profiles, profile)
-	return SetValue(profilesKey, serializeProfiles(profiles))
-}
-
 // loadProfiles 从 launcher.yaml 读取全部实例配置，需持 profileGate 调用。
 func loadProfiles() []GameVersionProfile {
 	raw := GetValue(profilesKey)

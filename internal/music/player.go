@@ -71,7 +71,6 @@ type MusicPlayerService struct {
 	manualStop   bool
 	playbackMode PlaybackMode
 	playlist     []MusicTrack
-	lastError    string
 
 	// audio 实际音频输出实现（可为 nil：仅状态机，如用于测试）。
 	audio AudioPlayer
@@ -120,13 +119,6 @@ func (s *MusicPlayerService) CurrentTrack() *MusicTrack {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.currentTrack
-}
-
-// LastError 最近一次播放失败的原因（无错误时为空串）。
-func (s *MusicPlayerService) LastError() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastError
 }
 
 // Playlist 播放列表。自动切歌、上一首/下一首都基于该列表；
@@ -264,7 +256,6 @@ func (s *MusicPlayerService) Resume() error {
 			// 暂停时被清理的异常情况：直接重新打开文件
 			if err := audio.Play(track.FilePath); err != nil {
 				s.mu.Lock()
-				s.lastError = err.Error()
 				s.state = StateStopped
 				s.currentTrack = nil
 				s.mu.Unlock()
@@ -408,7 +399,6 @@ func (s *MusicPlayerService) playCore(track MusicTrack) error {
 	s.currentTrack = &trackCopy
 	s.state = StatePlaying
 	s.manualStop = false
-	s.lastError = ""
 	s.mu.Unlock()
 
 	if audio == nil {
@@ -416,7 +406,6 @@ func (s *MusicPlayerService) playCore(track MusicTrack) error {
 	}
 	if err := audio.Play(track.FilePath); err != nil {
 		s.mu.Lock()
-		s.lastError = err.Error()
 		s.state = StateStopped
 		s.currentTrack = nil
 		s.manualStop = manualStop

@@ -88,6 +88,10 @@ jobs:
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    # 内置 CurseForge API Key（builtin_keys.go 编译期注入）。Secret 缺省为空串
+    # 时 ldflags 注入空值，行为等同未注入：CurseForge 走"未配置 Key"引导。
+    env:
+      CF_API_KEY: ${{ secrets.CF_API_KEY }}
     strategy:
       fail-fast: false
       matrix:
@@ -127,7 +131,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          wails build -platform windows/amd64 -webview2 embed
+          wails build -platform windows/amd64 -webview2 embed \
+            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY"
           # ---- NekoSolo 安装器模板：随启动器一起分发 ----
           # runner 自带 .NET SDK，能构建 net48 的 stub；模板打进 portable zip 的
           # tools/NekoSolo/（启动器导出 exe 的查找位置之一），并单独作为 Release 资产
@@ -144,7 +149,8 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          wails build -platform linux/amd64
+          wails build -platform linux/amd64 \
+            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY"
           chmod +x build/bin/NekoLauncher
           # ---- AppImage 打包 ----
           # 注意：linuxdeploy 校验图标必须为标准尺寸（历史上 63x63 图标被打回），
@@ -181,7 +187,8 @@ jobs:
         if: runner.os == 'MacOS'
         shell: bash
         run: |
-          wails build -platform darwin/universal
+          wails build -platform darwin/universal \
+            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY"
           # 未签名 app 打成 zip；签名/公证需要 Apple 开发者证书，暂不配置
           cd build/bin
           zip -r "../../NekoLauncher-darwin-universal.zip" NekoLauncher.app

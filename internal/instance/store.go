@@ -216,16 +216,6 @@ func applySelect(versionID string) (selectOutcome, GameInstanceSnapshot) {
 	return selectRefreshed, published
 }
 
-// CanResolveSource 路径是否能被解析为有效的 Minecraft 安装位置或外部实例。
-func CanResolveSource(sourcePath string) bool {
-	if _, err := ResolveInstallationPath(sourcePath); err == nil {
-		return true
-	}
-	// 常规解析不认的路径再尝试外部实例识别
-	_, ok := TryResolveExternalInstance(sourcePath)
-	return ok
-}
-
 // scan 枚举磁盘上的版本并组装快照（C# GameInstanceStore.Scan）。
 func scan(sourcePath string, previous GameInstanceSnapshot) (GameInstanceSnapshot, error) {
 	location, err := ResolveInstallationPath(sourcePath)

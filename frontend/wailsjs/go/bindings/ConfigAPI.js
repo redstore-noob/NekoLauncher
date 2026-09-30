@@ -122,10 +122,6 @@ export function SetPrimaryJava(arg1) {
   return window['go']['bindings']['ConfigAPI']['SetPrimaryJava'](arg1);
 }
 
-export function SetStorageDirectory(arg1) {
-  return window['go']['bindings']['ConfigAPI']['SetStorageDirectory'](arg1);
-}
-
 export function SetValue(arg1, arg2) {
   return window['go']['bindings']['ConfigAPI']['SetValue'](arg1, arg2);
 }

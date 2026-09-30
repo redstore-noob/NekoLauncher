@@ -66,20 +66,8 @@ export function LookupModNameTranslations(arg1) {
   return window['go']['bindings']['ContentAPI']['LookupModNameTranslations'](arg1);
 }
 
-export function ReadMods(arg1) {
-  return window['go']['bindings']['ContentAPI']['ReadMods'](arg1);
-}
-
-export function ReadResourcePacks(arg1) {
-  return window['go']['bindings']['ContentAPI']['ReadResourcePacks'](arg1);
-}
-
 export function ReadSaves(arg1) {
   return window['go']['bindings']['ContentAPI']['ReadSaves'](arg1);
-}
-
-export function ReadShaders(arg1) {
-  return window['go']['bindings']['ContentAPI']['ReadShaders'](arg1);
 }
 
 export function RefreshModNameTranslations(arg1) {

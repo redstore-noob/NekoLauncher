@@ -41,34 +41,6 @@ func (a *LaunchAccount) Badge() string {
 	}
 }
 
-// TypeLabel 账号类型标签。
-func (a *LaunchAccount) TypeLabel() string {
-	switch a.Type {
-	case "microsoft":
-		return "正版账户"
-	case "offline":
-		return "离线账户"
-	case "authlib":
-		return "皮肤站账户"
-	default:
-		return "第三方账户"
-	}
-}
-
-// LoginModeLabel 登录方式标签。
-func (a *LaunchAccount) LoginModeLabel() string {
-	switch a.Type {
-	case "microsoft":
-		return "正版登录"
-	case "offline":
-		return "离线登录"
-	case "authlib":
-		return "外置登录"
-	default:
-		return "第三方登录"
-	}
-}
-
 // DeviceCodeInfo Microsoft OAuth 设备码登录过程中需要展示给用户的信息。
 // 调用方应在回调中展示 UserCode 和验证地址，等待用户在浏览器中完成授权。
 type DeviceCodeInfo struct {

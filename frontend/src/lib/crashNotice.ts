@@ -30,25 +30,34 @@ export interface CrashInfo {
 /**
  * 判断一次退出快照是否属于"异常退出"。
  *
- * 只认后端在 observeProcess 里给出的两种明确信号，避免误报：
- *   - 标题为"游戏异常退出"（手动停止与正常退出走的是另外两个标题）；
- *   - 或消息形如"退出代码：<非 0>"。
- * 后端的标题文案是中文硬编码，所以这里同时看退出码，不单纯依赖文案。
+ * 优先读快照里结构化的 ExitCode / StoppedManually（Go 侧 observeProcess 直接
+ * 下发）；老版本快照没有这两个字段时回退解析中文文案（"退出代码：N"消息 /
+ * "游戏异常退出"标题）。正常退出（退出码 0）与手动停止不算崩溃。
  */
 export function detectCrash(snapshot: launch.GameLaunchSnapshot): CrashInfo {
   if (snapshot?.Phase !== LAUNCH_PHASE_EXITED) {
     return { crashed: false, exitCode: null };
   }
 
-  const message = String(snapshot.Message ?? "");
-  const matched = /退出代码[：:]\s*(-?\d+)/.exec(message);
-  const exitCode = matched ? Number(matched[1]) : null;
+  let exitCode: number | null = null;
+  let stoppedManually = false;
 
-  // 正常退出（退出码 0）与手动停止（后端标题为"游戏已停止"）不算崩溃
+  if (typeof snapshot.ExitCode === "number") {
+    exitCode = snapshot.ExitCode;
+    stoppedManually = !!snapshot.StoppedManually;
+  } else {
+    const message = String(snapshot.Message ?? "");
+    const matched = /退出代码[：:]\s*(-?\d+)/.exec(message);
+
+    exitCode = matched ? Number(matched[1]) : null;
+    stoppedManually = String(snapshot.Title ?? "") === "游戏已停止";
+  }
+
+  // 手动停止与正常退出不算崩溃；退出码未知（老快照）时退回看标题里的"异常"
   const crashed =
     exitCode !== null
-      ? exitCode !== 0
-      : /异常/.test(String(snapshot.Title ?? ""));
+      ? !stoppedManually && exitCode !== 0
+      : !stoppedManually && /异常/.test(String(snapshot.Title ?? ""));
 
   return { crashed, exitCode };
 }
@@ -68,6 +77,10 @@ export function formatDiagnosis(
 
   if (diagnosis?.Description) lines.push(`崩溃描述：${diagnosis.Description}`);
   if (diagnosis?.Exception) lines.push(`异常：${diagnosis.Exception}`);
+  if (diagnosis?.Details?.length) {
+    lines.push("具体报错：");
+    diagnosis.Details.forEach((detail) => lines.push(`  ${detail}`));
+  }
   if (diagnosis?.ReportPath) lines.push(`崩溃报告：${diagnosis.ReportPath}`);
   if (diagnosis?.Suspected?.length) {
     lines.push("可能原因：");
@@ -145,12 +158,15 @@ export function notifyCrashIfNeeded(
         return suggestion ? `· ${t(item)}\n  ${t(suggestion)}` : `· ${t(item)}`;
       })
       .join("\n");
+    // 具体报错行（模组依赖明细、异常链）：原样透出，让用户不用翻日志就能看到
+    // "到底是谁和谁冲突"。这些是日志原文，不进词典。
+    const evidence = (diagnosis?.Details ?? []).slice(0, 3).join("\n");
 
     const message = detail
       ? t("Minecraft 进程以非零退出码结束（退出代码：{0}）。\n\n{1}\n\n{2}", {
           "0": codeText,
           "1": t(diagnosis?.Summary ?? ""),
-          "2": detail,
+          "2": evidence ? `${detail}\n\n${evidence}` : detail,
         })
       : t(
           "Minecraft 进程以非零退出码结束（退出代码：{0}）。\n\n常见原因：Java 版本不匹配、内存分配不足、模组冲突或缺少前置。可打开启动日志查看具体报错。",

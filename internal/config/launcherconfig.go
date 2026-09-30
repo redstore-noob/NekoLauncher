@@ -167,14 +167,6 @@ func SaveJava(javaPath, javaVersion string) bool {
 	})
 }
 
-// ClearJava 删除已保存的 Java 配置（恢复自动检测）。
-func ClearJava() {
-	withStoreBool(func(store *ConfigFileManager) bool {
-		store.ConfigItemDelete("javaPath")
-		return true
-	})
-}
-
 // GetJavaPaths 已保存的全部 Java 路径（列表首位为默认 Java）。
 func GetJavaPaths() []JavaPathItem {
 	configSyncRoot.Lock()

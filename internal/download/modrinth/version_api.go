@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -58,30 +57,6 @@ func GetVersions(ctx context.Context, projectID string, gameVersions, loaders []
 	return versions, nil
 }
 
-// GetSupportedGameVersions 获取指定项目支持的 MC 版本列表（去重、按版本号降序）。
-func GetSupportedGameVersions(ctx context.Context, projectID string) ([]string, error) {
-	versions, err := GetVersions(ctx, projectID, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	var result []string
-	for _, v := range versions {
-		for _, gv := range v.GameVersions {
-			key := strings.ToLower(gv)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			result = append(result, gv)
-		}
-	}
-	sort.SliceStable(result, func(i, j int) bool {
-		return CompareVersionStrings(result[i], result[j]) > 0
-	})
-	return result, nil
-}
-
 // CompareVersionStrings 按分段数值比较 MC 版本号（如 1.10.2 > 1.9.4），
 // 替代会产生错误顺序的字符串比较。
 func CompareVersionStrings(a, b string) int {
@@ -114,30 +89,6 @@ func CompareVersionStrings(a, b string) int {
 		}
 	}
 	return 0
-}
-
-// GetSupportedLoaders 获取指定项目在指定 MC 版本下支持的 Loader 列表（去重、排序）。
-func GetSupportedLoaders(ctx context.Context, projectID, gameVersion string) ([]string, error) {
-	versions, err := GetVersions(ctx, projectID, []string{gameVersion}, nil)
-	if err != nil {
-		return nil, err
-	}
-	seen := map[string]bool{}
-	var result []string
-	for _, v := range versions {
-		for _, l := range v.Loaders {
-			key := strings.ToLower(l)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			result = append(result, l)
-		}
-	}
-	sort.SliceStable(result, func(i, j int) bool {
-		return strings.ToLower(result[i]) < strings.ToLower(result[j])
-	})
-	return result, nil
 }
 
 // GetVersionsForCombo 获取指定项目在指定 MC 版本 + Loader 下的可用 Mod 版本列表。

@@ -40,11 +40,6 @@ type MinecraftServerStatus struct {
 	IconPath string `json:"IconPath"`
 }
 
-// Unreachable 不可达状态：Motd 为失败原因，其余为零值。
-func Unreachable(reason string) MinecraftServerStatus {
-	return MinecraftServerStatus{Motd: reason}
-}
-
 // MinecraftServerPinger 原版 Minecraft 服务器状态查询（Server List Ping）：
 // TCP 连接 → 握手包（nextState=1）→ 状态请求 → 读取 JSON 状态响应。
 // 仅依赖原版协议，不额外引入依赖。

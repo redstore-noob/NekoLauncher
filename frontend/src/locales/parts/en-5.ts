@@ -3,7 +3,6 @@
  */
 const dict: Record<string, string> = {
   游戏崩溃: "Game Crash",
-  "游戏加载中…要不要撸猫？": "Game loading… Wanna pet a cat?",
   游戏目录: "Game Directory",
   账号: "Account",
   选择账号: "Select account",
@@ -17,7 +16,6 @@ const dict: Record<string, string> = {
   游戏已退出: "Game exited",
   "游戏已在运行，停止后才能再次启动":
     "The game is already running; stop it before launching again",
-  "又在偷偷看我，喵~": "Peeking at me again, meow~",
   羽毛: "Feather",
   语言: "Language",
   "语言 / 汉化": "Language / Localization",

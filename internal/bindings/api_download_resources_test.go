@@ -34,14 +34,15 @@ func TestCurseForgeAPIKeyRoundTrip(t *testing.T) {
 	useTempConfigStorage(t)
 
 	api := &DownloadAPI{}
-	if got := api.GetCurseForgeAPIKey(); got != "" {
-		t.Fatalf("初始应为空串，实际 %q", got)
+	// 注入模式（-ldflags -X）下初始值是内置 Key，否则为空串。
+	if got := effectiveCurseForgeAPIKey(); got != strings.TrimSpace(builtinCurseForgeAPIKey) {
+		t.Fatalf("初始应等于内置值（未注入时为空串），实际 %q", got)
 	}
 
 	if !api.SaveCurseForgeAPIKey("  $2a$10$abcdef  ") {
 		t.Fatal("保存 Key 应返回成功")
 	}
-	if got := api.GetCurseForgeAPIKey(); got != "$2a$10$abcdef" {
+	if got := effectiveCurseForgeAPIKey(); got != "$2a$10$abcdef" {
 		t.Fatalf("读出的 Key = %q，期望去掉首尾空格", got)
 	}
 	if got := config.GetValue("curseforgeApiKey"); got != "$2a$10$abcdef" {
@@ -49,8 +50,17 @@ func TestCurseForgeAPIKeyRoundTrip(t *testing.T) {
 	}
 
 	api.SaveCurseForgeAPIKey("")
-	if got := api.GetCurseForgeAPIKey(); got != "" {
-		t.Fatalf("清空后应读不到 Key，实际 %q", got)
+	if got := effectiveCurseForgeAPIKey(); got != strings.TrimSpace(builtinCurseForgeAPIKey) {
+		t.Fatalf("清空用户 Key 后应回到内置值，实际 %q", got)
+	}
+}
+
+// skipWhenBuiltinKeyInjected 内置 Key 注入的发布构建里不存在"未配置 Key"状态，
+// 依赖该状态的降级路径用例没有意义，直接跳过。
+func skipWhenBuiltinKeyInjected(t *testing.T) {
+	t.Helper()
+	if strings.TrimSpace(builtinCurseForgeAPIKey) != "" {
+		t.Skip("内置 Key 已注入，未配置 Key 的降级路径不存在")
 	}
 }
 
@@ -58,6 +68,7 @@ func TestCurseForgeAPIKeyRoundTrip(t *testing.T) {
 // 资源站清单不看用户是否配了 Key（未配置也标"可用"，点了才报错；
 // 或者配置好了仍提示去设置里填 Key）。
 func TestGetResourceSourcesReflectsConfiguredKey(t *testing.T) {
+	skipWhenBuiltinKeyInjected(t)
 	useTempConfigStorage(t)
 
 	api := &DownloadAPI{}
@@ -89,6 +100,7 @@ func TestGetResourceSourcesReflectsConfiguredKey(t *testing.T) {
 // 没配 Key 时绑定层抛异常（前端弹一个红色报错），而不是返回可读引导。
 // 这条用例同时保证"未配置 Key 不会发起任何网络请求"。
 func TestSearchResourcesWithoutKeyReturnsGuidance(t *testing.T) {
+	skipWhenBuiltinKeyInjected(t)
 	useTempConfigStorage(t)
 
 	api := &DownloadAPI{}
@@ -113,6 +125,7 @@ func TestSearchResourcesWithoutKeyReturnsGuidance(t *testing.T) {
 
 // TestListResourceVersionsWithoutKeyReturnsGuidance 防的回归：版本列表路径的降级同上。
 func TestListResourceVersionsWithoutKeyReturnsGuidance(t *testing.T) {
+	skipWhenBuiltinKeyInjected(t)
 	useTempConfigStorage(t)
 
 	api := &DownloadAPI{}
@@ -134,6 +147,7 @@ func TestListResourceVersionsWithoutKeyReturnsGuidance(t *testing.T) {
 // TestDownloadResourceVersionWithoutKeyExplainsWhy 防的回归：
 // 未配置 Key 时下载报的是"下载失败"这类含糊错误，用户不知道该去配 Key。
 func TestDownloadResourceVersionWithoutKeyExplainsWhy(t *testing.T) {
+	skipWhenBuiltinKeyInjected(t)
 	useTempConfigStorage(t)
 
 	api := &DownloadAPI{}
@@ -148,5 +162,30 @@ func TestDownloadResourceVersionWithoutKeyExplainsWhy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "CurseForge API Key") {
 		t.Fatalf("错误信息应指向 Key 配置：%v", err)
+	}
+}
+
+// TestCurseForgeAPIKeyBuiltinFallback 防的回归：
+// 编译期注入的内置 Key（-ldflags -X）没有生效（发布版用户不填 Key 就用不了
+// CurseForge），或者生效后盖过了用户自己配置的 Key（用户填的 Key 应优先）。
+// 两种运行模式都要成立：普通 go test（builtin 为空）与注入模式（builtin 非空）。
+func TestCurseForgeAPIKeyBuiltinFallback(t *testing.T) {
+	useTempConfigStorage(t)
+
+	api := &DownloadAPI{}
+	if got := effectiveCurseForgeAPIKey(); got != strings.TrimSpace(builtinCurseForgeAPIKey) {
+		t.Fatalf("未配置用户 Key 时应回落到内置值：got %q, builtin %q", got, builtinCurseForgeAPIKey)
+	}
+
+	if !api.SaveCurseForgeAPIKey("user-key") {
+		t.Fatal("保存用户 Key 应返回成功")
+	}
+	if got := effectiveCurseForgeAPIKey(); got != "user-key" {
+		t.Fatalf("用户配置的 Key 应优先于内置值：got %q", got)
+	}
+
+	api.SaveCurseForgeAPIKey("")
+	if got := effectiveCurseForgeAPIKey(); got != strings.TrimSpace(builtinCurseForgeAPIKey) {
+		t.Fatalf("清空用户 Key 后应回到内置值：got %q", got)
 	}
 }

@@ -5,6 +5,10 @@ package bindings
 // DownloadSettings / DownloadPauseGate / ContentInstallService。
 
 import (
+	"context"
+	"path/filepath"
+	"strconv"
+
 	"nekolauncher/internal/download"
 	"nekolauncher/internal/models"
 )
@@ -82,21 +86,35 @@ func (a *DownloadAPI) QueryAvailableJavaVersions(vendor download.JavaVendor) ([]
 	return download.QueryAvailableJavaVersions(callCtx(a.ctx), vendor)
 }
 
-// InstallJavaRuntime 下载并安装指定 JDK；进度经 download:javaProgress 事件推送。
-// 前端订阅方期望 {Percentage, Detail} 字段，这里从 JavaRuntimeInstallProgress
-// （Phase/CompletedBytes/TotalBytes）映射，避免进度恒为 0、状态文本为空。
+// InstallJavaRuntime 下载并安装指定 JDK；进度经 download:javaProgress 事件推送
+// （前端 Java 标签页期望 {Percentage, Detail} 字段），同时注册为内容任务，
+// 右下角下载中心可见、可取消。
 func (a *DownloadAPI) InstallJavaRuntime(candidate download.JavaDownloadCandidate) (*download.InstalledJavaRuntime, error) {
 	var installer download.JavaRuntimeInstaller
-	return installer.InstallCandidate(callCtx(a.ctx), candidate, func(progress download.JavaRuntimeInstallProgress) {
-		percentage := 0.0
-		if progress.TotalBytes > 0 {
-			percentage = float64(progress.CompletedBytes) / float64(progress.TotalBytes) * 100
-		}
-		emit(a.ctx, "download:javaProgress", map[string]any{
-			"Percentage": percentage,
-			"Detail":     progress.Phase,
+	var result *download.InstalledJavaRuntime
+	err := download.RunContentDownload(callCtx(a.ctx), "java",
+		candidate.VendorName()+" Java "+strconv.Itoa(candidate.MajorVersion),
+		func(taskCtx context.Context, report download.ProgressBytes, setDetail func(string)) error {
+			var runErr error
+			result, runErr = installer.InstallCandidate(taskCtx, candidate, func(progress download.JavaRuntimeInstallProgress) {
+				report(progress.CompletedBytes, progress.TotalBytes)
+				setDetail(progress.Phase)
+				percentage := 0.0
+				if progress.TotalBytes > 0 {
+					percentage = float64(progress.CompletedBytes) / float64(progress.TotalBytes) * 100
+				}
+				emit(a.ctx, "download:javaProgress", map[string]any{
+					"Percentage": percentage,
+					"Detail":     progress.Phase,
+				})
+			})
+
+			return runErr
 		})
-	})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // ---- 下载源与设置 ----
@@ -141,33 +159,64 @@ func (a *DownloadAPI) GetSourceLatencies() []download.SourceLatency {
 }
 
 // ---- 内容下载（Mod / 资源包 / 光影 / 整合包） ----
+//
+// 全部内容下载都包成内容任务（RunContentDownload）：右下角下载中心可见、
+// 可取消（任务 ctx 贯穿到下载层），并经 OnContentTaskProgress 兼容旧的
+// download:contentProgress 单条进度事件。
 
 // DownloadFileToInstance 下载文件到实例内容目录的子目录（mods 等），返回保存路径。
-// 进度经 download:contentProgress 事件推送 {downloaded, total}。
 func (a *DownloadAPI) DownloadFileToInstance(
 	downloadURL, fileName, contentDirectory, subDirectory string,
 ) (string, error) {
-	return download.DownloadFileToInstance(callCtx(a.ctx), downloadURL, fileName, contentDirectory, subDirectory,
-		func(downloaded, total int64) {
-			emit(a.ctx, "download:contentProgress", map[string]int64{"downloaded": downloaded, "total": total})
+	var savedPath string
+	err := download.RunContentDownload(callCtx(a.ctx), "content", fileName,
+		func(taskCtx context.Context, report download.ProgressBytes, setDetail func(string)) error {
+			var runErr error
+			savedPath, runErr = download.DownloadFileToInstance(taskCtx, downloadURL, fileName, contentDirectory, subDirectory, report)
+
+			return runErr
 		})
+	if err != nil {
+		return "", err
+	}
+	return savedPath, nil
 }
 
 // DownloadFileToPath 下载文件到任意路径。
 func (a *DownloadAPI) DownloadFileToPath(downloadURL, targetPath string) error {
-	return download.DownloadFileToPath(callCtx(a.ctx), downloadURL, targetPath,
-		func(downloaded, total int64) {
-			emit(a.ctx, "download:contentProgress", map[string]int64{"downloaded": downloaded, "total": total})
+	return download.RunContentDownload(callCtx(a.ctx), "content", filepath.Base(targetPath),
+		func(taskCtx context.Context, report download.ProgressBytes, setDetail func(string)) error {
+			return download.DownloadFileToPath(taskCtx, downloadURL, targetPath, report)
 		})
 }
 
 // InstallModpackToInstance 解压 .mrpack / CurseForge .zip 到实例内容目录并下载声明文件。
 // 返回 ModpackInstallResult{InstalledFiles, DownloadedMods, Errors}。
+// CurseForge 依赖经官方 API 换 CDN 直链（Key 由设置页或编译期内置值提供），
+// 声明文件走高速小文件下载器并行下载。
 func (a *DownloadAPI) InstallModpackToInstance(mrpackPath, contentDirectory string) (*download.ModpackInstallResult, error) {
-	return download.InstallModpack(callCtx(a.ctx), mrpackPath, contentDirectory,
-		func(downloaded, total int64) {
-			emit(a.ctx, "download:contentProgress", map[string]int64{"downloaded": downloaded, "total": total})
+	var result *download.ModpackInstallResult
+	err := download.RunContentDownload(callCtx(a.ctx), "modpack", filepath.Base(mrpackPath),
+		func(taskCtx context.Context, report download.ProgressBytes, setDetail func(string)) error {
+			var runErr error
+			result, runErr = download.InstallModpack(taskCtx, effectiveCurseForgeAPIKey(), mrpackPath, contentDirectory, report, setDetail)
+
+			return runErr
 		})
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetContentTasks 内容下载任务列表（右下角下载中心渲染）。
+func (a *DownloadAPI) GetContentTasks() []download.ContentTaskSnapshot {
+	return download.ContentTasksList()
+}
+
+// CancelContentTask 取消一个内容下载任务（仅活跃任务可取消）。
+func (a *DownloadAPI) CancelContentTask(id string) bool {
+	return download.CancelContentTask(id)
 }
 
 // ReadModpackRequirements 读取整合包要求的 Minecraft / Loader 版本。

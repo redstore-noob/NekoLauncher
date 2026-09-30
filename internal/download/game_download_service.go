@@ -53,17 +53,9 @@ func IdleGameDownloadSnapshot() GameDownloadSnapshot {
 	}
 }
 
-// HasTask 是否存在任务。
-func (s GameDownloadSnapshot) HasTask() bool { return s.Phase != GameDownloadIdle }
-
 // IsActive 任务是否活跃。
 func (s GameDownloadSnapshot) IsActive() bool {
 	return s.Phase == GameDownloadPreparing || s.Phase == GameDownloadDownloading
-}
-
-// IsTerminal 任务是否已终止。
-func (s GameDownloadSnapshot) IsTerminal() bool {
-	return s.Phase == GameDownloadCompleted || s.Phase == GameDownloadFailed || s.Phase == GameDownloadCancelled
 }
 
 // clone 返回快照副本（用于 "with" 语义的字段修改）。

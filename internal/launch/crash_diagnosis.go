@@ -29,6 +29,9 @@ type CrashDiagnosis struct {
 	Suggestions []string `json:"Suggestions"`
 	// Summary 一句话结论，直接作为弹窗正文。
 	Summary string `json:"Summary"`
+	// Details 从崩溃报告/日志里摘出的具体报错行（模组依赖、异常链等原始文本），
+	// 前端原样展示——这是"具体错在哪"的证据，不进词典。
+	Details []string `json:"Details"`
 }
 
 // CrashDiagnosisInput 诊断输入（绑定层负责采集，便于单测直接构造）。
@@ -95,6 +98,13 @@ var crashRules = []crashRule{
 			mustPattern(`java\.lang\.NoClassDefFoundError: .*(?:fabric|forge|mod|architectury|mixinextras)`),
 			mustPattern(`Duplicate mods found`),
 			mustPattern(`Incompatible mod set`),
+			// Fabric Loader 0.16+ 的图形化报错（截图里那种"有不兼容的模组！"）：
+			// 只写日志和弹窗，不一定生成 crash-report
+			mustPattern(`Incompatible mods found`),
+			mustPattern(`are incompatible with the game or each other`),
+			// Forge/NeoForge 依赖缺失的常见措辞
+			mustPattern(`Missing mandatory dependencies`),
+			mustPattern(`Mod file .* (?:is missing|lacks)`),
 		},
 	},
 	{
@@ -208,8 +218,58 @@ func DiagnoseCrash(input CrashDiagnosisInput) CrashDiagnosis {
 	}
 
 	result.Summary = buildCrashSummary(input, result)
+	result.Details = collectCrashDetails(haystack)
 
 	return result
+}
+
+// crashDetailPatterns 具体报错行的取证规则：从崩溃现场逐行摘出"错在哪"的原始
+// 证据（异常行、模组依赖要求、不兼容清单头等），供前端原样展示。行级匹配、
+// 每条截断到 200 字符，最多保留 5 条。
+var crashDetailPatterns = []*regexp.Regexp{
+	// 异常行（含 Caused by 链）
+	crashExceptionPattern,
+	// 崩溃报告的 Description
+	crashDescriptionPattern,
+	// Fabric：Mod 'BetterGrassify' (bettergrass) 1.8.8 requires fabric-api any version, but it's missing!
+	mustPattern(`\bmod\b[^\n]*\brequires\b`),
+	// 同上，模组名/措辞被本地化的日志
+	mustPattern(`模组[^\n]*需要`),
+	// Forge：Mod ID / 依赖缺失的明细行
+	mustPattern(`\bMod ID: ?'[^']+'`),
+	mustPattern(`Missing (?:or unsupported )?mandatory dependencies`),
+	// 不兼容/重复模组的清单头
+	mustPattern(`(?:Duplicate|Incompatible) mods? (?:found|set)`),
+}
+
+// collectCrashDetails 逐行扫描崩溃现场，去重后取前 5 条具体报错行。
+func collectCrashDetails(haystack string) []string {
+	details := make([]string, 0, 5)
+	seen := map[string]bool{}
+
+	for _, line := range strings.Split(haystack, "\n") {
+		if len(details) >= 5 {
+			break
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || seen[trimmed] {
+			continue
+		}
+		for _, pattern := range crashDetailPatterns {
+			if !pattern.MatchString(trimmed) {
+				continue
+			}
+			seen[trimmed] = true
+			if len(trimmed) > 200 {
+				trimmed = trimmed[:200] + "…"
+			}
+			details = append(details, trimmed)
+
+			break
+		}
+	}
+
+	return details
 }
 
 // logTail 取日志末尾 maxLines 行；若截出的字节量低于 minBytes，则改为取末尾

@@ -20,7 +20,7 @@ import { ArrowMinimize20Regular, Power20Regular } from "@fluentui/react-icons";
 
 import { TitleBar } from "../components/title-bar.tsx";
 import AutoUpdateNotice from "../components/AutoUpdateNotice";
-import DownloadIndicator from "../components/download/DownloadIndicator";
+import DownloadCenter from "../components/download/DownloadCenter";
 import ErrorBoundary from "../components/ErrorBoundary";
 import MicrosoftLoginProgress from "../components/microsoft-login-progress";
 import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
@@ -302,8 +302,8 @@ const Shell: React.FC = () => {
         </div>
       </div>
 
-      {/*全局下载进度指示（跨页面常驻，点击打开下载页）*/}
-      <DownloadIndicator onOpenDownloads={() => setActiveKey("download")} />
+      {/*全局下载中心（跨页面常驻：游戏安装 + 内容下载统一展示，类 KDE 通知样式）*/}
+      <DownloadCenter onOpenDownloads={() => setActiveKey("download")} />
 
       {/*内嵌微软登录进度（登录页跳转往返会重载 SPA，浮层全局挂载接力显示）*/}
       <MicrosoftLoginProgress />

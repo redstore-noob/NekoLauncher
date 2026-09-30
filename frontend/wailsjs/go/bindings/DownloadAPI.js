@@ -10,6 +10,10 @@ export function CancelDownload() {
   return window['go']['bindings']['DownloadAPI']['CancelDownload']();
 }
 
+export function CancelContentTask(arg1) {
+  return window['go']['bindings']['DownloadAPI']['CancelContentTask'](arg1);
+}
+
 export function CreateDefaultInstanceName(arg1, arg2, arg3) {
   return window['go']['bindings']['DownloadAPI']['CreateDefaultInstanceName'](arg1, arg2, arg3);
 }
@@ -38,12 +42,12 @@ export function GetAllDownloadSources() {
   return window['go']['bindings']['DownloadAPI']['GetAllDownloadSources']();
 }
 
-export function GetCurrentDownloadSnapshot() {
-  return window['go']['bindings']['DownloadAPI']['GetCurrentDownloadSnapshot']();
+export function GetContentTasks() {
+  return window['go']['bindings']['DownloadAPI']['GetContentTasks']();
 }
 
-export function GetCurseForgeAPIKey() {
-  return window['go']['bindings']['DownloadAPI']['GetCurseForgeAPIKey']();
+export function GetCurrentDownloadSnapshot() {
+  return window['go']['bindings']['DownloadAPI']['GetCurrentDownloadSnapshot']();
 }
 
 export function GetFallbackDownloadSourceName() {

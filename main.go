@@ -1,4 +1,3 @@
-// 本文件已经过验证。
 package main
 
 import (

@@ -63,28 +63,6 @@ func (m *ConfigFileManager) FilePath() string {
 	return m.filePath
 }
 
-// SetFilePath 切换配置文件路径。切换路径时会立即加载目标配置，
-// 避免把旧文档写入新位置；加载失败时保持原路径不变。
-func (m *ConfigFileManager) SetFilePath(value string) error {
-	if strings.TrimSpace(value) == "" {
-		return errors.New("filePath 不能为空")
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.filePath == value {
-		return nil
-	}
-	previousPath := m.filePath
-	m.filePath = value
-	doc, err := m.loadConfigLocked()
-	if err != nil {
-		m.filePath = previousPath
-		return err
-	}
-	m.config = doc
-	return nil
-}
-
 // ConfigItemAdd 添加或更新字符串配置项。
 func (m *ConfigFileManager) ConfigItemAdd(key, value string) bool {
 	if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {

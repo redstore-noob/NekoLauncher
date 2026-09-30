@@ -198,3 +198,37 @@ func TestLoadNewestCrashReport(t *testing.T) {
 		t.Fatalf("空目录参数应返回零值：%+v", empty)
 	}
 }
+
+// TestDiagnoseCrashFabricIncompatibleMods Fabric Loader 的图形化"不兼容模组"
+// 报错（只写日志、不生成 crash-report）也要能认出缺前置，并把具体报错行
+// （哪个模组缺什么依赖）放进 Details。
+func TestDiagnoseCrashFabricIncompatibleMods(t *testing.T) {
+	logText := strings.Join([]string{
+		"[19:00:00] [main/INFO]: Loading Minecraft 1.21.1 with Fabric Loader 0.19.5",
+		"[19:00:03] [main/ERROR]: Incompatible mods found!",
+		"[19:00:03] [main/ERROR]: Some of your mods are incompatible with the game or each other!",
+		"[19:00:03] [main/ERROR]: \tMod 'BetterGrassify' (bettergrass) 1.8.8+fabric.26.3 requires fabric-api any version, but it's missing!",
+	}, "\n")
+
+	diagnosis := DiagnoseCrash(CrashDiagnosisInput{LogText: logText})
+
+	joined := strings.Join(diagnosis.Suspected, " | ")
+	if !strings.Contains(joined, "前置") {
+		t.Fatalf("应判定为缺前置/模组冲突：%+v", diagnosis.Suspected)
+	}
+	if len(diagnosis.Details) == 0 {
+		t.Fatal("应摘出具体报错行到 Details")
+	}
+	foundDependency := false
+	for _, detail := range diagnosis.Details {
+		if strings.Contains(detail, "bettergrass") && strings.Contains(detail, "fabric-api") {
+			foundDependency = true
+		}
+	}
+	if !foundDependency {
+		t.Fatalf("Details 应包含 bettergrass 缺 fabric-api 的明细行：%+v", diagnosis.Details)
+	}
+	if diagnosis.Details == nil {
+		t.Fatal("Details 应为空切片而非 nil")
+	}
+}

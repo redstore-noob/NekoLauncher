@@ -16,9 +16,11 @@ export {
 export { createPluginApi, PLUGIN_API_VERSION } from "./api";
 export { PageHost, WidgetHost } from "./render";
 export {
+  isPluginActive,
   loadPlugins,
   reloadPlugins,
   setPluginEnabled,
+  unloadPluginRuntime,
   usePluginRuntimeStates,
 } from "./loader";
 export type {

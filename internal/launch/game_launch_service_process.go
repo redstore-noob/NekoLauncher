@@ -122,13 +122,15 @@ func (s *GameLaunchService) observeProcess(
 			message = "退出代码：0"
 		}
 		s.publish(GameLaunchSnapshot{
-			Revision:    s.nextRevision(),
-			Phase:       GameLaunchPhaseExited,
-			Title:       title,
-			Message:     message,
-			VersionId:   current.VersionId,
-			AccountName: current.AccountName,
-			ProcessId:   0,
+			Revision:        s.nextRevision(),
+			Phase:           GameLaunchPhaseExited,
+			Title:           title,
+			Message:         message,
+			VersionId:       current.VersionId,
+			AccountName:     current.AccountName,
+			ProcessId:       0,
+			ExitCode:        exitCode,
+			StoppedManually: stoppedManually,
 		})
 	}()
 }

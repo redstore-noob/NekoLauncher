@@ -11,6 +11,7 @@ const dict: Record<string, string> = {
   就绪: "Ready",
   矩形描边: "Rectangle stroke",
   矩形填充: "Rectangle fill",
+  具体报错: "Exact error",
   拒绝: "Deny",
   "距离周末还有几天，以及最近几个假期":
     "Days until the weekend, plus upcoming holidays",
@@ -27,6 +28,8 @@ const dict: Record<string, string> = {
   看板娘: "Mascot",
   烤马铃薯: "Baked Potato",
   可可棕: "Cocoa Brown",
+  "可打开完整日志查看报错上下文。":
+    "Open the full log to see the surrounding errors.",
   可能是: "Possibly",
   "可在「设置 → 内存」里调高最大内存，或关掉其他占内存的程序。":
     "Increase max memory in Settings → Memory, or close other memory-hungry apps.",
@@ -51,6 +54,7 @@ const dict: Record<string, string> = {
   盔甲架: "Armor Stand",
   "困了…让我打个盹喵": "Sleepy… let me take a nap, meow",
   "来自 Modrinth · 共": "From Modrinth · Total",
+  "来自 {0} · 共": "From {0} · Total",
   蓝冰: "Blue Ice",
   狼: "Wolf",
   劳动节: "Labor Day",
@@ -115,7 +119,6 @@ const dict: Record<string, string> = {
   密码: "Password",
   面包: "Bread",
   "喵~ 今天也要玩 Minecraft 吗？": "Meow~ Playing Minecraft today too?",
-  "喵呜~ 被你发现啦": "Meow~ You found me",
   描边: "Stroke",
   描边颜色: "Stroke color",
   描述: "Description",
@@ -124,7 +127,6 @@ const dict: Record<string, string> = {
   明天: "Tomorrow",
   命令方块: "Command Block",
   命名牌: "Name Tag",
-  摸摸头也不是不可以啦: "Head pats aren't out of the question",
   模板: "Template",
   模糊: "Blur",
   模型: "Model",

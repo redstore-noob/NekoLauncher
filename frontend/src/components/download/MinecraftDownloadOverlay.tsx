@@ -19,6 +19,7 @@ import { Button, Input, Modal, ModalContent, Switch } from "@heroui/react";
 import { Cube20Regular as CubeIcon } from "@fluentui/react-icons";
 
 import { ModalShell, modalBehaviorProps } from "../modal-shell";
+import Pager from "../pager";
 import {
   CreateDefaultInstanceName,
   GetModLoaderVersions,
@@ -74,30 +75,7 @@ const VERSION_TYPE_ICON: Record<string, string> = {
 // 加载器版本列表每页条数（对齐设计稿的分页样式）
 const VERSIONS_PER_PAGE = 8;
 
-// 翻页条页码窗口：始终显示首末页，当前页前后各保留 1 页，其余折叠成省略号。
-// 返回值里 -1 表示省略号占位。
-function pagerPages(current: number, count: number): number[] {
-  if (count <= 7) return Array.from({ length: count }, (_, i) => i);
-  const pages = new Set<number>([
-    0,
-    count - 1,
-    current - 1,
-    current,
-    current + 1,
-  ]);
-
-  const list = [...pages]
-    .filter((p) => p >= 0 && p < count)
-    .sort((a, b) => a - b);
-  const result: number[] = [];
-
-  for (let i = 0; i < list.length; i++) {
-    if (i > 0 && list[i] - list[i - 1] > 1) result.push(-result.length - 1);
-    result.push(list[i]);
-  }
-
-  return result;
-}
+// 翻页窗口化逻辑统一在共享组件 components/pager.tsx（windowedPages）
 
 // ---------------------------------------------------------------------------
 // 内联 SVG 加载器图标：Quilt / OptiFine 没有现成的 instance-icons 资源，
@@ -341,10 +319,10 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
       isOpen={version !== null}
       onClose={onClose}
       {...modalBehaviorProps}
-      // 弹层固定为窗口宽高的二分之一
+      // 弹层固定为窗口的三分之二（留出呼吸空间又不至于看不清列表）
       classNames={{
         ...modalBehaviorProps.classNames,
-        base: `${modalBehaviorProps.classNames?.base ?? ""} h-[50vh]! w-[50vw]! max-w-none`,
+        base: `${modalBehaviorProps.classNames?.base ?? ""} h-[66.6vh]! w-[66.6vw]! max-w-none`,
       }}
       scrollBehavior="inside"
     >
@@ -452,33 +430,16 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
                           );
                         })}
                       </div>
-                      {/* 翻页条：页码多时窗口化显示当前页附近的页码，避免溢出 */}
-                      {pageCount > 1 && (
-                        <div className="mt-2 flex items-center justify-center gap-1.5 overflow-hidden">
-                          {pagerPages(page, pageCount).map((p) =>
-                            p < 0 ? (
-                              <span
-                                key={`ellipsis-${p}`}
-                                className="px-0.5 text-[12px] text-gray-500"
-                              >
-                                …
-                              </span>
-                            ) : (
-                              <button
-                                key={p}
-                                className={`h-7 min-w-7 flex-shrink-0 cursor-pointer rounded-lg px-1.5 text-[12px] font-semibold transition-colors ${
-                                  p === page
-                                    ? "bg-primary-500/15 text-primary-600 dark:text-primary-300"
-                                    : "text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
-                                }`}
-                                onClick={() => setPage(p)}
-                              >
-                                {p + 1}
-                              </button>
-                            ),
-                          )}
-                        </div>
-                      )}
+                      {/* 翻页条（共享数字分页器；内部 page 为 0-based，转 1-based 接入） */}
+                      <Pager
+                        className="mt-2"
+                        page={page + 1}
+                        totalPages={pageCount}
+                        variant="numbers"
+                        onChange={(updater) =>
+                          setPage((p) => updater(p + 1) - 1)
+                        }
+                      />
                     </>
                   ) : (
                     <div className="nya-panel-inner flex flex-1 items-center justify-center rounded-2xl p-6 text-center text-[13px] text-gray-400">

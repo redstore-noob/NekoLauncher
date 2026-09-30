@@ -4,8 +4,9 @@
  * （Mod / 整合包 / 光影包 / 材质包）版本选择 + 目标实例选择 + 下载进度。
  *
  * 逻辑：
- * - 版本列表拉取 api.modrinth.com/v2/project/{id}/version，MC 版本 / 加载器双过滤
- *   （加载器为 "minecraft" 占位值时不过滤）；
+ * - 版本列表经 DownloadAPI.ListResourceVersions（Go 侧拉取
+ *   api.modrinth.com/v2/project/{id}/version，失败自动回退国内镜像），
+ *   MC 版本 / 加载器双过滤（加载器为 "minecraft" 占位值时不过滤）；
  * - 目标实例经 InstanceAPI.GetCurrentInstanceSnapshot + DownloadAPI.ResolveContentDirectoryForInstance；
  * - Mod/资源包/光影 → DownloadFileToInstance（进度 download:contentProgress）；
  *   自定义路径 → SystemAPI.SaveFile + DownloadFileToPath；
@@ -24,7 +25,6 @@ import {
   Input,
   Modal,
   ModalContent,
-  Progress,
   Select,
   SelectItem,
 } from "@heroui/react";
@@ -32,6 +32,7 @@ import { ChevronDown20Regular, Search20Regular } from "@fluentui/react-icons";
 
 import { ModalShell, modalBehaviorProps } from "../modal-shell";
 import { popoverMotionProps } from "../../lib/motion";
+import { asArray } from "../../lib/guards";
 import {
   DownloadFileToInstance,
   DownloadFileToPath,
@@ -39,6 +40,7 @@ import {
   GetModLoaderVersions,
   GetVersions,
   InstallModpackToInstance,
+  ListResourceVersions,
   ReadModpackRequirements,
   ResolveContentDirectoryForInstance,
   StartDownload,
@@ -59,6 +61,8 @@ export type ContentKind = "mod" | "modpack" | "resourcepack" | "shaderpack";
 // Modrinth 搜索结果里用得到的字段（其余透传不关心）
 export interface ProjectLike {
   project_id?: string;
+  // 资源平台（modrinth / curseforge）；缺省 modrinth（旧调用方兼容）
+  source?: string;
   title?: string;
   description?: string;
   icon_url?: string;
@@ -127,7 +131,7 @@ function loaderGroupLabel(loader: string): string {
  * 等待后台游戏安装任务到达终态，返回错误信息（空串 = 成功）。
  * 只认 Revision 超过起始值之后的终态——快照里可能残留上一个任务的完成状态；
  * 事件（download:progress）+ 每秒轮询双保险，事件丢包也能收敛。
- * 期间把百分比喂给弹层进度条。EventsOn 返回的取消函数只摘掉自己的监听，
+ * 期间弹层只等待完成（进度统一在右下角下载中心）。EventsOn 返回的取消函数只摘掉自己的监听，
  * 不会动 DownloadIndicator 等全局订阅。
  */
 function waitGameDownload(
@@ -248,27 +252,21 @@ const ContentDownloadOverlay: React.FC<Props> = ({
   // 右栏版本搜索词
   const [versionQuery, setVersionQuery] = useState("");
 
-  // 下载目标
   const [snapshot, setSnapshot] =
     useState<instance.GameInstanceSnapshot | null>(null);
   const [targetId, setTargetId] = useState("");
   const [newInstanceName, setNewInstanceName] = useState("");
 
-  // 状态面板
   const [idleText, setIdleText] = useState("");
   const [statusFileText, setStatusFileText] = useState("");
   const [statusDetail, setStatusDetail] = useState("");
   const [statusText, setStatusText] = useState("");
   const [downloading, setDownloading] = useState(false);
-  const [progressPercent, setProgressPercent] = useState(0);
 
   // 下载流程回调中读最新值（避免闭包陈旧）
   const stateRef = useRef({ snapshot, targetId });
 
   stateRef.current = { snapshot, targetId };
-  const downloadingRef = useRef(false);
-
-  downloadingRef.current = downloading;
   const loadSeq = useRef(0);
 
   const headerTitle = isLocalModpack ? t("导入整合包") : (project?.title ?? "");
@@ -362,13 +360,39 @@ const ContentDownloadOverlay: React.FC<Props> = ({
     setExpandedLoaders([]);
     setSelectedVersionId("");
     try {
-      const resp = await fetch(
-        `https://api.modrinth.com/v2/project/${encodeURIComponent(pid)}/version`,
-      );
-      const data = await resp.json();
+      // 走后端绑定而非前端直连 fetch：官方域名在国内经常超时，Go 侧带
+      // 超时控制并自动回退国内镜像（与搜索接口同一通道）。绑定本身是
+      // Promise 异步调用，等待期间界面保持可交互（左栏显示加载态）。
+      // source 跟随打开来源的平台（Modrinth / CurseForge）。
+      const result = await ListResourceVersions({
+        source: project?.source ?? "modrinth",
+        projectId: pid,
+        gameVersion: "",
+        loader: "",
+      });
 
       if (seq !== loadSeq.current) return;
-      const list: ModrinthVersion[] = Array.isArray(data) ? data : [];
+      // 统一模型 → 本组件的 Modrinth 形状（只映射用得到的字段）
+      const list: ModrinthVersion[] = asArray<models.ResourceVersion>(
+        result?.versions,
+      ).map((v) => ({
+        id: v.versionId,
+        name: v.name ?? "",
+        version_number: v.versionNumber,
+        date_published: v.datePublished,
+        game_versions: v.gameVersions ?? [],
+        loaders: v.loaders ?? [],
+        files: v.fileUrl
+          ? [
+              {
+                url: v.fileUrl,
+                filename: v.fileName,
+                size: Number(v.fileSize ?? 0),
+                primary: true,
+              },
+            ]
+          : [],
+      }));
 
       setAllVersions(list);
       // 默认按最新的正式版过滤（setupVersionFilters 计算首个候选）
@@ -404,7 +428,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
         setIdleText(
           t("要求 MC {0}", { "0": req.MinecraftVersion }) +
             (req.RawLoaderKey
-              ? ` + ${LOADER_NAMES[req.LoaderType] ?? req.RawLoaderKey} ${req.LoaderVersion ?? ""}`
+              ? ` + ${LOADER_NAMES[req.LoaderType] || req.RawLoaderKey} ${req.LoaderVersion || ""}`
               : t("（原版）")),
         );
       }
@@ -421,7 +445,6 @@ const ContentDownloadOverlay: React.FC<Props> = ({
     setStatusFileText("");
     setStatusDetail("");
     setIdleText("");
-    setProgressPercent(0);
     setDownloading(false);
     setNewInstanceName("");
     setTargetId("");
@@ -444,22 +467,8 @@ const ContentDownloadOverlay: React.FC<Props> = ({
       else await loadVersions();
     })();
 
-    function updateProgress(
-      event: { downloaded?: number; total?: number } | null,
-    ) {
-      if (!event || !downloadingRef.current) return;
-      setProgressPercent(
-        event.total && event.total > 0
-          ? Math.min(100, ((event.downloaded ?? 0) * 100) / event.total)
-          : 0,
-      );
-    }
-    // 逐个退订：EventsOff(事件名) 会清掉该事件的全部监听
-    const offProgress = EventsOn("download:contentProgress", updateProgress);
-
     return () => {
       cancelled = true;
-      offProgress();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, localModpackPath, project?.project_id]);
@@ -475,14 +484,12 @@ const ContentDownloadOverlay: React.FC<Props> = ({
 
   function beginProgress(fileName: string) {
     setDownloading(true);
-    setProgressPercent(0);
     setStatusFileText(fileName);
     setStatusDetail("");
   }
 
   function finish(message: string) {
     setDownloading(false);
-    setProgressPercent(100);
     setStatusDetail(message);
     setStatusFileText(t("完成"));
   }
@@ -535,7 +542,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
       }
       if (!loader)
         return t("没有找到 {0} 的可用版本（MC {1}）。", {
-          "0": LOADER_NAMES[requirements.LoaderType] ?? "加载器",
+          "0": LOADER_NAMES[requirements.LoaderType] || "加载器",
           "1": mcVersion,
         });
 
@@ -548,7 +555,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
 
       if (!started) return t("游戏安装任务启动失败（可能有正在进行的下载）。");
 
-      return await waitGameDownload((percent) => setProgressPercent(percent));
+      return await waitGameDownload(() => undefined);
     }
 
     // 原版：已装复用（内容装进该版本对应的内容目录）
@@ -568,7 +575,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
 
     if (!started) return t("游戏安装任务启动失败（可能有正在进行的下载）。");
 
-    return await waitGameDownload((percent) => setProgressPercent(percent));
+    return await waitGameDownload(() => undefined);
   }
 
   // 整合包安装：确保所需版本就绪 → 解压到实例内容目录 + 下载声明依赖 → 汇总
@@ -595,13 +602,29 @@ const ContentDownloadOverlay: React.FC<Props> = ({
       let versionId = "";
 
       if (requirements?.MinecraftVersion) {
+        // 声明了加载器、但本启动器识别不了（LoaderType 为 0 而 RawLoaderKey
+        // 非空，如 rift-loader）：继续下去会走"原版"分支，把整合包内容倒进
+        // 玩家已装的原版实例里——加载器没装上，现有版本还被污染了。
+        // 这里在写任何文件之前拦下，并说清原因。
+        if (requirements.RawLoaderKey && !requirements.LoaderType) {
+          setDownloading(false);
+          setStatusText(
+            t(
+              "整合包声明的加载器 {0} 暂不受支持，无法自动安装（继续会污染现有原版实例）。请手动为该版本装好加载器后再导入。",
+              { "0": requirements.RawLoaderKey },
+            ),
+          );
+
+          return;
+        }
+
         const loaderName =
-          LOADER_NAMES[requirements.LoaderType] ?? requirements.RawLoaderKey;
+          LOADER_NAMES[requirements.LoaderType] || requirements.RawLoaderKey;
 
         setStatusDetail(
           t("正在准备 MC {0}", { "0": requirements.MinecraftVersion }) +
             (loaderName
-              ? ` + ${loaderName} ${requirements.LoaderVersion ?? ""}`
+              ? ` + ${loaderName} ${requirements.LoaderVersion || ""}`
               : "") +
             "…",
         );
@@ -642,18 +665,30 @@ const ContentDownloadOverlay: React.FC<Props> = ({
       stateRef.current.snapshot = freshSnap;
       setSnapshot(freshSnap);
 
-      const reqText = !requirements?.MinecraftVersion
+      // 声明的运行要求以安装结果回填的为准：本地导入时 requirements 可能为 null
+      // （包内清单在更靠内的位置），而安装侧一定读到了同一份清单。
+      const mcVersion =
+        requirements?.MinecraftVersion ||
+        result?.DeclaredMinecraftVersion ||
+        "";
+      const loaderName =
+        result?.DeclaredLoaderName ||
+        (requirements?.RawLoaderKey
+          ? LOADER_NAMES[requirements.LoaderType] || requirements.RawLoaderKey
+          : "");
+      const loaderVersion =
+        result?.DeclaredLoaderVersion || requirements?.LoaderVersion || "";
+
+      const reqText = !mcVersion
         ? t("未识别到版本要求")
         : t("目标版本：{0}（MC {1}", {
             "0": instanceName || "(选中实例)",
-            "1": requirements.MinecraftVersion,
+            "1": mcVersion,
           }) +
-          (requirements.RawLoaderKey
+          (loaderName
             ? t("，加载器 {0} {1}", {
-                "0":
-                  LOADER_NAMES[requirements.LoaderType] ??
-                  requirements.RawLoaderKey,
-                "1": requirements.LoaderVersion ?? "",
+                "0": loaderName,
+                "1": loaderVersion,
               })
             : t("，原版")) +
           "）";
@@ -665,9 +700,24 @@ const ContentDownloadOverlay: React.FC<Props> = ({
         summary += t("、下载依赖 {0} 个", { "0": result.DownloadedMods });
       if ((result?.Errors ?? []).length > 0)
         summary += t("，{0} 项失败", { "0": result.Errors.length });
+      if ((result?.Warnings ?? []).length > 0)
+        summary += t("，{0} 项提示", { "0": result.Warnings.length });
       finish(`${summary}\n${reqText}`);
-      if ((result?.Errors ?? []).length > 0) {
-        setStatusText(result.Errors.slice(0, 3).join("；"));
+      // 逐条列出具体失败项（而不是只说"N 项失败"）：用户要据此判断
+      // 是网络问题还是缺 API Key，光看数量无从下手。
+      const failures = result?.Errors ?? [];
+
+      if (failures.length > 0) {
+        const shown = failures.slice(0, 3).join("；");
+        const more =
+          failures.length > 3
+            ? t("（另有 {0} 项）", { "0": failures.length - 3 })
+            : "";
+
+        setStatusText(`${shown}${more}`);
+      } else if ((result?.Warnings ?? []).length > 0) {
+        // 没有硬失败时，告警才是用户真正需要看见的（例如加载器不受支持）
+        setStatusText(result.Warnings.join("；"));
       }
     } finally {
       // 临时缓存目录清理（本地导入模式不传 cleanupDir，不删除用户源文件）
@@ -698,7 +748,6 @@ const ContentDownloadOverlay: React.FC<Props> = ({
     await runModpackInstall(tempPath, instanceName, tempDir);
   }
 
-  // 下载入口
   async function onDownload() {
     if (downloading) return;
     setStatusText("");
@@ -885,7 +934,8 @@ const ContentDownloadOverlay: React.FC<Props> = ({
     </div>
   );
 
-  // 状态面板（含环形进度）
+  // 状态面板：进度条统一在右下角下载中心（含速度 / 剩余时间 / 取消），
+  // 这里只保留文字状态，避免同一份进度在两处各画一条。
   const statusPanel = (
     <>
       {statusText ? (
@@ -895,18 +945,14 @@ const ContentDownloadOverlay: React.FC<Props> = ({
         <span className="truncate text-xs text-gray-600 dark:text-gray-300">
           {statusFileText || idleText || t("未选择版本")}
         </span>
-        {downloading && (
-          <Progress
-            showValueLabel
-            aria-label={t("下载进度")}
-            className="max-w-full"
-            size="sm"
-            value={progressPercent}
-          />
-        )}
         {statusDetail && (
           <span className="whitespace-pre-line break-all text-[11px] text-gray-400">
             {statusDetail}
+          </span>
+        )}
+        {downloading && (
+          <span className="text-[11px] text-gray-400">
+            {t("实时进度与剩余时间见右下角的下载中心")}
           </span>
         )}
       </div>
@@ -919,10 +965,10 @@ const ContentDownloadOverlay: React.FC<Props> = ({
       isOpen={open}
       onClose={onClose}
       {...modalBehaviorProps}
-      // 弹层固定为窗口宽高的二分之一
+      // 弹层固定为窗口的三分之二（双栏版本选择需要更多空间）
       classNames={{
         ...modalBehaviorProps.classNames,
-        base: `${modalBehaviorProps.classNames?.base ?? ""} h-[50vh]! w-[50vw]! max-w-none`,
+        base: `${modalBehaviorProps.classNames?.base ?? ""} h-[66.6vh]! w-[66.6vw]! max-w-none`,
       }}
       scrollBehavior="inside"
     >

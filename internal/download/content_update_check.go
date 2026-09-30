@@ -1071,11 +1071,19 @@ func VerifyInstanceModpack(contentDirectory string, hashFile ContentHashFunc) Mo
 
 		absolute := filepath.Join(contentDirectory, filepath.FromSlash(declared))
 		if !tools.FileExists(absolute) {
-			// 解压阶段会剥掉 overrides/ 前缀，清单路径与包内路径可能对不上
-			overridden := filepath.Join(contentDirectory, filepath.FromSlash("overrides/"+declared))
-			if tools.FileExists(overridden) {
-				absolute = overridden
-			} else if caseInsensitiveBudget > 0 {
+			// 解压阶段会剥掉内容根前缀，但内容目录也可能本身就是"没剥离前缀"
+			// 的包根（外部工具解压出来的实例）。这里按与安装侧同一份前缀表
+			// 逐个尝试，避免只认 overrides/ 而把 client-overrides/ 与
+			// .minecraft/ 布局误报成"文件缺失"。
+			for _, candidate := range contentRootCandidates(declared) {
+				probe := filepath.Join(contentDirectory, filepath.FromSlash(candidate))
+				if tools.FileExists(probe) {
+					absolute = probe
+
+					break
+				}
+			}
+			if !tools.FileExists(absolute) && caseInsensitiveBudget > 0 {
 				if found, ok := findContentPath(contentDirectory, declared); ok {
 					absolute = found
 					caseInsensitiveBudget--
@@ -1280,6 +1288,14 @@ func normalizeModpackFormat(format string) string {
 // 「哈希不一致」的判定失去可比性。
 func declaredSHA1(hashes modpackFileHashes) string {
 	return strings.ToLower(strings.TrimSpace(hashes.SHA1))
+}
+
+// declaredSHA512 读取 mrpack 条目声明的 SHA-512（小写）。
+// 用于安装时的下载校验：规范要求 sha1 与 sha512 都提供，只认 SHA-1 会让
+// "只给了 sha512" 的文件完全得不到校验，两者都给时也白白浪费更强的哈希。
+// 更新检测仍只用 SHA-1（要与 version_files 接口口径一致）。
+func declaredSHA512(hashes modpackFileHashes) string {
+	return strings.ToLower(strings.TrimSpace(hashes.SHA512))
 }
 
 // readIndexPackIdentity 读整合包名与版本（两种格式字段名不同）。

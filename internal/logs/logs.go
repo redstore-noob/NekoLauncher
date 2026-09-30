@@ -1,4 +1,3 @@
-// 该文件已经过验证.
 // Package logs 启动器共享日志：单文件追加 + 超限轮转，全部实例写同一文件。
 package logs
 
@@ -175,9 +174,4 @@ func ClearLogs() int {
 	}
 	return deleted
 
-}
-
-// 优化过后的日志清理函数，支持精确至日期的清理.
-func RemoveLogs() int {
-	return 0
 }

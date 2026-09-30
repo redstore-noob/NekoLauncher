@@ -75,6 +75,20 @@ describe("detectCrash", () => {
   it("标题与消息都缺失时不误报", () => {
     expect(detectCrash({} as launch.GameLaunchSnapshot).crashed).toBe(false);
   });
+
+  it("结构化 ExitCode/StoppedManually 字段优先于中文文案", () => {
+    expect(detectCrash(snapshot({ ExitCode: 1 })).crashed).toBe(true);
+    expect(detectCrash(snapshot({ ExitCode: 0 })).crashed).toBe(false);
+    expect(detectCrash(snapshot({ ExitCode: -1073741819 })).exitCode).toBe(
+      -1073741819,
+    );
+    // 手动停止的退出码非 0，但结构化标记了就不能当崩溃弹窗
+    expect(
+      detectCrash(
+        snapshot({ ExitCode: 1, StoppedManually: true, Title: "游戏已停止" }),
+      ).crashed,
+    ).toBe(false);
+  });
 });
 
 describe("notifyCrashIfNeeded", () => {
@@ -113,5 +127,22 @@ describe("formatDiagnosis", () => {
 
     expect(text).toContain("退出代码：未知");
     expect(text).not.toContain("可能原因");
+  });
+
+  it("具体报错行（Details）原样进入诊断文本", () => {
+    const text = formatDiagnosis(
+      {
+        Suspected: ["缺少前置模组或模组冲突"],
+        Suggestions: ["按报错里提到的模组名补齐前置。"],
+        Details: [
+          "Mod 'BetterGrassify' (bettergrass) 1.8.8 requires fabric-api any version, but it's missing!",
+        ],
+      } as unknown as launch.CrashDiagnosis,
+      1,
+    );
+
+    expect(text).toContain("具体报错：");
+    expect(text).toContain("bettergrass");
+    expect(text).toContain("fabric-api");
   });
 });

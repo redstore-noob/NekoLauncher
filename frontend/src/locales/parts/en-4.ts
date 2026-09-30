@@ -16,7 +16,6 @@ const dict: Record<string, string> = {
   我的插件: "My plugins",
   我的资源包: "My resource packs",
   "我可不是装饰品喵！": "I'm not just a decoration, meow!",
-  "呜…再戳就要生气了喵": "Mew… poke me again and I'll get angry, meow",
   无: "None",
   无衬线: "Sans-serif",
   "无法定位实例内容目录。": "Could not locate the instance content directory.",
@@ -204,6 +203,10 @@ const dict: Record<string, string> = {
   "已检测的 Java 版本一览，一键前往 Java 下载页":
     "Overview of detected Java versions; jump to the Java download page in one click",
   "已解压 {0} 个文件": "Extracted {0} files",
+  "整合包声明的加载器 {0} 暂不受支持，无法自动安装（继续会污染现有原版实例）。请手动为该版本装好加载器后再导入。":
+    "The mod loader {0} declared by this modpack is not supported yet, so it cannot be installed automatically (continuing would pollute your existing vanilla instance). Please install the loader for that version manually, then import again.",
+  "（另有 {0} 项）": " ({0} more)",
+  "，{0} 项提示": ", {0} notice(s)",
   已禁用: "Disabled",
   已配置: "Configured",
   已启用: "Enabled",

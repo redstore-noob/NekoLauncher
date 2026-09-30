@@ -12,8 +12,6 @@ export function DownloadLauncherUpdate(arg1:update.Asset):Promise<string>;
 
 export function GetAutoUpdateEnabled():Promise<boolean>;
 
-export function GetLauncherVersion():Promise<string>;
-
 export function GetUpdateChannel():Promise<string>;
 
 export function GetUpdateChannels():Promise<Array<bindings.UpdateChannelOption>>;

@@ -4,9 +4,9 @@ import {modpack} from '../models';
 import {solo} from '../models';
 import {context} from '../models';
 
-export function CollectExportContent(arg1:string):Promise<Array<modpack.ModpackContentItem>>;
-
 export function CancelExport():Promise<void>;
+
+export function CollectExportContent(arg1:string):Promise<Array<modpack.ModpackContentItem>>;
 
 export function DownloadSoloStub():Promise<solo.StubStatus>;
 

@@ -2,8 +2,8 @@ package online
 
 import (
 	"archive/tar"
-	"compress/gzip"
 	"archive/zip"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +18,7 @@ import (
 
 	"nekolauncher/internal/config"
 	"nekolauncher/internal/download"
+	"nekolauncher/internal/info"
 	"nekolauncher/internal/logs"
 )
 
@@ -97,13 +98,11 @@ func fetchTerracottaRelease(ctx context.Context) (terracottaRelease, error) {
 	return release, nil
 }
 
-// terracottaUserAgentVersion 版本号（沿用 info 包的版本串；这里避免多引一个包）。
+// terracottaUserAgentVersion 版本号，直接用 info 包（发版只改 info 里的常量）。
+// 此前这里读配置键 "launcherVersion" 并回落硬编码 "0.2.0"：那个键全仓库没有任何
+// 写入方，所以实际永远发的是过期的 0.2.0，与 info.Version() 对不上。
 func terracottaUserAgentVersion() string {
-	if value := strings.TrimSpace(config.GetValue("launcherVersion")); value != "" {
-		return value
-	}
-
-	return "0.2.0"
+	return info.Version()
 }
 
 // assetPlatformScore 给资产名打分：平台 + 架构都对上才给正分。

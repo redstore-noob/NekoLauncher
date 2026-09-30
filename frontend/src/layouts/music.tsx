@@ -72,6 +72,7 @@ import {
   tooltipMotionProps,
 } from "../lib/motion";
 import { t } from "../i18n";
+import NowPlayingView from "../components/music/NowPlayingView";
 
 type MusicTrack = music.MusicTrack;
 
@@ -129,6 +130,7 @@ const MusicPage: React.FC = () => {
   const [volume, setVolume] = useState(80);
   const [currentTrack, setCurrentTrack] = useState<MusicTrack | null>(null);
   const [playbackState, setPlaybackState] = useState("Stopped");
+  const [nowPlayingOpen, setNowPlayingOpen] = useState(false);
 
   const [userDragging, setUserDragging] = useState(false);
   const [progressValue, setProgressValue] = useState(0);
@@ -330,7 +332,6 @@ const MusicPage: React.FC = () => {
   }
 
   // ------------------------------------------------------------------
-  // 进度条
   // ------------------------------------------------------------------
 
   function onProgressCommit(v: number | number[]) {
@@ -708,10 +709,13 @@ const MusicPage: React.FC = () => {
             </Tooltip>
           </div>
 
-          {/* 当前曲目信息 + 唱片封面 */}
+          {/* 当前曲目信息 + 唱片封面（点击唤起黑胶播放页） */}
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <div
-              className={`relative flex size-[46px] flex-none items-center justify-center overflow-hidden rounded-full bg-primary text-primary-foreground shadow-md ${isPlaying ? "nya-cover-glow" : ""}`}
+            <button
+              aria-label={t("打开播放页")}
+              className={`relative flex size-[46px] flex-none cursor-pointer items-center justify-center overflow-hidden rounded-full bg-primary text-primary-foreground shadow-md transition-transform hover:scale-105 active:scale-95 ${isPlaying ? "nya-cover-glow" : ""}`}
+              type="button"
+              onClick={() => setNowPlayingOpen(true)}
             >
               {/* 黑胶纹理环 */}
               <span
@@ -723,7 +727,7 @@ const MusicPage: React.FC = () => {
               <span className="relative z-10 flex size-[16px] items-center justify-center rounded-full bg-white/90 text-primary">
                 <MusicNoteIcon className="w-[10px] h-[10px]" />
               </span>
-            </div>
+            </button>
             <div className="flex min-w-0 flex-col gap-0.5">
               {/* 换曲时旧信息上滑淡出、新信息滑入 */}
               <AnimatePresence initial={false} mode="popLayout">
@@ -775,6 +779,16 @@ const MusicPage: React.FC = () => {
           </div>
         </div>
       </footer>
+
+      {/* 黑胶播放页（全屏浮层） */}
+      <AnimatePresence>
+        {nowPlayingOpen ? (
+          <NowPlayingView
+            track={currentTrack}
+            onClose={() => setNowPlayingOpen(false)}
+          />
+        ) : null}
+      </AnimatePresence>
     </section>
   );
 };

@@ -70,10 +70,9 @@ import DownloadPage from "../layouts/download";
 import HomePage from "../layouts/home";
 import HelpPage from "../layouts/help";
 import InstancesPage from "../layouts/instances";
+import MultiplayerPage from "../layouts/multiplayer";
 import MusicPage from "../layouts/music";
-import OnlinePage from "../layouts/online";
 import PluginsPage from "../layouts/plugins";
-import ServersPage from "../layouts/servers";
 import SettingsPage from "../layouts/settings";
 import { t } from "../i18n";
 
@@ -392,19 +391,11 @@ export function registerBuiltins() {
   });
 
   registerPage({
-    id: "servers",
-    label: t("服务器"),
-    icon: <Server20Regular />,
-    order: 45,
-    render: () => <ServersPage />,
-  });
-
-  registerPage({
-    id: "online",
-    label: t("联机"),
+    id: "multiplayer",
+    label: t("多人"),
     icon: <People20Regular />,
-    order: 47,
-    render: () => <OnlinePage />,
+    order: 45,
+    render: () => <MultiplayerPage />,
   });
 
   registerPage({

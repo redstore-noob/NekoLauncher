@@ -36,13 +36,12 @@ type GameLaunchSnapshot struct {
 	VersionId   string
 	AccountName string
 	ProcessId   int
+	// ExitCode 游戏进程退出码。仅 Phase==Exited 时有意义（其它阶段为 0）；
+	// 结构化下发，前端不再解析中文文案来还原退出码。
+	ExitCode int
+	// StoppedManually 是否由用户手动停止（Kill 的退出码非 0，不能当异常报）。
+	StoppedManually bool
 }
-
-// IsBusy 正在准备（校验/装配）阶段。
-func (s GameLaunchSnapshot) IsBusy() bool { return s.Phase == GameLaunchPhasePreparing }
-
-// IsGameRunning 游戏进程运行中。
-func (s GameLaunchSnapshot) IsGameRunning() bool { return s.Phase == GameLaunchPhaseRunning }
 
 // ShouldShowIndicator 是否应显示"游戏运行中"指示器。
 func (s GameLaunchSnapshot) ShouldShowIndicator() bool {

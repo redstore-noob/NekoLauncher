@@ -90,9 +90,6 @@ func (a *UpdateAPI) SaveUpdateChannel(channel string) {
 	config.SaveUpdateChannel(channel)
 }
 
-// GetLauncherVersion 当前启动器版本（与设置页展示的同一来源）。
-func (a *UpdateAPI) GetLauncherVersion() string { return info.Version() }
-
 // CheckLauncherUpdate 查询是否有新版本；channel 为更新通道（"stable"/"preview"，
 // 见 config.UpdateChannels），预览通道把预发布版也算进来。
 //

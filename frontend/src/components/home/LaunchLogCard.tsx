@@ -14,6 +14,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import type { launch } from "../../../wailsjs/go/models";
+
 import React, {
   useCallback,
   useEffect,
@@ -29,7 +31,11 @@ import {
   Warning20Regular,
 } from "@fluentui/react-icons";
 
-import { GetLogText } from "../../../wailsjs/go/bindings/LauncherAPI";
+import {
+  DiagnoseCrash,
+  GetLaunchSnapshot,
+  GetLogText,
+} from "../../../wailsjs/go/bindings/LauncherAPI";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
 import { useLogViewer } from "../LogViewer";
 import { logLineClass } from "../../lib/logs";
@@ -54,6 +60,8 @@ interface Diagnosis {
   title: string;
   hint: string;
   tone: "danger" | "warning";
+  /** 具体报错行（模组依赖明细、异常链等日志原文），原样展示 */
+  details?: string[];
 }
 
 /**
@@ -131,13 +139,38 @@ function lastExitCode(logText: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
-/** 按优先级匹配日志，给出可能的失败原因；无匹配返回 null */
-function diagnoseLog(logText: string): Diagnosis | null {
+/**
+ * 本地兜底归因：后端 DiagnoseCrash 不可用时（老版本/调用失败）在日志**末尾**
+ * 上跑轻量规则。只看末尾是因为与本次退出无关的早段报错（中途被拒的
+ * "Invalid session" 等）在全量匹配时会造成误报。
+ */
+function diagnoseLogTail(logText: string): Diagnosis | null {
+  const lines = logText ? logText.split("\n") : [];
+  const tail = lines.slice(-200).join("\n");
+
   for (const rule of DIAGNOSIS_RULES) {
-    if (rule.test.test(logText)) return rule.diagnosis;
+    if (rule.test.test(tail)) return { ...rule.diagnosis, details: [] };
   }
 
   return null;
+}
+
+/** 后端 CrashDiagnosis → 卡片展示结构（原因取第一条，报错行原样带出）。 */
+function fromBackend(
+  diagnosis: launch.CrashDiagnosis | null | undefined,
+): Diagnosis | null {
+  if (!diagnosis) return null;
+  const reason = diagnosis.Suspected?.[0] ?? "";
+  const suggestion = diagnosis.Suggestions?.[0] ?? "";
+
+  if (!reason && (diagnosis.Details?.length ?? 0) === 0) return null;
+
+  return {
+    title: reason ? t(reason) : t("未知原因"),
+    hint: suggestion ? t(suggestion) : t("可打开完整日志查看报错上下文。"),
+    tone: "danger",
+    details: (diagnosis.Details ?? []).slice(0, 3),
+  };
 }
 
 /** 阶段 → 状态文案与配色 */
@@ -236,17 +269,32 @@ const LaunchLogCard: React.FC<LaunchLogCardProps> = ({ phase, revision }) => {
     return () => window.clearInterval(timer);
   }, [reload, revision, isLive]);
 
-  // 逐行事件：后端每产出一行就推过来（launch:logLine），这里直接追加，
+  // 逐行事件：后端产出日志就推过来（launch:logLine），这里直接追加，
   // 日志窗口不再等到下一次轮询才刷新。2s 的全量轮询保留作重连兜底——
   // 万一事件漏了（页面后挂载、事件丢失），下一次轮询会把整段文本校准回来。
+  // 载荷兼容两种形态：单行 {Tag,Line}（旧）与批量数组（日志刷屏时
+  // 后端会合并多行为一次推送，避免 macOS 上事件风暴拖垮主线程）。
   useEffect(() => {
     const off = EventsOn(
       "launch:logLine",
-      (payload: { Tag?: string; Line?: string }) => {
-        const line = payload?.Line ?? "";
+      (
+        payload:
+          | { Tag?: string; Line?: string }
+          | Array<{ Tag?: string; Line?: string }>,
+      ) => {
+        const batch = Array.isArray(payload) ? payload : [payload];
+        const lines = batch
+          .map((item) => item?.Line ?? "")
+          .filter((line) => !!line);
 
-        if (!line) return;
-        setLogText((prev) => (prev ? `${prev}\n${line}` : line));
+        if (lines.length === 0) return;
+        setLogText((prev) => {
+          let next = prev;
+
+          for (const line of lines) next = next ? `${next}\n${line}` : line;
+
+          return next;
+        });
         setHasLoaded(true);
       },
     );
@@ -270,15 +318,73 @@ const LaunchLogCard: React.FC<LaunchLogCardProps> = ({ phase, revision }) => {
     if (box) box.scrollTop = box.scrollHeight;
   }, [logText]);
 
-  const exitCode = useMemo(() => lastExitCode(logText), [logText]);
-  const stoppedManually = useMemo(
-    () => /游戏进程已手动停止/.test(logText),
-    [logText],
-  );
-  const diagnosis = useMemo(
-    () => (phase === 3 || phase === 4 ? diagnoseLog(logText) : null),
-    [phase, logText],
-  );
+  const logExitCode = useMemo(() => lastExitCode(logText), [logText]);
+
+  // 退出码/手动停止优先读快照的结构化字段（ExitCode/StoppedManually），
+  // 日志文本正则只在老快照缺字段时兜底
+  const [exitInfo, setExitInfo] = useState<{
+    exitCode: number | null;
+    stopped: boolean;
+  }>({ exitCode: null, stopped: false });
+
+  useEffect(() => {
+    let mounted = true;
+
+    const apply = (snapshot: launch.GameLaunchSnapshot | null | undefined) => {
+      if (!mounted || !snapshot) return;
+      if (Number(snapshot.Phase) !== 4) return;
+      if (typeof snapshot.ExitCode !== "number") return;
+      setExitInfo({
+        exitCode: snapshot.ExitCode,
+        stopped: !!snapshot.StoppedManually,
+      });
+    };
+
+    void GetLaunchSnapshot()
+      .then(apply)
+      .catch(() => {
+        /* 未注入 ctx 时忽略 */
+      });
+    const off = EventsOn("launch:changed", apply);
+
+    return () => {
+      mounted = false;
+      if (typeof off === "function") off();
+    };
+  }, []);
+
+  const exitCode = exitInfo.exitCode ?? logExitCode;
+  const stoppedManually =
+    exitInfo.exitCode !== null
+      ? exitInfo.stopped
+      : /游戏进程已手动停止/.test(logText);
+
+  // 归因走后端 DiagnoseCrash（规则引擎 + crash-report + 日志末尾），
+  // 并带回具体报错行；后端不可用时回退本地末尾匹配。
+  // 用自增序号丢弃慢返回：快速连续两次状态变化时，旧诊断不许覆盖新状态。
+  const [diagnosis, setDiagnosis] = useState<Diagnosis | null>(null);
+  const diagnosisSeq = useRef(0);
+
+  useEffect(() => {
+    if (phase !== 3 && phase !== 4) {
+      setDiagnosis(null);
+
+      return;
+    }
+    const seq = ++diagnosisSeq.current;
+
+    void DiagnoseCrash()
+      .then((result) => {
+        if (seq === diagnosisSeq.current) setDiagnosis(fromBackend(result));
+      })
+      .catch(() => {
+        if (seq === diagnosisSeq.current)
+          setDiagnosis(diagnoseLogTail(logText));
+      });
+    // logText 不进依赖：诊断在退出/失败瞬间取一次即可，日志增量不重跑
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, revision]);
+
   const status = statusOf(phase, exitCode, stoppedManually);
 
   return (
@@ -364,6 +470,23 @@ const LaunchLogCard: React.FC<LaunchLogCardProps> = ({ phase, revision }) => {
       ) : phase === 3 ? (
         <div className="nya-enter nya-stagger-2 rounded-2xl bg-danger/10 px-2.5 py-2 text-[10px] leading-snug text-danger">
           {t("启动没有完成，日志末尾记录了原因。")}
+        </div>
+      ) : null}
+
+      {/* 具体报错行：从日志/崩溃报告摘出的原始证据（哪个模组缺什么依赖等） */}
+      {diagnosis?.details?.length ? (
+        <div className="nya-enter nya-stagger-2 rounded-2xl bg-black/5 px-2.5 py-1.5 dark:bg-white/5">
+          <div className="mb-0.5 text-[9px] font-semibold tracking-wide text-gray-400 uppercase">
+            {t("具体报错")}
+          </div>
+          {diagnosis.details.map((detail, index) => (
+            <div
+              key={`${index}-${detail.slice(0, 24)}`}
+              className="break-all font-mono text-[10px] leading-relaxed text-gray-500 dark:text-gray-400"
+            >
+              {detail}
+            </div>
+          ))}
         </div>
       ) : null}
 

@@ -19,9 +19,8 @@ const accountsYamlFileName = "accounts.yaml"
 
 // accountsDomainKeys 账户域键集合（对应 internal/auth 中的存储键）。
 var accountsDomainKeys = map[string]bool{
-	"accounts":                 true,
-	"componentDisplayAccounts": true,
-	"authlibClientToken":       true,
+	"accounts":           true,
+	"authlibClientToken": true,
 }
 
 var (

@@ -25,7 +25,12 @@ import { t } from "../i18n";
 import { createPluginApi, PLUGIN_API_VERSION } from "./api";
 import { compileDevEntry } from "./dev-compile";
 import { runPluginCleanups, seedPluginSettings } from "./api";
-import { unregisterPlugin } from "./registry";
+import {
+  activePluginIDs,
+  isPluginActive,
+  markPluginActive,
+  unregisterPlugin,
+} from "./registry";
 import {
   PLUGIN_ROOT,
   injectPluginStyleFiles,
@@ -63,8 +68,7 @@ export interface PluginRuntimeState {
   error?: string;
 }
 
-/** 已成功加载的插件 id（重复加载时先卸载旧的注册项） */
-const loaded = new Set<string>();
+/** 已成功加载的插件 id 集合由 registry 的 activePlugins 维护（跨模块守卫需要） */
 
 const runtimeStates = new Map<string, PluginRuntimeState>();
 const stateListeners = new Set<() => void>();
@@ -114,18 +118,30 @@ export async function loadPlugins(): Promise<PluginLoadResult[]> {
 
 /**
  * unloadPlugin 卸载一个插件：先执行它的清理函数（事件订阅退订、插件自定义
- * 清理），再摘掉注册表项。卸载/重载的所有路径都必须走这里。
+ * 清理），再摘掉注册表项与活跃标记。卸载/重载的所有路径都必须走这里。
  */
 function unloadPlugin(id: string): void {
   runPluginCleanups(id);
   removePluginStyles(id);
   unregisterPlugin(id);
+  markPluginActive(id, false);
+}
+
+export { isPluginActive } from "./registry";
+
+/**
+ * unloadPluginRuntime 摘除单个插件的前端运行时（清理函数、样式、注册项）。
+ * 供管理页在删除磁盘文件之前先调用：卸载流程先摘运行时再删目录，避免
+ * 中间窗口里插件的事件订阅还活着、去 fetch 已被删除的资源。
+ */
+export function unloadPluginRuntime(id: string): void {
+  unloadPlugin(id);
+  publishRuntime(id, { status: "disabled" });
 }
 
 /** reloadPlugins 摘掉全部已注册插件后重新加载；用于插件页的"重新加载" */
 export async function reloadPlugins(): Promise<PluginLoadResult[]> {
-  for (const id of loaded) unloadPlugin(id);
-  loaded.clear();
+  for (const id of activePluginIDs()) unloadPlugin(id);
   clearRuntime();
 
   return loadPlugins();
@@ -140,16 +156,17 @@ export async function reloadPlugins(): Promise<PluginLoadResult[]> {
 export async function setPluginEnabled(
   id: string,
   enabled: boolean,
-): Promise<void> {
+): Promise<PluginLoadResult | null> {
   await SetPluginDisabled(id, !enabled);
   if (!enabled) {
     unloadPlugin(id);
-    loaded.delete(id);
     publishRuntime(id, { status: "disabled" });
 
-    return;
+    return null;
   }
-  await loadOne(id);
+
+  // 启用可能失败（清单坏 / 入口抛错）：把结果交回调用方展示，不能静默成功
+  return loadOne(id);
 }
 
 /** 索引携带的规范化清单（YAML 已在宿主侧解析校验）：loadOne 直接查表，不再拉原始清单文件 */
@@ -165,6 +182,11 @@ async function fetchPluginIndex(): Promise<{
     });
 
     if (!response.ok) {
+      console.warn(
+        t("[plugins] 读取插件索引失败（HTTP {0}），当作没有插件处理", {
+          "0": response.status,
+        }),
+      );
       indexManifests = new Map();
 
       return { ids: [], disabled: new Set() };
@@ -189,8 +211,14 @@ async function fetchPluginIndex(): Promise<{
       ids: [...indexManifests.keys()],
       disabled: new Set(toStringList(payload?.disabled)),
     };
-  } catch {
-    // 开发服务器下没有这个路由，静默当作"没有插件"
+  } catch (error) {
+    // 开发服务器下没有这个路由，当作"没有插件"；但真实异常（后端未就绪等）
+    // 不能与"确实没有插件"无法区分，至少落一条警告
+    console.warn(
+      t("[plugins] 读取插件索引失败：{0}，当作没有插件处理", {
+        "0": error instanceof Error ? error.message : String(error),
+      }),
+    );
     indexManifests = new Map();
 
     return { ids: [], disabled: new Set() };
@@ -222,12 +250,13 @@ function bindPluginStyleWatcher(): void {
     (payload: { pluginId?: string; files?: string[] } | undefined) => {
       const id = payload?.pluginId;
 
-      if (!id || !loaded.has(id)) return;
+      if (!id || !isPluginActive(id)) return;
       const declared = indexManifests.get(id)?.styles ?? [];
       const changed = new Set(toStringList(payload?.files));
       const hit = declared.filter((file) => changed.has(file));
 
-      if (hit.length > 0) void injectPluginStyleFiles(id, hit);
+      // guard 复查：fetch CSS 期间插件被停用/卸载的话，迟到的响应直接丢弃
+      if (hit.length > 0) void injectPluginStyleFiles(id, hit, isPluginActive);
     },
   );
 }
@@ -329,6 +358,12 @@ async function loadOne(id: string): Promise<PluginLoadResult> {
       .map((segment) => encodeURIComponent(segment))
       .join("/")}`;
 
+    // 重载同名插件：先摘掉旧注册项，再创建新 api。顺序不能反——
+    // runPluginCleanups 会从登记表里删掉该插件的清理集合，若放在
+    // createPluginApi 之后，删掉的就是新 api 刚登记的集合，此后卸载
+    // 找不到任何清理函数（事件订阅与插件定时器全部泄漏）。
+    if (isPluginActive(id)) unloadPlugin(id);
+
     // 生产插件直接原生 import 编译后的 JS；dev 插件走"拉源码 → 现场编译 →
     // blob import"，拿到的是编译产物的模块命名空间。
     // 浏览器的 "Failed to fetch dynamically imported module" 不带上下文，
@@ -351,14 +386,14 @@ async function loadOne(id: string): Promise<PluginLoadResult> {
       );
     }
 
-    // 重载同名插件：先摘掉旧注册项，避免残留
-    if (loaded.has(id)) unloadPlugin(id);
+    // 重载同名插件的旧注册项已在前面摘除；这里先挂活跃标记再注入样式：
+    // 样式文件的 fetch 是异步的，isPluginActive 由此对注入路径生效
+    markPluginActive(id, true);
     // 清单 styles 先于 activate 注入：插件激活时它的样式已经生效
-    await injectPluginStyleFiles(id, manifest.styles ?? []);
+    await injectPluginStyleFiles(id, manifest.styles ?? [], isPluginActive);
     // settings 种子先于 activate 写入：插件激活时就能读到自己的默认设置
     await seedPluginSettings(manifest, api);
     await activate(api);
-    loaded.add(id);
     publishRuntime(id, { status: "loaded" });
 
     return { id, ok: true };
@@ -367,8 +402,8 @@ async function loadOne(id: string): Promise<PluginLoadResult> {
 
     console.warn(t("[plugins] {0} 加载失败：{1}", { "0": id, "1": message }));
     // 注册到一半失败时清掉已注册的部分，避免留下半个插件
+    // （unloadPlugin 内部会同时摘掉活跃标记）
     unloadPlugin(id);
-    loaded.delete(id);
     publishRuntime(id, { status: "failed", error: message });
 
     return { id, ok: false, error: message };

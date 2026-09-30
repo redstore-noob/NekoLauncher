@@ -74,6 +74,8 @@ const dict: Record<string, string> = {
   生成默认实例名失败: "Failed to generate a default instance name",
   剩余: "Remaining",
   "剩余 {0}": "Remaining {0}",
+  实时进度与剩余时间见右下角的下载中心:
+    "Live progress and ETA are in the download center at the bottom-right",
   "剩余空间偏少，建议留意下载与存档体积":
     "Low free space; keep an eye on download and save sizes",
   湿海绵: "Wet sponge",
@@ -246,6 +248,9 @@ const dict: Record<string, string> = {
   未选择账号: "No account selected",
   未在播放: "Not playing",
   未找到: "Not found",
+  "未找到歌词（可将同名 .lrc 文件放在音乐同目录）":
+    "No lyrics found (place a same-name .lrc file next to the audio)",
+  未知原因: "Unknown cause",
   "未找到任何实例版本，请先在「下载」页安装游戏":
     "No instance versions found; install the game on the Downloads page first",
   "未找到任何实例版本，请先在「下载」页安装游戏。":
@@ -267,6 +272,12 @@ const dict: Record<string, string> = {
   "接口 {0}，失败自动回退 {1}": "API {0}; falls back to {1}",
   "搜索资源（留空浏览热门）":
     "Search resources (leave empty to browse popular)",
+  全部平台: "All platforms",
+  部分平台搜索失败: "Some platform searches failed",
+  平台: "Platform",
+  "{0}（未配置 Key）": "{0} (no API key)",
+  "搜索并以镜像回退下载资源，支持 Modrinth / CurseForge":
+    "Search and download resources with mirror fallback; supports Modrinth / CurseForge",
   资源类型: "Resource type",
   游戏版本过滤: "Game version filter",
   "游戏版本（可选）": "Game version (optional)",

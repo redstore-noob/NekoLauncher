@@ -18,8 +18,6 @@ export function ExportResourcePack(arg1:string,arg2:Array<bindings.ResourcePackF
 
 export function GetAcrylicBackdropEnabled():Promise<boolean>;
 
-export function GetAppVersion():Promise<string>;
-
 export function GetBingDailyImagePath():Promise<string>;
 
 export function GetCurrentLog():Promise<string>;

@@ -138,9 +138,7 @@ type fabricLoaderInfo struct {
 
 // neoForgeBmclEntry BMCLAPI /neoforge/list/:mcversion 返回条目。
 type neoForgeBmclEntry struct {
-	RawVersion string `json:"rawVersion"`
-	Version    string `json:"version"`
-	McVersion  string `json:"mcversion"`
+	Version string `json:"version"`
 }
 
 // loaderMetadataTimeout Loader 元数据请求的 10 秒超时（与 C# 各调用点一致）。

@@ -74,6 +74,3 @@ func PathsEqual(left, right string) bool {
 	}
 	return absLeft == absRight
 }
-
-// PathsEqualFold 路径比较器语义：Windows 忽略大小写，其他系统区分大小写。
-func PathsEqualFold(left, right string) bool { return PathsEqual(left, right) }

@@ -110,10 +110,6 @@ export function RestoreServerBackup(arg1, arg2) {
   return window['go']['bindings']['ServerHostAPI']['RestoreServerBackup'](arg1, arg2);
 }
 
-export function RunRCONCommand(arg1, arg2) {
-  return window['go']['bindings']['ServerHostAPI']['RunRCONCommand'](arg1, arg2);
-}
-
 export function RunServerPlayerCommand(arg1, arg2) {
   return window['go']['bindings']['ServerHostAPI']['RunServerPlayerCommand'](arg1, arg2);
 }

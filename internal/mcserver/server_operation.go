@@ -1,5 +1,3 @@
-// 本文件已经过验证.
-// 关于与服务器操作有关的函数.
 package mcserver
 
 import (
@@ -57,35 +55,6 @@ func ListServerInfos() []ServerInfo {
 	}
 
 	return result
-}
-
-// GetServerInfo 单个服务器摘要。
-func GetServerInfo(id string) (*ServerInfo, error) {
-	if err := validateID(id); err != nil {
-		return nil, err
-	}
-	cfg, err := loadServerConfig(serverDirectory(id))
-	if err != nil {
-		return nil, errors.New("服务器不存在")
-	}
-	info := &ServerInfo{
-		ID:          cfg.ID,
-		Name:        cfg.Name,
-		Core:        cfg.Core,
-		CoreVersion: cfg.CoreVersion,
-		MCVersion:   cfg.MCVersion,
-		Port:        cfg.Port,
-		MaxPlayers:  cfg.MaxPlayers,
-		Status:      StatusStopped,
-	}
-	if state := Default().state(cfg.ID); state != nil {
-		state.mu.Lock()
-		info.Status = state.status
-		info.Players = state.players
-		state.mu.Unlock()
-	}
-
-	return info, nil
 }
 
 // DeleteServer 删除服务器（必须已停止）。

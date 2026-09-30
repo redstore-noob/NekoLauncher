@@ -131,9 +131,16 @@ function applyChannels(ch: Channels) {
 
   root.style.setProperty("--heroui-primary", base);
   const [hueRaw, satRaw, lightRaw] = base.split(" ");
-  const hue = Number.parseFloat(hueRaw) || 212;
-  const sat = Number.parseFloat(satRaw) || 100;
-  const lightness = Number.parseFloat(lightRaw) || 47;
+  // parseFloat 解析失败返回 NaN，而 0 是合法值：纯红（#ff0000）的色相就是 0，
+  // 灰阶（#808080/#000000/#ffffff）的饱和度就是 0。用 || 会把合法的 0 当成
+  // 缺省值替换掉，表现为"选纯红却把面板渲染成蓝色、选灰色却渲染成饱和色"，
+  // 而按钮主色（--heroui-primary，直接用 base）是对的，两者会明显打架。
+  const hueParsed = Number.parseFloat(hueRaw);
+  const satParsed = Number.parseFloat(satRaw);
+  const lightnessParsed = Number.parseFloat(lightRaw);
+  const hue = Number.isNaN(hueParsed) ? 212 : hueParsed;
+  const sat = Number.isNaN(satParsed) ? 100 : satParsed;
+  const lightness = Number.isNaN(lightnessParsed) ? 47 : lightnessParsed;
 
   // 亮色主色用深色前程色，保证按钮文字对比度
   root.style.setProperty(

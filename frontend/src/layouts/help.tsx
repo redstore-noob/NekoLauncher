@@ -152,7 +152,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
       "同一台机器/局域网内的朋友直接连你的内网地址；不在同一网络就要用联机页的公网方案（见下一条）。",
       "服务端目录、备份与日志都在「服务器」页里能打开；关启动器时会先保存世界再停服，不会留下占用世界的孤儿进程。",
     ],
-    action: { label: "去服务器页", pageId: "servers" },
+    action: { label: "去服务器页", pageId: "multiplayer", detail: "servers" },
   },
   {
     id: "online",
@@ -163,7 +163,7 @@ export const HELP_ENTRIES: HelpEntry[] = [
       "红石联机（Redstone Online）：公网中继，房主拿到一个公网地址，房客在游戏里直接连接；转发启动器托管的服务器时房主不需要装任何模组。",
       "两家可以同时开着，互不影响；红石的中继节点可以在设置里测速并自动选最快的一个。",
     ],
-    action: { label: "去联机页", pageId: "online" },
+    action: { label: "去联机页", pageId: "multiplayer", detail: "online" },
   },
   {
     id: "snapshot",

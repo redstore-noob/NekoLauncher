@@ -106,25 +106,6 @@ func TestPathsEqualResolvesRelativeAgainstWorkingDirectory(t *testing.T) {
 	}
 }
 
-// TestPathsEqualFoldMatchesPathsEqual PathsEqualFold 是给比较器（slices.SortFunc 等）
-// 用的别名，防的回归：两者语义分叉，排序结果与相等判断互相矛盾。
-func TestPathsEqualFoldMatchesPathsEqual(t *testing.T) {
-	root := t.TempDir()
-	pairs := [][2]string{
-		{root, root},
-		{root, strings.ToUpper(root)},
-		{root, root + string(os.PathSeparator)},
-		{"", ""},
-		{root, ""},
-	}
-	for _, pair := range pairs {
-		if got, want := PathsEqualFold(pair[0], pair[1]), PathsEqual(pair[0], pair[1]); got != want {
-			t.Fatalf("PathsEqualFold(%q, %q) = %v，PathsEqual = %v，两者语义必须一致",
-				pair[0], pair[1], got, want)
-		}
-	}
-}
-
 // TestUserHomeDir 防的回归：主目录探测失败时返回带错误的空串而不是回落，
 // 使默认 .minecraft 目录变成相对路径 "AppData/Roaming/.minecraft"。
 func TestUserHomeDir(t *testing.T) {

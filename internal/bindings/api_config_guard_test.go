@@ -7,7 +7,7 @@ import "testing"
 // 只测守卫判定本身，不落盘（bindings 测试的存储单例指向真实用户目录，
 // 换机器跑会污染真实 launcher.yaml）。
 func TestGuardAccountDomainKey(t *testing.T) {
-	for _, key := range []string{"accounts", "authlibClientToken", "componentDisplayAccounts"} {
+	for _, key := range []string{"accounts", "authlibClientToken"} {
 		if guardAccountDomainKey(key) {
 			t.Errorf("账户域键 %q 应被拒绝", key)
 		}

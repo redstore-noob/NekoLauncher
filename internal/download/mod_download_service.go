@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"nekolauncher/internal/logs"
+
 	"nekolauncher/internal/tools"
 )
 
@@ -62,6 +64,21 @@ func DownloadFileToPath(
 			}
 			return nil
 		}
+		// CurseForge CDN 双域名兜底：downloadUrl 给的是 edge.forgecdn.net，
+		// 但该域名的 GET 在部分网络下直接 404（HEAD 才 302 跳转，实测 2026-09）；
+		// mediafilez.forgecdn.net 与它路径同构且可达。404/410 时换域名完整重下。
+		if alt := forgeCDNFallbackURL(downloadURL); alt != "" &&
+			(isHTTPStatus(err, http.StatusNotFound) || isHTTPStatus(err, http.StatusGone)) {
+			logs.Write("INFO", fmt.Sprintf(" CurseForge CDN 主域名 404，换备用域名重下：%s -> %s", hostOfURL(downloadURL), hostOfURL(alt)))
+			tools.RemoveFileIfExists(temporaryPath)
+			return DownloadFileToPath(ctx, alt, targetPath, progress)
+		}
+		// CurseForge 的鉴权/下架类失败要翻译成人能看懂的话：
+		// 裸 "HTTP Unauthorized" / 裸 404 会让用户以为是自己网络或文件的问题。
+		if actionable := curseForgeDownloadError(err, downloadURL); actionable != nil {
+			tools.RemoveFileIfExists(temporaryPath)
+			return actionable
+		}
 		if attempt >= modDownloadMaxAttempts || !isTransientFailure(err, ctx) {
 			tools.RemoveFileIfExists(temporaryPath)
 			return err
@@ -98,6 +115,9 @@ func downloadAttempt(
 	if err != nil {
 		return err
 	}
+	// CurseForge CDN 自 2026-07-16 起要求鉴权：解析地址时带了 Key，
+	// 这里取文件也必须带上，否则会被拒（401）。
+	applyCurseForgeCDNAuth(req)
 	if resumeFrom > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", resumeFrom))
 	}

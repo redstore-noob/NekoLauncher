@@ -65,8 +65,6 @@ export function SaveVersionProfile(arg1:config.GameVersionProfile):Promise<boole
 
 export function SetPrimaryJava(arg1:string):Promise<boolean>;
 
-export function SetStorageDirectory(arg1:string):Promise<void>;
-
 export function SetValue(arg1:string,arg2:string):Promise<boolean>;
 
 export function Startup(arg1:context.Context):Promise<void>;

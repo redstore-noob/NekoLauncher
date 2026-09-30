@@ -7,7 +7,6 @@ package bindings
 import (
 	"strings"
 
-	"nekolauncher/internal/config"
 	"nekolauncher/internal/modpack"
 	"nekolauncher/internal/solo"
 )
@@ -24,7 +23,7 @@ func (a *ModpackAPI) ExportModpack(
 	contentDirectory, outputPath string,
 ) (modpack.ModpackExportResult, error) {
 	if options.Format == modpack.FormatCurseForge && strings.TrimSpace(options.CurseForgeAPIKey) == "" {
-		options.CurseForgeAPIKey = strings.TrimSpace(config.GetValue(curseForgeAPIKeyConfigKey))
+		options.CurseForgeAPIKey = effectiveCurseForgeAPIKey()
 	}
 	ctx, done := a.beginExport()
 	defer done()
