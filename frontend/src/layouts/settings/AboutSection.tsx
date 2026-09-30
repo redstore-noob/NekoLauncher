@@ -49,6 +49,9 @@ import { t } from "../../i18n";
 
 import Section, { SettingRow } from "./Section";
 
+/** 赞助页地址（关于页底部入口） */
+const SPONSOR_URL = "https://afdian.com/a/redstore-noob";
+
 /** 关于页：关于与维护 + 开源致谢（许可证列表 / 贡献者名单）两个分区 */
 const AboutSection: React.FC = () => {
   const [version, setVersion] = useState("");
@@ -392,6 +395,16 @@ const AboutSection: React.FC = () => {
           </div>
         </SettingRow>
       </Section>
+
+      <div className="flex justify-center pt-1">
+        <button
+          className="cursor-pointer text-[11px] text-gray-400 underline decoration-dotted transition-colors hover:text-primary"
+          type="button"
+          onClick={() => void OpenPage(SPONSOR_URL).catch(() => undefined)}
+        >
+          {t("爱发电赞助喵～")}
+        </button>
+      </div>
 
       <LicenseDialog
         isOpen={licensesOpen}
