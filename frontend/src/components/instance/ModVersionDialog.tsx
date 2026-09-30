@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Mod/资源包/光影包版本管理弹窗：列出资源站上的全部版本，支持升级与降级
  * （选择任意版本 → 后端 ApplyContentUpdate：下载 → SHA-1 校验 → 备份 → 替换）。
  * 数据来源 ContentAPI.GetContentVersionOptions（哈希反查 Modrinth 归属项目）；
@@ -11,6 +11,7 @@ import { Button, Chip, Modal, ModalContent, Switch } from "@heroui/react";
 import {
   ArrowDownload20Regular,
   CheckmarkCircle20Regular,
+  FolderOpen20Regular,
   History20Regular,
   Open20Regular,
 } from "@fluentui/react-icons";
@@ -20,9 +21,19 @@ import {
   ApplyContentUpdate,
   GetContentVersionOptions,
 } from "../../../wailsjs/go/bindings/ContentAPI";
+import { OpenPath } from "../../../wailsjs/go/bindings/SystemAPI";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
 import { asArray, asObject } from "../../lib/guards";
 import { t } from "../../i18n";
+
+// searchKeyword 从文件名猜资源站搜索关键词：去掉扩展名与版本号尾巴
+// （sodium-0.6.0.jar → sodium）。
+function searchKeyword(fileName: string): string {
+  return fileName
+    .replace(/\.(jar|zip|litemod)$/i, "")
+    .replace(/[-_+ ]?\d[\w.~-]*$/, "")
+    .trim();
+}
 
 export interface ModVersionTarget {
   FilePath: string;
@@ -212,8 +223,63 @@ const ModVersionDialog: React.FC<ModVersionDialogProps> = ({
                 {error}
               </div>
             ) : options?.Notice ? (
-              <div className="rounded-xl bg-default-100/80 px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
-                {options.Notice}
+              <div className="flex flex-col gap-2">
+                <div className="rounded-xl bg-default-100/80 px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+                  {options.Notice}
+                </div>
+                {/* 识别失败的降级操作：手工路线图（打开目录 + 资源站搜索） */}
+                <div className="flex flex-wrap items-center justify-center gap-2">
+                  <Button
+                    radius="full"
+                    size="sm"
+                    startContent={<FolderOpen20Regular />}
+                    variant="flat"
+                    onPress={() => {
+                      const directory =
+                        target.FilePath.replace(/[\\/][^\\/]+$/, "") ||
+                        target.FilePath;
+                      void OpenPath(directory).catch(() => undefined);
+                    }}
+                  >
+                    {t("打开所在目录")}
+                  </Button>
+                  {(() => {
+                    const keyword = encodeURIComponent(
+                      searchKeyword(target.FileName),
+                    );
+
+                    return keyword ? (
+                      <>
+                        <button
+                          className="flex items-center gap-1 text-xs text-primary hover:underline"
+                          onClick={() =>
+                            window.open(
+                              `https://modrinth.com/mods?q=${keyword}`,
+                              "_blank",
+                            )
+                          }
+                        >
+                          <Open20Regular className="h-3 w-3" />
+
+                          {t("在 Modrinth 搜索")}
+                        </button>
+                        <button
+                          className="flex items-center gap-1 text-xs text-primary hover:underline"
+                          onClick={() =>
+                            window.open(
+                              `https://www.curseforge.com/minecraft/search?search=${keyword}`,
+                              "_blank",
+                            )
+                          }
+                        >
+                          <Open20Regular className="h-3 w-3" />
+
+                          {t("在 CurseForge 搜索")}
+                        </button>
+                      </>
+                    ) : null;
+                  })()}
+                </div>
               </div>
             ) : (
               <>
@@ -339,7 +405,9 @@ const ModVersionDialog: React.FC<ModVersionDialogProps> = ({
                   >
                     <Open20Regular className="h-3.5 w-3.5" />
 
-                    {t("在 Modrinth 打开项目主页")}
+                    {options.Source === "curseforge"
+                      ? t("在 CurseForge 打开项目主页")
+                      : t("在 Modrinth 打开项目主页")}
                   </button>
                 ) : null}
               </>

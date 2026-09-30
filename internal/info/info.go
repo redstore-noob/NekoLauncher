@@ -6,7 +6,7 @@ import "fmt"
 // 版本号各段，发版只改这里的常量。
 const (
 	MainVersion = 0
-	SubVersion  = 2
+	SubVersion  = 3
 	FixVersion  = 0
 	Suffix      = ""
 )

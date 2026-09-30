@@ -102,7 +102,13 @@ const dict: Record<string, string> = {
   该账号没有可用的皮肤贴图: "This account has no available skin texture",
   "该账号在此皮肤站没有角色档案，请先在皮肤站创建角色。":
     "This account has no character profile on this skin site. Create one on the site first.",
+  "该皮肤站开启了验证码：已在浏览器打开皮肤站，请完成一次登录验证后回来重试。":
+    "This skin site requires a captcha: the site has been opened in your browser. Complete a login verification there, then come back and retry.",
   该账号暂未拥有披风: "This account does not own a cape yet",
+  "打开所在目录": "Open containing folder",
+  "在 Modrinth 搜索": "Search on Modrinth",
+  "在 CurseForge 搜索": "Search on CurseForge",
+  "在 CurseForge 打开项目主页": "Open project page on CurseForge",
   概览: "Overview",
   干草块侧面: "Hay Block Side",
   刚刚: "Just now",
@@ -285,6 +291,37 @@ const dict: Record<string, string> = {
   便携模式: "Portable",
   "便携模式：数据跟着程序目录走":
     "Portable mode: data lives next to the program",
+  // ---- 看板娘台词（闲聊 + 启动器功能 Tips） ----
+  "喵呜~ 被你发现啦": "Nyaa~ you found me",
+  "别熬夜啦，对身体不好喵": "Don't stay up late — it's bad for you, meow",
+  "实例的存档管理里有 Rewind 备份功能，手滑删档也不怕喵":
+    "The save manager has Rewind backups, so accidental deletes are no big deal, meow",
+  "把 .jar 或 .zip 直接拖进窗口就能装进实例哦":
+    "Drag a .jar or .zip straight into the window to install it",
+  "下载大厅里能看到模组的中文名呢，搜中文也找得到":
+    "The download hall shows mods' Chinese names, and Chinese search works too",
+  "模组列表右键可以打开版本管理，升降级都在那里喵":
+    "Right-click a mod for version management — upgrades and downgrades live there, meow",
+  "整合包页面可以把整个实例打包成 .mrpack 分享给朋友":
+    "The modpack page can pack a whole instance into .mrpack to share with friends",
+  "导入其它启动器的实例？实例管理里有现成入口喵":
+    "Want to import instances from other launchers? There's a built-in entry, meow",
+  "联机功能可以建房间和朋友一起玩，不用开服务器":
+    "The multiplayer page opens a room for friends — no server needed",
+  "给实例换个自定义图标吧，在实例设置里就能换喵":
+    "Give your instance a custom icon in instance settings, meow",
+  "存档也能拍快照哦，开大工程前存一个很安心":
+    "Saves support snapshots too — take one before a big project for peace of mind",
+  "外置登录支持皮肤站账号，设置里填地址就行喵":
+    "External login supports skin-server accounts; just fill in the URL in settings, meow",
+  "模组太多加载慢？在内容页把不用的先禁用掉喵":
+    "Too many mods and slow loads? Disable the unused ones on the content page, meow",
+  "设置里可以调内存上限，分配太多反而会卡哦":
+    "Adjust the memory cap in settings — allocating too much can actually hurt",
+  "下载大厅还有光影和资源包，材质一下子就变好看了":
+    "The download hall also has shaders and resource packs — textures get pretty instantly",
+  "实例可以一键复制，试新模组前先复制一份喵":
+    "Instances can be duplicated in one click — copy before trying new mods, meow",
 };
 
 export default dict;

@@ -386,6 +386,7 @@ func TestAuthenticateFailureMessages(t *testing.T) {
 		status       int
 		body         string
 		wantContains string
+		wantCaptcha  bool
 	}{
 		{
 			name:         "用户名或密码错误",
@@ -404,12 +405,14 @@ func TestAuthenticateFailureMessages(t *testing.T) {
 			status:       http.StatusForbidden,
 			body:         `{"errorMessage":"需要填写验证码"}`,
 			wantContains: "验证码",
+			wantCaptcha:  true,
 		},
 		{
 			name:         "皮肤站开启验证码（英文）",
 			status:       http.StatusBadRequest,
 			body:         `{"errorMessage":"Captcha required"}`,
 			wantContains: "验证码",
+			wantCaptcha:  true,
 		},
 		{
 			name:         "其它错误信息原样带出",
@@ -454,6 +457,9 @@ func TestAuthenticateFailureMessages(t *testing.T) {
 			}
 			if !strings.Contains(authErr.Message, testCase.wantContains) {
 				t.Fatalf("错误消息 = %q，期望包含 %q", authErr.Message, testCase.wantContains)
+			}
+			if authErr.CaptchaRequired != testCase.wantCaptcha {
+				t.Fatalf("CaptchaRequired = %v，期望 %v", authErr.CaptchaRequired, testCase.wantCaptcha)
 			}
 		})
 	}

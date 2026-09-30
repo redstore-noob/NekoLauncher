@@ -108,9 +108,9 @@ import {
   ListScreenshots,
   SetClipboard,
 } from "../../wailsjs/go/bindings/SystemAPI";
+import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { confirm as hostConfirm, notify } from "../components/overlay/dialog";
 import { t } from "../i18n";
-import { EventsOn } from "../../wailsjs/runtime/runtime";
 
 /**
  * 插件版 HomeCard：只有「图标磁贴 + 标题 + 大数值」头部行，**不带卡片容器**——
@@ -156,6 +156,7 @@ const PluginHomeCard: React.FC<{
   );
 
 import { registerPage, registerWidget } from "./registry";
+import { injectPluginStyle, removePluginStyle } from "./styles";
 
 /** 宿主 API 版本：不兼容的改动才递增，插件在 plugin.yaml 里声明目标版本 */
 export const PLUGIN_API_VERSION = "1";
@@ -379,6 +380,18 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
       clear: async (key: string) => {
         requirePermission("storage", "config.clear");
         await ClearValue(scopedKey(key));
+      },
+    },
+    // 全局 CSS 注入：作用于整个启动器，可自定义任意控件的样式。卸载/重载/
+    // 停用时宿主按插件 id 自动移除全部注入，插件无需清理（见 styles.ts）。
+    styles: {
+      inject: (css: string, key?: string) => {
+        requirePermission("styles", "styles.inject");
+        injectPluginStyle(manifest.id, css, key);
+      },
+      remove: (key: string) => {
+        requirePermission("styles", "styles.remove");
+        removePluginStyle(manifest.id, key);
       },
     },
     log,

@@ -3,7 +3,7 @@
  *
  * 为什么用原文当 key：本项目文案以静态中文 UI 字符串为主（约 2000 处），
  * 若额外维护一套语义 key，等于给每条文案再起一次名，成本高且容易漂移。原文
- * 当 key 时，zh-CN 无需词典（原文即译文），只需维护 en-US / zh-TW 两份映射；
+ * 当 key 时，zh-CN 无需词典（原文即译文），其余语言各维护一份映射；
  * 词典缺条目时自动回退原文，不会出现空白或 key 泄漏。
  *
  * 其它约定：
@@ -22,13 +22,15 @@ import React, {
 import enUS from "./locales/en-US";
 import jaJP from "./locales/ja-JP";
 import ruRU from "./locales/ru-RU";
+import zhHK from "./locales/zh-HK";
 import zhTW from "./locales/zh-TW";
 
-export type Locale = "zh-CN" | "zh-TW" | "en-US" | "ja-JP" | "ru-RU";
+export type Locale = "zh-CN" | "zh-TW" | "zh-HK" | "en-US" | "ja-JP" | "ru-RU";
 
 export const LOCALE_OPTIONS: Array<{ value: Locale; label: string }> = [
   { value: "zh-CN", label: "简体中文" },
-  { value: "zh-TW", label: "繁體中文" },
+  { value: "zh-TW", label: "繁體中文（中國台灣）" },
+  { value: "zh-HK", label: "繁體中文（中國香港）" },
   { value: "en-US", label: "English" },
   { value: "ja-JP", label: "日本語" },
   { value: "ru-RU", label: "Русский" },
@@ -42,6 +44,7 @@ type Dictionary = Record<string, string>;
 const DICTIONARIES: Record<Locale, Dictionary> = {
   "zh-CN": {},
   "zh-TW": zhTW,
+  "zh-HK": zhHK,
   "en-US": enUS,
   "ja-JP": jaJP,
   "ru-RU": ruRU,
@@ -53,7 +56,14 @@ const FALLBACKS: Partial<Record<Locale, Locale>> = {
   "ru-RU": "en-US",
 };
 
-const LOCALES: Locale[] = ["zh-CN", "zh-TW", "en-US", "ja-JP", "ru-RU"];
+const LOCALES: Locale[] = [
+  "zh-CN",
+  "zh-TW",
+  "zh-HK",
+  "en-US",
+  "ja-JP",
+  "ru-RU",
+];
 
 function isLocale(value: string | null): value is Locale {
   return value !== null && (LOCALES as string[]).includes(value);
@@ -65,7 +75,8 @@ function readStoredLocale(): Locale | null {
   return isLocale(stored) ? stored : null;
 }
 
-/** 按浏览器语言猜测：zh-Hant/zh-TW/zh-HK → 繁体；其余中文 → 简中；en → 英文 */
+/** 按浏览器语言猜测：zh-HK/zh-MO → 香港繁體；zh-Hant/zh-TW → 台灣繁體；
+ * 其余中文 → 简中；en → 英文 */
 function detectLocale(): Locale {
   const candidates = navigator.languages?.length
     ? navigator.languages
@@ -75,7 +86,9 @@ function detectLocale(): Locale {
     const lang = (raw || "").toLowerCase();
 
     if (lang.startsWith("zh")) {
-      return /(hant|tw|hk|mo)/.test(lang) ? "zh-TW" : "zh-CN";
+      if (/(hk|mo)/.test(lang)) return "zh-HK";
+
+      return /(hant|tw)/.test(lang) ? "zh-TW" : "zh-CN";
     }
     if (lang.startsWith("en")) return "en-US";
     if (lang.startsWith("ja")) return "ja-JP";

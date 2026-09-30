@@ -35,20 +35,22 @@
 | -------------- | --------------------------------- | ------------------------ |
 | （无前缀）     | —                                 | `manifest.json`（必选）、图标（`manifest.iconPath` 指名） |
 | `files/`       | `<安装根>/`                       | 启动器本体、`portable.flag` |
-| `minecraft/`   | `<安装根>/NekoLauncher-data/minecraft/` | `versions/<id>/`（版本 json/jar + 整合包内容） |
+| `minecraft/`   | `<安装根>/NekoLauncher-data/minecraft/` | `versions/<id>/`（版本描述 json + 整合包内容，**不含客户端 jar**） |
 | `jre/`         | `<安装根>/NekoLauncher-data/runtime/jre/` | 可选；`bin/java.exe`、`lib/` 等 |
 
 未知前缀的顶层条目必须跳过（向前兼容）。
 
 ### minecraft/ 的约定
 
-- `minecraft/versions/<id>/<id>.json` 必须存在；`<id>.jar`、
-  `inheritsFrom` 父版本、`jar` 字段引用的客户端 jar 按需附带——
-  这与启动器实例扫描的校验规则完全一致，保证装完即可被识别
+- `minecraft/versions/<id>/<id>.json` 必须存在；`inheritsFrom` 父版本与 `jar`
+  字段引用的旁支版本**只带描述文件，一律不带 `<id>.jar`**——客户端本体是
+  Mojang 的版权物，随安装包分发属于再分发
 - 整合包内容（`mods/`、`config/`、`saves/`、`resourcepacks/`、
   `shaderpacks/`、`options.txt`）直接放在 `versions/<id>/` 内：
   配合首启显式写入的"版本隔离"，开箱即是隔离实例
-- 缺失的 libraries / assets 由启动器首次启动时按常规流程补全下载
+- 客户端本体与缺失的 libraries / assets 由启动器首次启动时按常规流程补全下载
+  （`internal/download/game_file_verifier.go` 沿 `inheritsFrom` 与 `jar` 引用
+  逐级校验，缺失即从官方地址拉取）。因此**首次启动必须联网**
 
 ## 4. manifest.json
 

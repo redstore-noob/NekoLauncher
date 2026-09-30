@@ -25,6 +25,11 @@ func TestNormalizeModKey(t *testing.T) {
 		"fabric-api-0.92.2+1.20.1.jar":           "fabric-api",
 		"plain Mod Name.jar":                     "plain-mod-name",
 		"1.20.1-mod.jar":                         "1.20.1-mod", // 纯版本开头：退回词干
+		// modid 本身带数字：不能当版本号截断（AE2 的词条/数据集 key 就是它）
+		"appliedenergistics2-15.0.15.jar":        "appliedenergistics2",
+		"ae2thing-1.20-1.2.9.jar":                "ae2thing",
+		// v 前缀版本同样要从这里截断
+		"feature_nbt_deadlock_be_gone-2.0.0.jar": "feature-nbt-deadlock-be-gone",
 	}
 	for input, want := range cases {
 		if got := NormalizeModKey(input); got != want {

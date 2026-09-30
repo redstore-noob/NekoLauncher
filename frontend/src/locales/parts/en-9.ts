@@ -176,12 +176,14 @@ const dict: Record<string, string> = {
   "NekoSolo 安装包": "NekoSolo installer",
   "把启动器、Java 与整合包打进单个 exe，玩家双击即玩（仅 Windows）":
     "Packs the launcher, Java and the modpack into a single exe — players just double-click to play (Windows only).",
-  "NekoSolo 安装包（仅 Windows）：把启动器、Java 与整合包打进单个 exe，玩家双击即玩；安装的启动器默认开启 NekoLauncher-S 简洁模式。":
-    "NekoSolo installer (Windows only): packs the launcher, Java and the modpack into a single exe — players just double-click to play. The installed launcher defaults to NekoLauncher-S simple mode.",
+  "NekoSolo 安装包（仅 Windows）：把启动器、整合包与可选的 Java 打进单个 exe，玩家双击即玩；安装的启动器默认开启 NekoLauncher-S 简洁模式。Minecraft 客户端本体不随包分发，玩家首次启动联网补全。":
+    "NekoSolo installer (Windows only): packs the launcher, the modpack and optionally Java into a single exe — players just double-click to play. The installed launcher defaults to NekoLauncher-S simple mode. The Minecraft client itself is not redistributed; it is downloaded on the player's first launch.",
+  "打包的模组、资源包等第三方内容会随安装包一起分发：请确认你有权再分发它们（CurseForge 上标记为「不允许第三方分发」的模组尤其需要注意）。":
+    'Third-party content such as mods and resource packs is redistributed inside this installer. Make sure you have the right to redistribute them — mods marked as "no third-party distribution" on CurseForge deserve particular care.',
   "未找到 NekoSolo 安装器模板（NekoSolo/build/NekoSolo.Installer.exe），请先构建 NekoSolo 安装器，否则导出会失败。":
     "NekoSolo installer template not found (NekoSolo/build/NekoSolo.Installer.exe). Build the NekoSolo installer first, otherwise the export will fail.",
-  "捆绑当前 Java 运行时（推荐，离线也能玩）":
-    "Bundle the current Java runtime (recommended; playable offline)",
+  "捆绑当前 Java 运行时（推荐，玩家无需自备 Java）":
+    "Bundle the current Java runtime (recommended; players need no Java of their own)",
   "已保存：{0}（版本文件 {1} 个、整合包内容 {2} 个）":
     "Saved: {0} ({1} version files, {2} modpack content files)",
   高级设置: "Advanced",
@@ -201,10 +203,10 @@ const dict: Record<string, string> = {
   继续执行: "Continue",
   继续: "Continue",
   模组中文名: "Mod names in Chinese",
-  "「已安装模组」列表中的中文译名通过模组文件名检索 MC百科（mcmod.cn）获得，数据与译名版权归 MC百科 所有。":
-    "Chinese names shown in the installed-mods list are looked up by mod file name from MC Encyclopedia (mcmod.cn); the data and translations belong to MC Encyclopedia.",
-  "实现方式参考了 PCL2 的同名功能，特此致谢。":
-    "The implementation is inspired by the same feature in PCL2, with thanks.",
+  "「已安装模组」列表中的中文译名优先来自 SCL 社区译名数据集，未收录时通过模组文件名检索 MC百科（mcmod.cn）获得，数据与译名版权归 MC百科 所有。":
+    "Chinese names shown in the installed-mods list come first from the SCL community dataset, falling back to a file-name search on MC Encyclopedia (mcmod.cn); the data and translations belong to MC Encyclopedia.",
+  "实现方式参考了 PCL2 的同名功能与 SCL 启动器的译名数据集，特此致谢。":
+    "The implementation is inspired by the same feature in PCL2 and SCL Launcher's translation dataset, with thanks.",
   "重命名…": "Rename…",
   "复制实例…": "Duplicate instance…",
   打开版本文件夹: "Open version folder",
@@ -266,6 +268,114 @@ const dict: Record<string, string> = {
   该存档还没有快照: "No snapshots for this save yet",
   "读取中…": "Loading…",
   "{0} 个文件 · {1}": "{0} files · {1}",
+  样式文件: "Style files",
+  "逗号分隔，加载时自动注入为全局 CSS，可自定义控件样式":
+    "Comma-separated; auto-injected as global CSS on load to restyle any control",
+  // ---- 自动更新 / 关于 / 实例设置等新增文案 ----
+  "启动时自动检查 GitHub Releases，有新版本时弹窗询问（不会静默替换）":
+    "Check GitHub Releases on launch and ask via popup when a new version is out (never silently replaces)",
+  自动检查更新: "Automatic update check",
+  "更新通道：预览版最先拿到新功能，稳定版只收正式发布（预览版较少时可能长期无更新）":
+    "Update channel: Preview gets new features first; Stable only takes official releases (with few previews you may see no updates for a while)",
+  更新通道: "Update channel",
+  "发现新版本 {0}，可到 设置→关于 更新":
+    "New version {0} found — update via Settings → About",
+  发现新版本: "New version found",
+  "启动器有新版本 {0} 可用{1}，是否立即下载并重启更新？":
+    "Launcher version {0} is available{1}. Download and restart to update now?",
+  稍后: "Later",
+  立即更新: "Update now",
+  "正在下载新版本 {0}…": "Downloading version {0}…",
+  "自动更新失败：{0}": "Auto-update failed: {0}",
+  "[plugins] {0} 的样式文件 {1} 注入失败：{2}":
+    "[plugins] Failed to inject style file {1} of {0}: {2}",
+  "版本筛选失败，回退本地筛选":
+    "Version filtering failed; falling back to local filtering",
+  "没有找到匹配的{0}": "No matching {0} found",
+  低: "Low",
+  低于普通: "Below normal",
+  高于普通: "Above normal",
+  高: "High",
+  "打开文件夹失败：{0}": "Failed to open folder: {0}",
+  "保存失败：设置不合法（窗口尺寸/内存取值超界）。":
+    "Save failed: invalid settings (window size / memory out of range).",
+  "已复制为 {0}。": "Duplicated as {0}.",
+  "启动指令已发出。": "Launch command sent.",
+  "导入失败：路径无效或已存在。":
+    "Import failed: invalid path or already exists.",
+  "导入失败：{0}": "Import failed: {0}",
+  "切换失败：{0}": "Switch failed: {0}",
+  "存档已导出：{0}": "Save exported: {0}",
+  "导出失败：{0}": "Export failed: {0}",
+  "存档已导入：{0}": "Save imported: {0}",
+  "版本隔离（模组、存档等分到实例目录）":
+    "Version isolation (mods, saves etc. live in the instance folder)",
+  "没有找到与「{query}」相关的设置": 'No settings related to "{query}"',
+  "默认皮肤：{0}": "Default skin: {0}",
+  "创建离线账号失败：{0}": "Failed to create offline account: {0}",
+  "皮肤上传失败：{0}": "Skin upload failed: {0}",
+  "当前：": "Current: ",
+  "皮肤站账号请到对应皮肤站的网页端更换皮肤。":
+    "For skin-server accounts, please change skins on the server's website.",
+  "披风 {0}": "Cape {0}",
+  游戏设置: "Game settings",
+  进程优先级: "Process priority",
+  "包装命令（需含 %command% 占位）": "Wrapper command (must contain %command%)",
+  全屏启动: "Launch fullscreen",
+  "额外环境变量（每行一个，格式 KEY=VALUE）":
+    "Extra environment variables (one per line, KEY=VALUE)",
+  "搜索{0}名称…（Ctrl+F）": "Search {0} names… (Ctrl+F)",
+  "用文件哈希向 Modrinth 查询这些内容是否有新版本（不会自动改动文件）":
+    "Ask Modrinth by file hash whether these have updates (files are never touched automatically)",
+  版本管理: "Version management",
+  "版本管理（升级 / 降级）": "Version management (upgrade / downgrade)",
+  游戏设置编辑模式: "Game settings edit mode",
+  可视化: "Visual",
+  原始编辑: "Raw edit",
+  "加载中...": "Loading...",
+  "直接编辑 options.txt 原始内容，支持所有设置项（包括 Mod 添加的自定义选项）":
+    "Edit options.txt raw content directly, including custom options added by mods",
+  "options.txt 原始内容": "Raw options.txt content",
+  "未列出的设置项可切换到「原始编辑」模式":
+    'Settings not listed can be edited in "Raw edit" mode',
+  "格式为 key:value，每行一个": "One key:value per line",
+  "复制实例（拷贝版本文件夹与启动设置，不复制共享的模组与存档）":
+    "Duplicate instance (copies the version folder and launch settings; shared mods and saves are not copied)",
+  副本名称: "Copy name",
+  创建副本: "Create copy",
+  "版本隔离实例会连同其模组、配置与存档一起复制；共享目录实例只复制版本文件。":
+    "Isolated instances are copied together with their mods, config and saves; shared-directory instances only copy version files.",
+  更新详情: "Update details",
+  "全部版本 / 降级": "All versions / downgrade",
+  重命名实例: "Rename instance",
+  复制实例: "Duplicate instance",
+  关于: "About",
+  版本: "Version",
+  更新: "Update",
+  管理: "Manage",
+  保存: "Save",
+  光影包: "Shader packs",
+  原版: "Vanilla",
+  新版本: "New version",
+  可更新: "Update available",
+  大小未知: "Unknown size",
+  未知: "Unknown",
+  清空: "Clear",
+  共: "Total",
+  个版本: " versions",
+  已取消: "Cancelled",
+  取消: "Cancel",
+  普通: "Normal",
+  快照: "Snapshot",
+  快照版: "Snapshots",
+  正式版: "Releases",
+  "正在打开微软登录页，请在页面中完成授权…":
+    "Opening the Microsoft sign-in page — please complete authorization there…",
+  "内嵌登录启动失败：{0}": "In-window sign-in failed to start: {0}",
+  "启动器内登录（推荐）": "Sign in inside the launcher (recommended)",
+  "在当前窗口打开微软登录页，授权后自动返回，无需外部浏览器。":
+    "Opens the Microsoft sign-in page in this window and returns automatically after authorization — no external browser needed.",
+  使用设备码登录: "Sign in with device code",
 };
 
 export default dict;

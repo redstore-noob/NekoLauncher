@@ -23,13 +23,14 @@
 ├── plugin.yaml          ← 唯一声明文件（见 §4）
 ├── icon.png             ← 图标（固定名，可选）
 ├── index.js             ← 编译产物 = 清单默认入口
+├── theme.css            ← 清单 styles 声明的样式文件（可选，存盘即热生效）
 └── src/…                ← 源码（作者保留，随包分发）
 ```
 
 - 编写语言 **TSX / JSX / 手写 JS**（`h()`）皆可；**分发物永远是编译后的单文件 ESM `index.js`**，启动器的生产加载路径上没有编译器；
 - **打包**：`.nekoex`（zip + 识别后缀）；启动器内的打包工具会把 JSX 等源文件编译为 JS 后再打包；
 - **源码随包分发是特性**：信任模型要求用户能读到插件在做什么；
-- 静态资源放目录内，用 `new URL("./assets/x.png", import.meta.url)` 引用；宿主的 Tailwind 工具类对插件 DOM 可用，但仅限宿主源码出现过的类，任意值请用 inline style。
+- 静态资源放目录内，用 `new URL("./assets/x.png", import.meta.url)` 引用；宿主的 Tailwind 工具类对插件 DOM 可用，但仅限宿主源码出现过的类，任意值请用 inline style。要改**其它控件**的样式（包括宿主自身的），用清单 `styles` 字段或 `api.styles.inject`（见 §5/§6）；受支持的定制锚点（CSS 变量与 `nya-*` 语义类）见 [CSS_STYLE_TABLE.md](CSS_STYLE_TABLE.md)。
 
 ## 3. 第一个插件（dev 模式，零工具链）
 
@@ -104,6 +105,9 @@ capabilities:               # 权限声明（见 §5）
 
 settings:                   # 默认设置：首次加载种入 api.config（仅空键写入）
   dailyGoalHours: "2"
+
+styles:                     # 样式文件（相对插件目录、限 .css）：加载时自动注入为全局 CSS
+  - theme.css               # 改动会被宿主监听，保存即热生效（约 3 秒内），无需重新加载
 ```
 
 - `entry` / `icon` 字段不存在：入口固定 `index.js`（dev 插件 `index.jsx`），图标固定 `icon.png`；
@@ -125,6 +129,7 @@ settings:                   # 默认设置：首次加载种入 api.config（仅
 | `open-url` | `openUrl` |
 | `open-path` | `openPath`（叠加"仅插件目录内"的宿主侧限制） |
 | `server-status` | `getServerStatus` |
+| `styles` | `styles.inject` / `styles.remove`（全局 CSS 注入，可自定义任意控件样式） |
 
 无需权限（永远可用）：元信息、`react/h/Fragment/ui/icons/HomeCard`、`registerWidget` / `registerPage`、`log`、`t`、`confirm`、`getLaunchState`、`onLaunchPhaseChange`、`onInstancesChanged`、`onCleanup`。插件管理页会展示每个插件声明的权限列表。
 
@@ -156,6 +161,7 @@ settings:                   # 默认设置：首次加载种入 api.config（仅
 | 启动 | `launchSelected` / `launchVersion` | `launch` | 与手点同管线；`launchVersion` 校验版本存在且**不改变**用户当前选中 |
 | 事件 | `onLaunchPhaseChange` / `onInstancesChanged` | — | 返回取消订阅函数；卸载/重载时宿主自动清理 |
 | 设置 | `config.get / set / clear` | `storage` | 键前缀隔离；仅字符串值；种子来自清单 `settings` |
+| 样式 | `styles.inject(css, key?)` / `styles.remove(key)` | `styles` | 注入全局 CSS（可改任意控件样式）；同 key 重复注入为替换；卸载/重载/停用时宿主自动移除该插件全部样式。静态样式文件直接用清单 `styles` 字段（宿主监听文件变化，保存即热生效），无需写代码 |
 
 `WidgetRenderContext`（小组件注入）自 v1 封版：只增不改名，改名/删除即升主版本。
 

@@ -286,6 +286,89 @@ func SaveAcrylicBackdropEnabled(enabled bool) {
 	setValue("launcherAcrylicEnabled", formatBool(enabled))
 }
 
+// AutoUpdateEnabled 启动时自动检查更新开关。未设置或值损坏时默认开启：
+// 只检查并提示，不会不经确认就替换启动器（替换动作始终由用户在弹窗里确认）。
+func AutoUpdateEnabled() bool {
+	value := GetValue("launcherAutoUpdateEnabled")
+	if value == "" {
+		return true
+	}
+	result, err := parseBool(value)
+	if err != nil {
+		return true
+	}
+	return result
+}
+
+// SaveAutoUpdateEnabled 保存自动检查更新开关。
+func SaveAutoUpdateEnabled(enabled bool) {
+	setValue("launcherAutoUpdateEnabled", formatBool(enabled))
+}
+
+// 更新通道取值：稳定版只看正式 Release，预览版把 prerelease 也算进来。
+// 项目当前以 preview 版为主，默认预览通道。
+const (
+	UpdateChannelPreview = "preview"
+	UpdateChannelStable  = "stable"
+)
+
+// UpdateChannels 全部合法通道值（设置页选择器顺序）。
+var UpdateChannels = []string{UpdateChannelStable, UpdateChannelPreview}
+
+// UpdateChannelLabel 通道的用户可读名称。
+func UpdateChannelLabel(channel string) string {
+	switch NormalizeUpdateChannel(channel) {
+	case UpdateChannelStable:
+		return "稳定版"
+	default:
+		return "预览版"
+	}
+}
+
+// NormalizeUpdateChannel 把任意输入洗成合法通道值：未知/空回落预览通道
+// （项目以 preview 发版为主，宁可多看到新版也不漏）。
+func NormalizeUpdateChannel(channel string) string {
+	switch strings.ToLower(strings.TrimSpace(channel)) {
+	case UpdateChannelStable:
+		return UpdateChannelStable
+	default:
+		return UpdateChannelPreview
+	}
+}
+
+// UpdateChannel 当前更新通道。迁移规则：新键 launcherUpdateChannel 优先；
+// 没写过的老配置回落到旧的 launcherAutoUpdateIncludePrerelease 布尔
+// （false → 稳定版，true/未设置 → 预览版）。
+func UpdateChannel() string {
+	value := GetValue("launcherUpdateChannel")
+	if value != "" {
+		return NormalizeUpdateChannel(value)
+	}
+	if AutoUpdateIncludePrerelease() {
+		return UpdateChannelPreview
+	}
+	return UpdateChannelStable
+}
+
+// SaveUpdateChannel 保存更新通道（未知值由 NormalizeUpdateChannel 洗成合法值）。
+func SaveUpdateChannel(channel string) {
+	setValue("launcherUpdateChannel", NormalizeUpdateChannel(channel))
+}
+
+// AutoUpdateIncludePrerelease 旧的预发布布尔偏好（已被通道取代，仅作迁移读取）。
+// 未设置或值损坏时默认包含。
+func AutoUpdateIncludePrerelease() bool {
+	value := GetValue("launcherAutoUpdateIncludePrerelease")
+	if value == "" {
+		return true
+	}
+	result, err := parseBool(value)
+	if err != nil {
+		return true
+	}
+	return result
+}
+
 // SetValue 保存/更新任意字符串配置项。账户域的键写入 accounts.yaml，
 // 其余键写入 launcher.yaml（见 storagedomains.go）。
 func SetValue(key, value string) bool {

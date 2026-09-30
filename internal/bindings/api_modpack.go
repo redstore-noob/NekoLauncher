@@ -26,7 +26,9 @@ func (a *ModpackAPI) ExportModpack(
 	if options.Format == modpack.FormatCurseForge && strings.TrimSpace(options.CurseForgeAPIKey) == "" {
 		options.CurseForgeAPIKey = strings.TrimSpace(config.GetValue(curseForgeAPIKeyConfigKey))
 	}
-	return modpack.Export(callCtx(a.ctx), options, contentDirectory, outputPath, func(progress modpack.ModpackExportProgress) {
+	ctx, done := a.beginExport()
+	defer done()
+	return modpack.Export(ctx, options, contentDirectory, outputPath, func(progress modpack.ModpackExportProgress) {
 		emit(a.ctx, "modpack:exportProgress", progress)
 	})
 }
@@ -56,7 +58,9 @@ func (a *ModpackAPI) DownloadSoloStub() (solo.StubStatus, error) {
 // ExportSoloPack 导出 NekoSolo 安装包（启动器 + 可选捆绑 Java + 整合包三合一 exe）；
 // 进度复用 modpack:exportProgress 事件推送。
 func (a *ModpackAPI) ExportSoloPack(options solo.SoloExportOptions, outputPath string) (modpack.ModpackExportResult, error) {
-	return solo.ExportSolo(callCtx(a.ctx), options, outputPath, func(progress modpack.ModpackExportProgress) {
+	ctx, done := a.beginExport()
+	defer done()
+	return solo.ExportSolo(ctx, options, outputPath, func(progress modpack.ModpackExportProgress) {
 		emit(a.ctx, "modpack:exportProgress", progress)
 	})
 }

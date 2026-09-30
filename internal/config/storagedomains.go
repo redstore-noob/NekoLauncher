@@ -30,6 +30,14 @@ var (
 	accountsYamlStore *yamlFileManager
 )
 
+// IsAccountDomainKey 判断 key 是否属于账户域（accounts.yaml）。
+// 供绑定层做访问控制：账户域键只能由 Go 侧（internal/auth）读写，
+// 绝不能经 Wails 绑定暴露给 WebView——否则任何插件 JS 都能整包
+// 读出或替换 accounts.yaml（伪造正版身份）。
+func IsAccountDomainKey(key string) bool {
+	return accountsDomainKeys[key]
+}
+
 // accountsStoreFor 返回账户域键对应的 YAML 存储；非账户键返回 nil
 // （由调用方写入主配置 launcher.yaml）。需持 configSyncRoot 调用。
 func accountsStoreFor(key string) *yamlFileManager {

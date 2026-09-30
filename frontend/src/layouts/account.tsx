@@ -72,6 +72,8 @@ import {
 } from "../../wailsjs/runtime/runtime";
 import { t } from "../i18n";
 
+import { useSimpleMode } from "./simple-mode";
+
 type LaunchAccount = auth.LaunchAccount;
 type CapeTexture = bindings.MinecraftProfileTexture;
 type SkinChoice = bindings.OfflineSkinChoice;
@@ -154,6 +156,8 @@ interface AccountRow {
 }
 
 const AccountPage: React.FC = () => {
+  // S 模式隐藏皮肤 3D 展示（skinview3d + three 的预览卡）
+  const { simpleMode } = useSimpleMode();
   const [rows, setRows] = useState<AccountRow[]>([]);
   const [selectedKey, setSelectedKey] = useState("");
   const [status, setStatus] = useState("");
@@ -544,7 +548,20 @@ const AccountPage: React.FC = () => {
         );
       }
     } catch (ex) {
-      setAddHint(t("登录失败：{0}", { "0": (ex as Error)?.message ?? ex }));
+      const message = (ex as Error)?.message ?? String(ex);
+      // 皮肤站开启验证码（Blessing Skin 私有行为，密码登录无法携带）：
+      // 自动在浏览器打开皮肤站首页，引导用户完成一次网页登录验证后回来重试
+      if (message.includes("该皮肤站开启了验证码")) {
+        const homepage =
+          serverText.replace(/\/api\/yggdrasil\/?$/i, "") || serverText;
+        void BrowserOpenURL(homepage);
+        setAddHint(
+          t("该皮肤站开启了验证码：已在浏览器打开皮肤站，请完成一次登录验证后回来重试。"),
+        );
+
+        return;
+      }
+      setAddHint(t("登录失败：{0}", { "0": message }));
     } finally {
       setExtBusy(false);
     }
@@ -732,22 +749,25 @@ const AccountPage: React.FC = () => {
 
         {/* 皮肤展示 + 账号列表：左右排列（窗口较窄时自动换行堆叠） */}
         <div className="flex flex-wrap items-stretch gap-4">
-          {/* 皮肤展示卡：3D 预览当前选中账号（与主页皮肤展示小组件同源渲染） */}
-          <div className="flex w-[300px] flex-none flex-col rounded-2xl border nya-border nya-panel p-4 shadow-sm backdrop-blur-md">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div className="text-sm font-semibold">{t("皮肤展示")}</div>
-              {selected ? (
-                <span className="truncate text-[11px] text-gray-400">
-                  {t("当前：")}
-                  {selected.account.DisplayName}
-                </span>
-              ) : null}
+          {/* 皮肤展示卡：3D 预览当前选中账号（与主页皮肤展示小组件同源渲染）。
+              S 模式隐藏整卡：只留账号列表，低龄玩家不需要 3D 预览 */}
+          {!simpleMode ? (
+            <div className="flex w-[300px] flex-none flex-col rounded-2xl border nya-border nya-panel p-4 shadow-sm backdrop-blur-md">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="text-sm font-semibold">{t("皮肤展示")}</div>
+                {selected ? (
+                  <span className="truncate text-[11px] text-gray-400">
+                    {t("当前：")}
+                    {selected.account.DisplayName}
+                  </span>
+                ) : null}
+              </div>
+              <SkinPreviewPanel
+                accountKey={selected?.stableKey ?? ""}
+                height={260}
+              />
             </div>
-            <SkinPreviewPanel
-              accountKey={selected?.stableKey ?? ""}
-              height={260}
-            />
-          </div>
+          ) : null}
 
           {/* 账号列表卡 */}
           <div className="min-w-[320px] flex-1 rounded-2xl border nya-border nya-panel p-2 shadow-sm backdrop-blur-md">

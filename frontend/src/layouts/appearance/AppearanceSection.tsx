@@ -14,7 +14,14 @@
  * 主题色支持手选与"跟随背景自动取色"，见 src/theme-color.tsx 与 src/lib/monet.ts。
  */
 import React, { useEffect, useState } from "react";
-import { Button, Checkbox, Slider, Switch } from "@heroui/react";
+import {
+  Button,
+  Checkbox,
+  Select,
+  SelectItem,
+  Slider,
+  Switch,
+} from "@heroui/react";
 import {
   ArrowClockwise20Regular,
   WeatherMoon20Filled,
@@ -47,7 +54,8 @@ import {
   BackgroundMode,
 } from "../background";
 import { useThemeMode } from "../../theme";
-import { LOCALE_OPTIONS, useI18n } from "../../i18n";
+import { LOCALE_OPTIONS, useI18n, type Locale } from "../../i18n";
+import { popoverMotionProps } from "../../lib/motion";
 import { useThemeColor, THEME_COLOR_PRESETS } from "../../theme-color";
 import { useSimpleMode } from "../simple-mode";
 import {
@@ -324,19 +332,27 @@ const AppearanceSection: React.FC = () => {
       </SettingRow>
 
       <SettingRow label={t("语言")}>
-        <div className="flex flex-wrap justify-end gap-1">
-          {LOCALE_OPTIONS.map((option) => (
-            <Button
-              key={option.value}
-              color={locale === option.value ? "primary" : "default"}
-              size="sm"
-              variant={locale === option.value ? "solid" : "flat"}
-              onPress={() => setLocale(option.value)}
-            >
-              {option.label}
-            </Button>
-          ))}
-        </div>
+        <Select
+          aria-label={t("语言")}
+          className="w-52"
+          items={LOCALE_OPTIONS.map((option) => ({
+            key: option.value,
+            label: option.label,
+          }))}
+          popoverProps={{ motionProps: popoverMotionProps }}
+          selectedKeys={[locale]}
+          size="sm"
+          variant="bordered"
+          onSelectionChange={(keys) => {
+            const key = String(Array.from(keys)[0] ?? "");
+
+            if (key) setLocale(key as Locale);
+          }}
+        >
+          {(item: { key: string; label: string }) => (
+            <SelectItem key={item.key}>{item.label}</SelectItem>
+          )}
+        </Select>
       </SettingRow>
 
       <SettingRow label={t("主题")}>

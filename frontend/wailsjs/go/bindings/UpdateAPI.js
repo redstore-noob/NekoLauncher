@@ -14,8 +14,28 @@ export function DownloadLauncherUpdate(arg1) {
   return window['go']['bindings']['UpdateAPI']['DownloadLauncherUpdate'](arg1);
 }
 
+export function GetAutoUpdateEnabled() {
+  return window['go']['bindings']['UpdateAPI']['GetAutoUpdateEnabled']();
+}
+
 export function GetLauncherVersion() {
   return window['go']['bindings']['UpdateAPI']['GetLauncherVersion']();
+}
+
+export function GetUpdateChannel() {
+  return window['go']['bindings']['UpdateAPI']['GetUpdateChannel']();
+}
+
+export function GetUpdateChannels() {
+  return window['go']['bindings']['UpdateAPI']['GetUpdateChannels']();
+}
+
+export function SaveAutoUpdateEnabled(arg1) {
+  return window['go']['bindings']['UpdateAPI']['SaveAutoUpdateEnabled'](arg1);
+}
+
+export function SaveUpdateChannel(arg1) {
+  return window['go']['bindings']['UpdateAPI']['SaveUpdateChannel'](arg1);
 }
 
 export function Startup(arg1) {

@@ -69,6 +69,8 @@ func writePluginIndex(w http.ResponseWriter, root string) {
 				// 清单缺失/非法的目录不算插件（管理页会把它列为"装坏了"）
 				continue
 			}
+			// 索引只带规范化后的样式文件列表（相对路径、限 .css），前端拿来即用
+			manifest.Styles = manifest.styleFiles()
 			manifests = append(manifests, *manifest)
 			if disabled[manifest.ID] {
 				disabledIDs = append(disabledIDs, manifest.ID)

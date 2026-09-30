@@ -19,6 +19,7 @@ import { Button, Checkbox, Modal, ModalContent } from "@heroui/react";
 import { ArrowMinimize20Regular, Power20Regular } from "@fluentui/react-icons";
 
 import { TitleBar } from "../components/title-bar.tsx";
+import AutoUpdateNotice from "../components/AutoUpdateNotice";
 import DownloadIndicator from "../components/download/DownloadIndicator";
 import ErrorBoundary from "../components/ErrorBoundary";
 import MicrosoftLoginProgress from "../components/microsoft-login-progress";
@@ -306,6 +307,9 @@ const Shell: React.FC = () => {
 
       {/*内嵌微软登录进度（登录页跳转往返会重载 SPA，浮层全局挂载接力显示）*/}
       <MicrosoftLoginProgress />
+
+      {/*启动时自动更新提示：后端查到新版本广播 update:available，这里弹窗确认*/}
+      <AutoUpdateNotice />
 
       {/*启动闪屏治理：配置落定后揭幕窗口（见组件注释）*/}
       <WindowReveal />

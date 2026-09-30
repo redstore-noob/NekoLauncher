@@ -469,6 +469,20 @@ export namespace bindings {
 	        this.modifiedAt = source["modifiedAt"];
 	    }
 	}
+	export class UpdateChannelOption {
+	    Value: string;
+	    Label: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new UpdateChannelOption(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Value = source["Value"];
+	        this.Label = source["Label"];
+	    }
+	}
 	export class WallpaperEngineWallpaper {
 	    Path: string;
 	    Source: string;
@@ -2292,11 +2306,11 @@ export namespace modpack {
 	    Warnings: string[];
 	    PayloadPath: string;
 	    PayloadSizeBytes: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ModpackExportResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.OutputPath = source["OutputPath"];
@@ -2739,11 +2753,11 @@ export namespace solo {
 	    SimpleMode: boolean;
 	    RemoteDistribution: boolean;
 	    PayloadURL: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SoloExportOptions(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.PackName = source["PackName"];

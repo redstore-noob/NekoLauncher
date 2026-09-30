@@ -106,6 +106,10 @@ func (a *ContentAPI) Startup(ctx context.Context) { a.ctx = ctx }
 // ModpackAPI 整合包相关命令集。
 type ModpackAPI struct {
 	ctx context.Context
+	// exportMu / exportCancel 当前导出（.mrpack/.zip 或 NekoSolo .exe）的取消句柄，
+	// 供 CancelExport 中断进行中的导出（模式同 AccountAPI 的 loginCancel）。
+	exportMu     sync.Mutex
+	exportCancel *exportHandle
 }
 
 // Startup 注入 Wails runtime ctx。
@@ -169,9 +173,10 @@ func (a *API) Startup(ctx context.Context) {
 	a.Monitor.Startup(ctx)
 	a.Server.Startup(ctx)
 	a.ServerHost.Startup(ctx)
-	a.Online.Startup(ctx)
-	a.System.Startup(ctx)
-	a.Update.Startup(ctx)
+		a.Online.Startup(ctx)
+		a.System.Startup(ctx)
+		a.Plugin.Startup(ctx)
+		a.Update.Startup(ctx)
 
 	// 一次性启动逻辑（对应 C# App 构造 / OnStartup）
 	// 代理最先应用：后续任何出站请求（更新检查、皮肤缓存、实例扫描的远程

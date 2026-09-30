@@ -270,12 +270,14 @@ func createLoginFailureError(statusCode int, body string) error {
 	errorMessage := errorPayload.ErrorMessage
 	errorCode := errorPayload.Error
 
-	// 皮肤站开了验证码（Blessing Skin 常见）：密码登录无法携带验证码
+	// 皮肤站开了验证码（Blessing Skin 私有行为，Yggdrasil 规范无此扩展）：
+	// 密码登录无法携带验证码，返回结构化错误，由前端引导用户到网页端完成
+	// 验证后回来重试（验证通过后站点通常有一段免验证宽限期）
 	if errorMessage != "" &&
 		(strings.Contains(errorMessage, "验证码") ||
 			strings.Contains(strings.ToLower(errorMessage), "captcha")) {
-		return newAuthlibError(
-			"该皮肤站开启了验证码，暂不支持密码登录。请到皮肤站网页端完成验证后重试，或联系服主调整设置。")
+		return newAuthlibCaptchaError(
+			"该皮肤站开启了验证码，请在浏览器中打开皮肤站完成一次登录验证，然后回来重试。")
 	}
 
 	if errorCode != "" && errorMessage != "" &&

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"nekolauncher/internal/config"
 	"nekolauncher/internal/instance"
 )
 
@@ -79,9 +80,16 @@ func (a *InstanceAPI) RenameInstance(oldVersionID, requestedVersionID string) (s
 }
 
 // CopyInstance 复制实例（目录整体拷贝 + 版本 JSON id 补丁 + 实例档案克隆），
-// 返回新版本 ID。外部导入的实例不支持复制。
+// 返回新版本 ID。外部启动器实例走 CopyExternalVersion 复制为主目录标准版本。
 func (a *InstanceAPI) CopyInstance(sourceVersionID, requestedVersionID string) (string, error) {
-	return instance.CopyVersion(callCtx(a.ctx), a.readySnapshot().MinecraftDirectory, sourceVersionID, requestedVersionID)
+	snapshot := a.readySnapshot()
+	// 当前选中的是外部启动器实例（快照为单版本且可被外部识别）时走外部复制路径
+	if strings.EqualFold(snapshot.SelectedVersionId, sourceVersionID) {
+		if layout, ok := instance.TryResolveExternalInstance(snapshot.SourcePath); ok {
+			return instance.CopyExternalVersion(callCtx(a.ctx), layout, config.GameDirectory(), requestedVersionID)
+		}
+	}
+	return instance.CopyVersion(callCtx(a.ctx), snapshot.MinecraftDirectory, sourceVersionID, requestedVersionID)
 }
 
 // ---- 隔离布局（GameVersionIsolation） ----

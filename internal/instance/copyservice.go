@@ -16,13 +16,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"nekolauncher/internal/config"
 	"nekolauncher/internal/tools"
 )
 
 // CopyVersion 复制版本目录与实例档案，返回新版本 ID。
-// 外部导入的实例（versions 下没有对应目录）不支持复制。
+// 外部导入的实例（versions 下没有对应目录）请走 CopyExternalVersion。
 func CopyVersion(ctx context.Context, minecraftDirectory, sourceVersionID, requestedNewID string) (string, error) {
 	newVersionID, err := validateVersionID(requestedNewID)
 	if err != nil {
@@ -42,7 +43,7 @@ func CopyVersion(ctx context.Context, minecraftDirectory, sourceVersionID, reque
 		return "", err
 	}
 	if info, err := os.Stat(sourceDirectory); err != nil || !info.IsDir() {
-		return "", fmt.Errorf("原版本文件夹不存在（外部导入的实例暂不支持复制）：%s", sourceDirectory)
+		return "", fmt.Errorf("原版本文件夹不存在：%s", sourceDirectory)
 	}
 	if pathExists(targetDirectory) {
 		return "", fmt.Errorf("版本名称“%s”已存在。", newVersionID)
@@ -102,6 +103,87 @@ func cloneVersionProfile(minecraftDirectory, sourceVersionID, newVersionID strin
 	profile := config.Get(minecraftDirectory, sourceVersionID)
 	profile.VersionId = newVersionID
 	_ = config.Save(profile)
+}
+
+// CopyExternalVersion 把其它启动器（MultiMC/Prism/CurseForge/Modrinth/ATLauncher）
+// 管理的外部实例整体复制为主 Minecraft 目录下的标准本地版本，返回新版本 ID。
+//
+// 外部实例没有 versions/<id>/ 版本目录与标准版本 JSON（元数据在实例目录本身的
+// instance.cfg / minecraftinstance.json 等文件里），因此做法是：
+//  1. 实例目录整体拷贝到 <mainMinecraftDirectory>/versions/<新ID>/；
+//  2. 从实例元数据解析基础游戏版本，合成一份 inheritsFrom 指向它的版本 JSON
+//     （启动时由既有的 inheritsFrom 装配路径补齐 vanilla 参数与文件）；
+//  3. 克隆实例档案（键从外部启动器根目录迁移到主 Minecraft 目录）。
+func CopyExternalVersion(
+	ctx context.Context,
+	layout ExternalGameInstanceLayout,
+	mainMinecraftDirectory, requestedNewID string,
+) (string, error) {
+	newVersionID, err := validateVersionID(requestedNewID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(mainMinecraftDirectory) == "" {
+		return "", errors.New("尚未设置主游戏目录，无法确定复制目标位置。")
+	}
+	if strings.EqualFold(strings.TrimSpace(layout.InstanceId), newVersionID) {
+		return "", errors.New("新版本名称与原版本相同。")
+	}
+
+	versionsDirectory := filepath.Join(mustAbs(mainMinecraftDirectory), "versions")
+	targetDirectory, err := resolveContainedDirectory(versionsDirectory, newVersionID)
+	if err != nil {
+		return "", err
+	}
+	if pathExists(targetDirectory) {
+		return "", fmt.Errorf("版本名称“%s”已存在。", newVersionID)
+	}
+	baseGameVersion := externalGameVersion(layout)
+	if strings.TrimSpace(baseGameVersion) == "" {
+		return "", errors.New("无法从实例元数据解析基础游戏版本（mmc-pack.json / minecraftinstance.json），无法复制。")
+	}
+	// inheritsFrom 指向的 vanilla 版本必须在主目录已安装，否则副本无法装配启动
+	baseJSON := filepath.Join(versionsDirectory, baseGameVersion, baseGameVersion+".json")
+	if !tools.FileExists(baseJSON) {
+		return "", fmt.Errorf("基础版本 %s 未在主游戏目录安装（缺少 %s），请先安装后再复制。", baseGameVersion, baseJSON)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	// 实例目录整体拷贝（含实例元数据与 .minecraft/minecraft 内容子目录）；
+	// 失败即清理半成品（复制是纯新增操作，不碰原目录）
+	if err := copyTree(ctx, layout.InstanceDirectory, targetDirectory); err != nil {
+		_ = os.RemoveAll(targetDirectory)
+		return "", err
+	}
+	if err := synthesizeExternalVersionJSON(ctx, targetDirectory, newVersionID, baseGameVersion); err != nil {
+		_ = os.RemoveAll(targetDirectory)
+		return "", err
+	}
+	// 实例档案：源键是（外部启动器根目录, 实例ID），副本迁到（主目录, 新ID）
+	profile := config.Get(layout.LauncherRoot, layout.InstanceId)
+	profile.MinecraftDirectory = mainMinecraftDirectory
+	profile.VersionId = newVersionID
+	_ = config.Save(profile)
+	return newVersionID, nil
+}
+
+// synthesizeExternalVersionJSON 为复制出的外部实例合成最小版本 JSON：
+// id 为新版本 ID，inheritsFrom 指向基础游戏版本（由启动装配路径补齐差异）。
+// inheritsFrom / jar 等引用字段不需要修补——原实例本就没有标准版本 JSON。
+func synthesizeExternalVersionJSON(ctx context.Context, targetDirectory, newVersionID, baseGameVersion string) error {
+	root := map[string]any{
+		"id":           newVersionID,
+		"inheritsFrom": baseGameVersion,
+		"type":         "release",
+		"releaseTime":  time.Now().UTC().Format("2006-01-02"),
+		"time":         time.Now().UTC().Format("2006-01-02T15:04:05-07:00"),
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeJSONAtomically(filepath.Join(targetDirectory, newVersionID+".json"), root)
 }
 
 // copyTree 递归复制目录树；单个文件失败即中止（调用方整体清理半成品）。

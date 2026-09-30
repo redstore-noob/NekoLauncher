@@ -27,7 +27,10 @@ func (a *PluginAPI) SavePluginManifest(sourceDirectory, manifestJSON string) err
 	if err != nil {
 		return err
 	}
-	var manifest pluginManifest
+	// 以磁盘上的既有清单为基准反序列化：请求载荷只带表单字段（元数据与入口），
+	// 未携带的运行时字段（capabilities / settings / styles / dev）保留原值，
+	// 否则图形化编辑会把权限声明等一并清空。
+	manifest := *current
 	if err := json.Unmarshal([]byte(manifestJSON), &manifest); err != nil {
 		return fmt.Errorf("%s 不是合法 JSON：%w", pluginManifestName, err)
 	}
@@ -101,6 +104,20 @@ func (a *PluginAPI) CreatePluginScaffold(parentDirectory, manifestJSON, entryCon
 	}
 	if err := os.WriteFile(entryPath, []byte(entryContent), 0o644); err != nil {
 		return "", fmt.Errorf("写入入口文件失败：%w", err)
+	}
+	// 清单声明了 styles 时把对应 css 一并生成（带注释的空文件）：
+	// 不生成的话首次加载会对不存在的文件发起请求，白白吃一条警告
+	for _, style := range manifest.styleFiles() {
+		stylePath := filepath.Join(target, filepath.FromSlash(style))
+		if dir := filepath.Dir(stylePath); dir != target {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return "", fmt.Errorf("创建样式目录失败：%w", err)
+			}
+		}
+		header := "/* " + manifest.Name + " 样式文件：改这里即可自定义启动器控件样式，保存即生效。 */\n"
+		if err := os.WriteFile(stylePath, []byte(header), 0o644); err != nil {
+			return "", fmt.Errorf("写入样式文件失败：%w", err)
+		}
 	}
 	if err := os.MkdirAll(filepath.Join(target, "assets"), 0o755); err != nil {
 		return "", fmt.Errorf("创建 assets 目录失败：%w", err)

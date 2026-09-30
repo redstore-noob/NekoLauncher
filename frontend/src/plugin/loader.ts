@@ -19,21 +19,24 @@ import type { PluginApi, PluginManifest } from "./types";
 import { useSyncExternalStore } from "react";
 
 import { SetPluginDisabled } from "../../wailsjs/go/bindings/PluginAPI";
+import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { t } from "../i18n";
 
 import { createPluginApi, PLUGIN_API_VERSION } from "./api";
 import { compileDevEntry } from "./dev-compile";
 import { runPluginCleanups, seedPluginSettings } from "./api";
 import { unregisterPlugin } from "./registry";
+import {
+  PLUGIN_ROOT,
+  injectPluginStyleFiles,
+  removePluginStyles,
+} from "./styles";
 
 /** dev 插件经全局交接拿到宿主 API：loader 在 import dev 模块前设置，
  * dev 插件串行加载（见 devLoadChain）保证同一时刻只有一个模块在读它。 */
 declare global {
   var __nekoPluginApi: PluginApi | undefined;
 }
-
-/** 插件资源根路径（应用内路由，非磁盘路径） */
-const PLUGIN_ROOT = "/plugins/";
 
 /**
  * 按运行时 URL 动态 import。
@@ -99,6 +102,7 @@ export function usePluginRuntimeStates(): Record<string, PluginRuntimeState> {
 
 /** loadPlugins 拉取并激活全部插件（跳过被停用的）；返回每个插件的加载结果 */
 export async function loadPlugins(): Promise<PluginLoadResult[]> {
+  bindPluginStyleWatcher();
   const { ids, disabled } = await fetchPluginIndex();
 
   disabled.forEach((id) => publishRuntime(id, { status: "disabled" }));
@@ -114,6 +118,7 @@ export async function loadPlugins(): Promise<PluginLoadResult[]> {
  */
 function unloadPlugin(id: string): void {
   runPluginCleanups(id);
+  removePluginStyles(id);
   unregisterPlugin(id);
 }
 
@@ -197,6 +202,33 @@ function toStringList(value: unknown): string[] {
 
   return value.filter(
     (item): item is string => typeof item === "string" && item.length > 0,
+  );
+}
+
+/**
+ * bindPluginStyleWatcher 监听后端样式监听器的 plugin:styles:changed 事件：
+ * 作者改插件 CSS 存盘后自动重新拉取并重注入，不用手点「重新加载」。
+ * 只处理"已加载且清单确实声明了该文件"的插件——停用/卸载/无关插件的
+ * 样式变化一律忽略（loadPlugins 幂等绑定，全程只挂一次）。
+ */
+let styleWatcherBound = false;
+
+function bindPluginStyleWatcher(): void {
+  if (styleWatcherBound) return;
+  styleWatcherBound = true;
+
+  EventsOn(
+    "plugin:styles:changed",
+    (payload: { pluginId?: string; files?: string[] } | undefined) => {
+      const id = payload?.pluginId;
+
+      if (!id || !loaded.has(id)) return;
+      const declared = indexManifests.get(id)?.styles ?? [];
+      const changed = new Set(toStringList(payload?.files));
+      const hit = declared.filter((file) => changed.has(file));
+
+      if (hit.length > 0) void injectPluginStyleFiles(id, hit);
+    },
   );
 }
 
@@ -321,6 +353,8 @@ async function loadOne(id: string): Promise<PluginLoadResult> {
 
     // 重载同名插件：先摘掉旧注册项，避免残留
     if (loaded.has(id)) unloadPlugin(id);
+    // 清单 styles 先于 activate 注入：插件激活时它的样式已经生效
+    await injectPluginStyleFiles(id, manifest.styles ?? []);
     // settings 种子先于 activate 写入：插件激活时就能读到自己的默认设置
     await seedPluginSettings(manifest, api);
     await activate(api);

@@ -66,6 +66,8 @@ interface ManifestForm {
   description: string;
   entry: string;
   icon: string;
+  /** 逗号分隔的样式文件列表（相对插件目录、限 .css），留空 = 无样式 */
+  styles: string;
 }
 
 type DialogPhase = "edit" | "created";
@@ -84,6 +86,7 @@ const PluginManifestDialog: React.FC<{
     description: "",
     entry: "index.js",
     icon: "icon.png",
+    styles: "",
   });
   const [creating, setCreating] = useState(false);
   const [packaging, setPackaging] = useState(false);
@@ -126,6 +129,10 @@ const PluginManifestDialog: React.FC<{
         author: form.author.trim(),
         entry: form.entry.trim() || "index.js",
         icon: form.icon.trim() || "icon.png",
+        styles: form.styles
+          .split(",")
+          .map((file) => file.trim())
+          .filter(Boolean),
       };
       const target = await CreatePluginScaffold(
         parent,
@@ -267,6 +274,12 @@ const PluginManifestDialog: React.FC<{
               {textField("description", t("简介"))}
               {textField("entry", t("入口文件"), "index.js")}
               {textField("icon", t("图标文件"), "icon.png")}
+              {textField(
+                "styles",
+                t("样式文件"),
+                "theme.css",
+                t("逗号分隔，加载时自动注入为全局 CSS，可自定义控件样式"),
+              )}
 
               {error && <div className="mt-3 text-xs text-danger">{error}</div>}
 

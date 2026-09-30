@@ -7,6 +7,7 @@ package bindings
 // 见 plugin_handler.go，本文件不涉及 HTTP。
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,6 +48,10 @@ type pluginManifest struct {
 	Icon string `yaml:"icon,omitempty" json:"icon"`
 	// Dev 开发模式：入口是 JSX 源码，由前端运行时编译加载（loader.ts 的 dev 分支）。
 	Dev bool `yaml:"dev,omitempty" json:"dev"`
+	// Styles 声明的样式文件（相对插件目录、须为 .css）：宿主加载插件时注入到
+	// 全局 <style>，可自定义任意控件的样式；卸载/停用时由前端整体移除。
+	// 路径合法性（相对路径、不含 ..）由前端注入前再校验一次。
+	Styles []string `yaml:"styles,omitempty" json:"styles"`
 	// Capabilities 能力声明（storage / launch…）。宿主侧只透传，前端据此决定挂载哪些 API。
 	Capabilities map[string]bool `yaml:"capabilities,omitempty" json:"capabilities"`
 	// Settings 默认设置：首次加载时由前端种入插件 config（键为插件视角的裸键）。
@@ -62,6 +67,23 @@ func (m *pluginManifest) entryFile() string {
 		return pluginEntryName
 	}
 	return m.Entry
+}
+
+// styleFiles 规范化清单声明的样式文件列表：去空白、去空项，只保留指向
+// 插件目录内 .css 文件的相对路径（挡掉绝对路径与 ".." 越界写法）。
+func (m *pluginManifest) styleFiles() []string {
+	files := make([]string, 0, len(m.Styles))
+	for _, declared := range m.Styles {
+		normalized := filepath.ToSlash(strings.TrimSpace(declared))
+		if normalized == "" || !strings.HasSuffix(strings.ToLower(normalized), ".css") {
+			continue
+		}
+		if strings.HasPrefix(normalized, "/") || strings.Contains(normalized, "..") {
+			continue
+		}
+		files = append(files, normalized)
+	}
+	return files
 }
 
 // PluginInfo 插件页展示的一项：清单字段 + 磁盘状态。
@@ -89,11 +111,19 @@ type PluginInfo struct {
 	ManifestError string
 }
 
-// PluginAPI 插件管理绑定（无状态，不依赖 runtime ctx）。
-// root 与 disabled 仅在测试时注入；正常使用留空即走默认实现（存储目录 / launcher.yaml）。
+// PluginAPI 插件管理绑定。root 与 disabled 仅在测试时注入；正常使用留空即走
+// 默认实现（存储目录 / launcher.yaml）。Startup 注入 ctx 后会顺带启动样式
+// 热更新轮询（见 plugin_style_watcher.go）。
 type PluginAPI struct {
+	ctx      context.Context
 	root     string
 	disabled pluginDisabledStore
+}
+
+// Startup 注入 Wails runtime ctx，并启动插件样式热更新轮询。
+func (a *PluginAPI) Startup(ctx context.Context) {
+	a.ctx = ctx
+	go a.watchStyles(ctx)
 }
 
 // pluginDisabledStore 停用列表的存取。抽出来是为了让测试不必写用户的 launcher.yaml。

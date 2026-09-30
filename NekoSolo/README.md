@@ -10,7 +10,8 @@ NekoSolo = **NekoLauncher 启动器 + 捆绑 Java（可选）+ 整合包** 三�
 2. 选安装目录（默认在用户目录，全程无 UAC），点「安装」
 3. 点「完成」→ 启动器自动打开，默认进入 **NekoLauncher-S 简洁模式**
    （只有启动、外观、下载、账号、设置五个页面），整合包实例已自动选中
-4. 首次启动游戏时启动器自动补全缺失的 libraries / assets
+4. 首次启动游戏时联网补全 Minecraft 客户端本体与缺失的 libraries / assets
+   （客户端不随安装包分发，见下方「技术约束」）
 
 安装目录自带 `portable.flag`（便携模式）：数据全部跟随目录，**删除目录即卸载**。
 
@@ -31,7 +32,9 @@ NekoSolo = **NekoLauncher 启动器 + 捆绑 Java（可选）+ 整合包** 三�
 
 1. 构建一次安装器模板（见下），把它放到 `NekoSolo/build/`
 2. 启动器「创作中心 → 整合包制作」→ 打包格式选 **NekoSolo（.exe）**
-   - 勾选「捆绑当前 Java 运行时」→ 玩家离线也能玩（推荐）
+   - 勾选「捆绑当前 Java 运行时」→ 玩家无需自备 Java（推荐）
+     注意：打进包里的就是你自己配置的那个 JDK，再分发条款随供应商而异
+     （Zulu / Temurin 等 GPLv2+CE 可放心分发；Oracle JDK 需自行确认）
    - 不勾 → 玩家首次启动时需要自备 Java（启动器会提示）
    - 勾选「在线安装包」→ exe 只有几 MB：把导出的 payload.zip 上传到
      GitHub Releases 等地址（推荐先建 Release 再导出，填资产直链），
@@ -78,6 +81,10 @@ NekoSolo/
 
 ## 技术约束
 
+- **载荷不含 Minecraft 客户端本体**（`versions/<id>/<id>.jar`）：客户端是 Mojang
+  的版权物，随安装包分发属于再分发。载荷只带版本描述 JSON（内含官方下载地址），
+  玩家首次启动时由启动前文件校验从 Mojang 官方地址拉取——与 libraries / assets
+  走同一条既有的联网补全路径（见 FORMAT.md 第 3 节）
 - 安装器本体只含向导逻辑，**不含任何整合包内容**；内容在导出时以载荷 zip
   追加到 exe 尾部（见 FORMAT.md），因此模板体积恒定、内容大小无上限
 - 安装器是**自包含单文件**：MaterialDesign 及其运行时依赖在构建时作为嵌入式

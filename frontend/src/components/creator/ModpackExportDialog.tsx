@@ -49,6 +49,7 @@ import {
 } from "../../../wailsjs/go/bindings/InstanceAPI";
 import { GetGameDirectory } from "../../../wailsjs/go/bindings/ConfigAPI";
 import {
+  CancelExport,
   CollectExportContent,
   ExportModpack,
   ExportSoloPack,
@@ -193,6 +194,8 @@ const ModpackExportDialog: React.FC<{
 
   // 状态
   const [packing, setPacking] = useState(false);
+  // cancelRequested 已点过「取消」：防重入，也让 catch 区分主动取消与真实失败
+  const [cancelRequested, setCancelRequested] = useState(false);
   const [packStatus, setPackStatus] = useState("");
   const [statusText, setStatusText] = useState(t("就绪"));
   const [progressCurrent, setProgressCurrent] = useState(0);
@@ -662,6 +665,7 @@ const ModpackExportDialog: React.FC<{
       .map((row) => row.item.RelativePath);
 
     setPacking(true);
+    setCancelRequested(false);
     setProgressTotal(0);
     setProgressCurrent(0);
     setPackStatus(t("准备打包…"));
@@ -781,15 +785,30 @@ const ModpackExportDialog: React.FC<{
       }
     } catch (ex) {
       setPackStatus("");
-      setStatusText(t("打包失败：{0}", { "0": asMessage(ex) }));
+      // 主动取消（后端 ctx 中断，错误消息为 Go 的 context canceled）提示「已取消」
+      const message = asMessage(ex);
+      if (cancelRequested || /context canceled/i.test(message)) {
+        setStatusText(t("导出已取消。"));
+      } else {
+        setStatusText(t("打包失败：{0}", { "0": message }));
+      }
     } finally {
       setPacking(false);
+      setCancelRequested(false);
     }
   };
 
-  function cancelPack() {
-    // 绑定层未暴露取消导出的方法：导出为一次性调用
-    setStatusText(t("当前版本导出暂不支持中途取消。"));
+  // 打包中点「取消」：调后端 CancelExport 中断导出（后端逐文件检查 ctx），
+  // 真正的完成/失败回落在 startExport 的 Promise 上。
+  async function cancelPack() {
+    if (!packing || cancelRequested) return;
+    setCancelRequested(true);
+    setStatusText(t("正在取消导出…"));
+    try {
+      await CancelExport();
+    } catch {
+      /* 无进行中的导出时后端报错，忽略 */
+    }
   }
 
   const pickIcon = async () => {
@@ -1046,7 +1065,12 @@ const ModpackExportDialog: React.FC<{
                       <>
                         <div className="break-words rounded-lg bg-default-100/80 p-2 px-2.5 text-[11px] text-gray-500 dark:text-gray-400">
                           {t(
-                            "NekoSolo 安装包（仅 Windows）：把启动器、Java 与整合包打进单个 exe，玩家双击即玩；安装的启动器默认开启 NekoLauncher-S 简洁模式。",
+                            "NekoSolo 安装包（仅 Windows）：把启动器、整合包与可选的 Java 打进单个 exe，玩家双击即玩；安装的启动器默认开启 NekoLauncher-S 简洁模式。Minecraft 客户端本体不随包分发，玩家首次启动联网补全。",
+                          )}
+                        </div>
+                        <div className="break-words rounded-lg bg-warning-50 p-2 px-2.5 text-[11px] text-warning-600 dark:bg-warning-50/10 dark:text-warning-400">
+                          {t(
+                            "打包的模组、资源包等第三方内容会随安装包一起分发：请确认你有权再分发它们（CurseForge 上标记为「不允许第三方分发」的模组尤其需要注意）。",
                           )}
                         </div>
                         {!stubFound ? (
@@ -1085,7 +1109,9 @@ const ModpackExportDialog: React.FC<{
                           onValueChange={setBundleJava}
                         >
                           <span className="text-[13px] text-gray-600 dark:text-gray-300">
-                            {t("捆绑当前 Java 运行时（推荐，离线也能玩）")}
+                            {t(
+                              "捆绑当前 Java 运行时（推荐，玩家无需自备 Java）",
+                            )}
                           </span>
                         </Checkbox>
                         <Checkbox

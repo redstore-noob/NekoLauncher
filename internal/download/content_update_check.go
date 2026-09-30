@@ -418,7 +418,7 @@ func checkInstanceContentUpdates(
 				result.FailedCount++
 			} else {
 				entry.Status = ContentUpdateStatusUnknown
-				entry.StatusText = "Modrinth 未收录这个文件（自建包、手动放入或 CurseForge 独占），无法判断是否可更新。"
+				entry.StatusText = "Modrinth 未收录这个文件（自建包、手动放入或 CurseForge 独占），无法判断是否可更新；可在版本管理里查看（CurseForge 文件需配置 API Key）。"
 				result.UnknownCount++
 			}
 			continue

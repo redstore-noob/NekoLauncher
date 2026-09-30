@@ -468,3 +468,183 @@ func TestListPluginsSurfacesCapabilities(t *testing.T) {
 		t.Fatalf("权限应只含取值为 true 的键并排序，实际 %v", got)
 	}
 }
+
+// TestManifestStyleFiles 样式文件列表的规范化：只留指向插件目录内 .css 的相对路径。
+func TestManifestStyleFiles(t *testing.T) {
+	manifest := &pluginManifest{
+		Styles: []string{
+			"style.css",         // 正常
+			"assets/skin.CSS",   // 大小写不敏感、允许子目录
+			"  padded.css  ",    // 去空白
+			"",                  // 空：丢
+			"note.txt",          // 非 css：丢
+			"/abs/path.css",     // 绝对路径：丢
+			"../escape.css",     // 越界：丢
+			"sub/../../out.css", // Clean 前含 ..：丢
+		},
+	}
+	got := manifest.styleFiles()
+	want := []string{"style.css", "assets/skin.CSS", "padded.css"}
+	if len(got) != len(want) {
+		t.Fatalf("应保留 %v，实际 %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("第 %d 项应为 %q，实际 %q", i, want[i], got[i])
+		}
+	}
+}
+
+// TestPluginIndexCarriesStyles 索引载荷要携带规范化后的 styles 列表。
+func TestPluginIndexCarriesStyles(t *testing.T) {
+	root, _ := pluginTestFixture(t)
+	manifestPath := filepath.Join(root, "demo", pluginManifestName)
+	raw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("读取清单失败：%v", err)
+	}
+	updated := strings.Replace(string(raw), `"api":"1"`,
+		`"api":"1","styles":["theme.css","../escape.css"]`, 1)
+	writeFile(t, manifestPath, updated)
+
+	response := doRequest(newPluginHandler(root), pluginRoutePrefix)
+	var payload struct {
+		Plugins []struct {
+			ID     string   `json:"id"`
+			Styles []string `json:"styles"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("响应不是合法 JSON：%v", err)
+	}
+	if len(payload.Plugins) != 1 || payload.Plugins[0].ID != "demo" {
+		t.Fatalf("应只含 demo 插件：%+v", payload)
+	}
+	styles := payload.Plugins[0].Styles
+	if len(styles) != 1 || styles[0] != "theme.css" {
+		t.Errorf("styles 应过滤掉越界路径，实际 %v", styles)
+	}
+}
+
+// TestSavePluginManifestPreservesRuntimeFields 图形化编辑只带表单字段，
+// 未携带的运行时字段（capabilities / settings / styles / dev）必须保留原值。
+func TestSavePluginManifestPreservesRuntimeFields(t *testing.T) {
+	api, root := newPluginAPI(t, nil)
+	directory := newPluginFixture(t, root, "good", "好的插件")
+	writeFile(t, filepath.Join(directory, pluginManifestName),
+		`{"id":"good","name":"好的插件","version":"1.0.0","api":"1","dev":true,"capabilities":{"storage":true},"settings":{"k":"v"},"styles":["theme.css"]}`)
+
+	updated := `{"id":"good","name":"改名了","version":"2.0.0","apiVersion":"1","author":"tester","entry":"index.js","icon":"icon.png"}`
+	if err := api.SavePluginManifest(directory, updated); err != nil {
+		t.Fatalf("保存清单失败：%v", err)
+	}
+	saved, err := readPluginManifest(directory)
+	if err != nil {
+		t.Fatalf("重新读取清单失败：%v", err)
+	}
+	if saved.Name != "改名了" {
+		t.Errorf("名称未更新：%+v", saved)
+	}
+	if !saved.Dev || !saved.Capabilities["storage"] ||
+		saved.Settings["k"] != "v" || len(saved.Styles) != 1 || saved.Styles[0] != "theme.css" {
+		t.Errorf("运行时字段被清空：%+v", saved)
+	}
+}
+
+// TestPluginStyleWatcher 样式热更新轮询：检出 → 挂一轮防抖 → 确认下发；
+// 无变化不下发；删除文件不报错。
+func TestPluginStyleWatcher(t *testing.T) {
+	root := t.TempDir()
+	directory := newPluginFixture(t, root, "demo", "演示")
+	writeFile(t, filepath.Join(directory, "theme.css"), "body{}")
+
+	watcher := newPluginStyleWatcher()
+
+	// 第一轮：新文件只进入 pending 防抖，不下发
+	if changes := watcher.poll(root); len(changes) != 0 {
+		t.Fatalf("首轮应只挂 pending，实际下发 %+v", changes)
+	}
+
+	// 第二轮：指纹稳定，下发
+	changes := watcher.poll(root)
+	if len(changes) != 1 || changes[0].pluginID != "demo" ||
+		len(changes[0].files) != 1 || changes[0].files[0] != "theme.css" {
+		t.Fatalf("第二轮应下发 demo/theme.css，实际 %+v", changes)
+	}
+
+	// 第三轮：无变化
+	if changes := watcher.poll(root); len(changes) != 0 {
+		t.Fatalf("无变化不应下发：%+v", changes)
+	}
+
+	// 修改后同样走"检出 → 稳定"两轮
+	writeFile(t, filepath.Join(directory, "theme.css"), "body{color:red}")
+	if changes := watcher.poll(root); len(changes) != 0 {
+		t.Fatalf("刚修改应先挂 pending：%+v", changes)
+	}
+	if changes := watcher.poll(root); len(changes) != 1 {
+		t.Fatalf("修改稳定后应下发：%+v", changes)
+	}
+
+	// 删除：快照缩缩，不产生变化也不报错
+	if err := os.Remove(filepath.Join(directory, "theme.css")); err != nil {
+		t.Fatal(err)
+	}
+	if changes := watcher.poll(root); len(changes) != 0 {
+		t.Fatalf("删除文件不应下发变化：%+v", changes)
+	}
+}
+
+// TestScanPluginStylesIgnoresNonCSS 扫描只认 .css（大小写不敏感），
+// 其它扩展名与散落文件不进指纹表。
+func TestScanPluginStylesIgnoresNonCSS(t *testing.T) {
+	root := t.TempDir()
+	directory := newPluginFixture(t, root, "demo", "演示")
+	writeFile(t, filepath.Join(directory, "theme.css"), "a{}")
+	writeFile(t, filepath.Join(directory, "SKIN.CSS"), "b{}")
+	writeFile(t, filepath.Join(directory, "note.txt"), "x")
+
+	stamps, err := scanPluginStyles(root)
+	if err != nil {
+		t.Fatalf("扫描失败：%v", err)
+	}
+	if len(stamps) != 2 {
+		t.Fatalf("应只收录 2 个 css 文件：%+v", stamps)
+	}
+	if _, ok := stamps["demo/theme.css"]; !ok {
+		t.Errorf("缺少 demo/theme.css：%+v", stamps)
+	}
+	if _, ok := stamps["demo/SKIN.CSS"]; !ok {
+		t.Errorf("缺少 demo/SKIN.CSS（大小写不敏感）：%+v", stamps)
+	}
+
+	// 目录不存在：空表而非错误
+	empty, err := scanPluginStyles(filepath.Join(t.TempDir(), "missing"))
+	if err != nil || len(empty) != 0 {
+		t.Errorf("目录不存在应返回空表：%+v %v", empty, err)
+	}
+}
+
+// TestCreatePluginScaffoldGeneratesStyles 清单声明了 styles 时，
+// 骨架要生成对应的 css 空文件，免得首次加载吃一条 404 警告。
+func TestCreatePluginScaffoldGeneratesStyles(t *testing.T) {
+	api, root := newPluginAPI(t, nil)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := `{"id":"fresh","name":"新插件","version":"0.1.0","apiVersion":"1","styles":["theme.css","assets/extra.css"]}`
+	target, err := api.CreatePluginScaffold(root, manifest, "export default () => {};")
+	if err != nil {
+		t.Fatalf("创建骨架失败：%v", err)
+	}
+	for _, relative := range []string{"theme.css", filepath.Join("assets", "extra.css")} {
+		raw, err := os.ReadFile(filepath.Join(target, relative))
+		if err != nil {
+			t.Errorf("样式文件未生成 %s：%v", relative, err)
+		}
+		if len(raw) == 0 {
+			t.Errorf("样式文件应为带注释的空文件：%s", relative)
+		}
+	}
+}

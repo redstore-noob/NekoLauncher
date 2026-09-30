@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"strings"
 
+	"nekolauncher/internal/config"
 	"nekolauncher/internal/download"
 )
 
@@ -100,13 +101,14 @@ func (a *ContentAPI) ApplyContentUpdate(
 // GetContentVersionOptions 列出已安装内容文件在资源站上的全部版本
 // （升级与降级共用：选择任意版本 → ApplyContentUpdate 备份并替换）。
 // 文件无法识别归属时返回带 Notice 的空版本列表，而不是报错——
-// 前端要能展示"为什么不支持"。
+// 前端要能展示"为什么不支持"。CurseForge 识别复用设置页保存的 API Key。
 func (a *ContentAPI) GetContentVersionOptions(
 	sourcePath, minecraftDirectory, versionID, filePath string,
 ) (*download.ContentVersionOptions, error) {
 	gameVersion, loaderName := resolveInstanceGameInfo(minecraftDirectory, sourcePath, versionID)
 	return download.GetContentVersionOptions(
-		callCtx(a.ctx), filePath, gameVersion, loaderName)
+		callCtx(a.ctx), filePath, gameVersion, loaderName,
+		strings.TrimSpace(config.GetValue(curseForgeAPIKeyConfigKey)))
 }
 
 // resolveInstanceGameInfo 解析实例的基础 MC 版本与加载器显示名（未接线时空串）。

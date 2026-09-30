@@ -104,15 +104,61 @@ func ScanImportableInstances(registered []string) []ImportableInstance {
 }
 
 // externalGameVersion 尽力从实例元数据解析游戏版本：
-// MultiMC/Prism 的 mmc-pack.json（net.minecraft 组件）与 CurseForge 的
-// minecraftinstance.json（gameVersion）；解析失败返回空串。
+// MultiMC/Prism 的 mmc-pack.json（net.minecraft 组件）、CurseForge 的
+// minecraftinstance.json（gameVersion）、Modrinth App 的 profile.json
+// （metadata.versions["net.minecraft"]）；解析失败返回空串。
 func externalGameVersion(layout ExternalGameInstanceLayout) string {
 	switch {
 	case strings.Contains(layout.Provider, "MultiMC"):
 		return readMmcPackVersion(filepath.Join(layout.InstanceDirectory, "mmc-pack.json"))
-	default:
+	case strings.Contains(layout.Provider, "Modrinth"):
+		if version := readModrinthProfileVersion(filepath.Join(layout.InstanceDirectory, "profile.json")); version != "" {
+			return version
+		}
 		return readCurseForgeVersion(filepath.Join(layout.InstanceDirectory, "minecraftinstance.json"))
+	default:
+		version := readCurseForgeVersion(filepath.Join(layout.InstanceDirectory, "minecraftinstance.json"))
+		if version == "" {
+			version = readGenericInstanceVersion(filepath.Join(layout.InstanceDirectory, "instance.json"))
+		}
+		return version
 	}
+}
+
+// readModrinthProfileVersion 读取 Modrinth App profile.json 的基础游戏版本。
+func readModrinthProfileVersion(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var profile struct {
+		Metadata struct {
+			Versions map[string]string `json:"versions"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(data, &profile) != nil {
+		return ""
+	}
+	return profile.Metadata.Versions["net.minecraft"]
+}
+
+// readGenericInstanceVersion 从 ATLauncher 的 instance.json 尽力猜测基础游戏
+// 版本（该文件没有统一 schema，尝试常见键名）。
+func readGenericInstanceVersion(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var generic map[string]any
+	if json.Unmarshal(data, &generic) != nil {
+		return ""
+	}
+	for _, key := range []string{"gameVersion", "minecraftVersion", "baseGameVersion"} {
+		if value, ok := generic[key].(string); ok && value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func readMmcPackVersion(path string) string {

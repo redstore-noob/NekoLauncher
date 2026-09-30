@@ -11,11 +11,47 @@ import (
 
 // ---- 账号存储（auth.Shared） ----
 
-// GetAccounts 全部账号。
-func (a *AccountAPI) GetAccounts() []*auth.LaunchAccount { return auth.Shared.Current() }
+// sanitizeAccount 深拷贝账号并抹掉凭据令牌后再交给 WebView。
+//
+// 前端渲染只需要用户名/类型/UUID/皮肤站等展示字段，从来用不到
+// AccessToken/RefreshToken（登录后的持久化经 AddAccount/Update* 走的是
+// 新登录结果，不依赖读回）。而 Wails 绑定挂在 window.go 上，插件 JS
+// 与宿主同处一个 WebView，可以绕过插件 API 的权限门直接调用——
+// 如果这里返回完整凭据，任何未沙箱的插件都能顺走全部账号的刷新令牌。
+// 抹掉令牌不影响 Remove/MoveToTop/Update*：它们按稳定键匹配身份，不比令牌。
+func sanitizeAccount(account *auth.LaunchAccount) *auth.LaunchAccount {
+	if account == nil {
+		return nil
+	}
+	clone := *account
+	if account.Microsoft != nil {
+		microsoft := *account.Microsoft
+		microsoft.AccessToken = ""
+		microsoft.RefreshToken = ""
+		clone.Microsoft = &microsoft
+	}
+	if account.Authlib != nil {
+		authlib := *account.Authlib
+		authlib.AccessToken = ""
+		clone.Authlib = &authlib
+	}
+	return &clone
+}
 
-// GetSelectedAccount 当前选中账号（无则 nil）。
-func (a *AccountAPI) GetSelectedAccount() *auth.LaunchAccount { return auth.Shared.Selected() }
+// GetAccounts 全部账号（凭据令牌已抹除，见 sanitizeAccount）。
+func (a *AccountAPI) GetAccounts() []*auth.LaunchAccount {
+	accounts := auth.Shared.Current()
+	out := make([]*auth.LaunchAccount, 0, len(accounts))
+	for _, account := range accounts {
+		out = append(out, sanitizeAccount(account))
+	}
+	return out
+}
+
+// GetSelectedAccount 当前选中账号（无则 nil；凭据令牌已抹除）。
+func (a *AccountAPI) GetSelectedAccount() *auth.LaunchAccount {
+	return sanitizeAccount(auth.Shared.Selected())
+}
 
 // AddAccount 添加账号并选中。
 func (a *AccountAPI) AddAccount(account *auth.LaunchAccount) { auth.Shared.Add(account) }

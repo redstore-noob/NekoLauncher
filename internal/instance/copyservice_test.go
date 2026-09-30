@@ -152,3 +152,95 @@ func TestCopyVersionRejectsInvalidTargets(t *testing.T) {
 		t.Error("被拒绝的复制不应创建目标目录")
 	}
 }
+
+// TestCopyExternalVersionEndToEnd 外部实例复制全流程：实例目录整体克隆 + 合成
+// inheritsFrom 版本 JSON + 档案迁移到主目录；基础版本未安装时报错且不留半成品。
+func TestCopyExternalVersionEndToEnd(t *testing.T) {
+	switchTempStorage(t)
+
+	main := t.TempDir() // 主 Minecraft 目录：已安装基础版本 1.20.1
+	write := func(rel, content string) {
+		full := filepath.Join(main, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("versions/1.20.1/1.20.1.json", `{"id":"1.20.1"}`)
+
+	// 外部实例（MultiMC 系布局）：独立目录 + instance.cfg + minecraft 内容 + mmc-pack
+	externalRoot := t.TempDir()
+	instanceDirectory := filepath.Join(externalRoot, "My Pack")
+	if err := os.MkdirAll(filepath.Join(instanceDirectory, "minecraft", "mods"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"instance.cfg":  "InstanceType=OneSix\n",
+		"mmc-pack.json": `{"components":[{"uid":"net.minecraft","version":"1.20.1"},{"uid":"net.minecraftforge","version":"47.2.0"}]}`,
+		filepath.Join("minecraft", "mods", "a.jar"): "fake-mod",
+		"minecraft/options.txt":                     "version=3579",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(instanceDirectory, filepath.FromSlash(name)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	layout, ok := TryResolveExternalInstance(instanceDirectory)
+	if !ok {
+		t.Fatal("外部实例布局识别失败（测试夹具应有效）")
+	}
+
+	newID, err := CopyExternalVersion(context.Background(), layout, main, "My Pack Copy")
+	if err != nil {
+		t.Fatalf("外部实例复制失败：%v", err)
+	}
+	if newID != "My Pack Copy" {
+		t.Fatalf("返回的新版本 ID = %q，期望 My Pack Copy", newID)
+	}
+
+	// 实例目录整体（含 minecraft 内容与元数据）已克隆到 versions/<新ID>/
+	target := filepath.Join(main, "versions", "My Pack Copy")
+	for _, rel := range []string{
+		filepath.Join("minecraft", "mods", "a.jar"),
+		"minecraft/options.txt",
+		"instance.cfg",
+		"mmc-pack.json",
+		"My Pack Copy.json",
+	} {
+		if _, err := os.Stat(filepath.Join(target, filepath.FromSlash(rel))); err != nil {
+			t.Errorf("副本缺少 %s：%v", rel, err)
+		}
+	}
+
+	// 合成的版本 JSON：id 为新名字，inheritsFrom 指向基础游戏版本
+	document := readJSONFile(t, filepath.Join(target, "My Pack Copy.json"))
+	if !strings.Contains(document, `"id": "My Pack Copy"`) {
+		t.Errorf("合成 JSON 的 id 不正确：%s", document)
+	}
+	if !strings.Contains(document, `"inheritsFrom": "1.20.1"`) {
+		t.Errorf("合成 JSON 缺少指向基础版本的 inheritsFrom：%s", document)
+	}
+
+	// 原外部实例完全不受影响
+	original, err := os.ReadFile(filepath.Join(instanceDirectory, "minecraft", "options.txt"))
+	if err != nil || string(original) != "version=3579" {
+		t.Errorf("原实例内容被改动：%s (%v)", string(original), err)
+	}
+
+	// 档案：已迁移到（主目录, 新版本 ID）
+	cloned := config.Get(main, "My Pack Copy")
+	if cloned.VersionId != "My Pack Copy" || cloned.MinecraftDirectory == "" {
+		t.Errorf("副本档案未迁移到主目录：%+v", cloned)
+	}
+
+	// 基础版本未安装时报错且不留半成品
+	write2 := t.TempDir()
+	if _, err := CopyExternalVersion(context.Background(), layout, write2, "Another Copy"); err == nil {
+		t.Error("基础版本未安装时应报错")
+	}
+	if _, err := os.Stat(filepath.Join(write2, "versions", "Another Copy")); !os.IsNotExist(err) {
+		t.Error("失败的外部实例复制不应留下半成品目录")
+	}
+}

@@ -74,7 +74,8 @@ func (a *ContentAPI) ImportSave(archiveZipPath, savesDirectory string) (string, 
 func (a *ContentAPI) DeleteSave(saveDirectory string) error { return content.DeleteSave(saveDirectory) }
 
 // ---- 模组中文名 ----
-// 译名数据来自 MC百科（mcmod.cn）搜索匹配，本地持久缓存；关于页有声明。
+// 译名优先取 SCL 社区数据集（gitee 静态文件），未收录时检索
+// MC百科（mcmod.cn）搜索匹配，本地持久缓存；关于页有声明。
 
 // LookupModNameTranslations 立即返回已知译名（只查本地缓存，不发请求）。
 // key 为传入的原始文件名，只包含有命中的条目。

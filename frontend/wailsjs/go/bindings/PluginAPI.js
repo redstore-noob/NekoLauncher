@@ -38,6 +38,10 @@ export function SetPluginDisabled(arg1, arg2) {
   return window['go']['bindings']['PluginAPI']['SetPluginDisabled'](arg1, arg2);
 }
 
+export function Startup(arg1) {
+  return window['go']['bindings']['PluginAPI']['Startup'](arg1);
+}
+
 export function UninstallPlugin(arg1) {
   return window['go']['bindings']['PluginAPI']['UninstallPlugin'](arg1);
 }

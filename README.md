@@ -72,7 +72,7 @@ wails build -platform linux/amd64 # 交叉编译(Linux需webkit2gtk)
 ## 🫂社区
 
 QQ群号:1108330006<br>
-官方网站(目前托管在Github Pages):https://redstore-noob.github.io
+官方网站(目前托管在Github Pages):https://redstore-noob.github.io(当你看到这个括号的时候，说明还是旧项目(逃)
 
 ## 👆相关人员名单
 
@@ -107,6 +107,7 @@ _功能已完成。_
 
 ## 📄关于其他文档
 
-[隐私政策](docs/TERMS.md)<br>
-[贡献指南](CONTRIBUTING.md)<br>
+[隐私政策](docs/TERMS.md)
+[贡献指南](CONTRIBUTING.md)
 [许可证(Apache 2.0)](LICENSE)
+[更新日志](docs/UPDATE_LOG.md)

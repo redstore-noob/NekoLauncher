@@ -1543,7 +1543,9 @@ const InstancesPage: React.FC = () => {
     entry: content.GameContentEntry,
     e: React.MouseEvent,
   ) => {
-    const displayName = modNames[entry.Name] || entry.Name;
+    // 与列表行同一展示格式 "(中文名) 原名"
+    const zh = modNames[entry.Name];
+    const displayName = zh ? `(${zh}) ${entry.Name}` : entry.Name;
 
     setCtxMenu({
       x: e.clientX,
@@ -1797,10 +1799,13 @@ const InstancesPage: React.FC = () => {
 
     if (!q) return contentEntries;
 
-    return contentEntries.filter((e) =>
-      (e.Name || "").toLowerCase().includes(q),
+    return contentEntries.filter(
+      (e) =>
+        (e.Name || "").toLowerCase().includes(q) ||
+        // 中文名（MC百科译名）也参与过滤：输入"钠"能找到 sodium-*.jar
+        (modNames[e.Name] || "").toLowerCase().includes(q),
     );
-  }, [contentEntries, contentSearch]);
+  }, [contentEntries, contentSearch, modNames]);
 
   const contentSummary = useMemo(() => {
     const total = contentEntries.length;
@@ -2991,25 +2996,26 @@ const InstancesPage: React.FC = () => {
                                     </span>
                                     <div className="min-w-0 flex-1">
                                       {(() => {
+                                        // 展示格式统一为 "(中文名) 原名"：
+                                        // 标题与文件名是同一个字符串。
                                         const zhName =
                                           contentTab === "已安装模组"
                                             ? modNames[entry.Name]
                                             : undefined;
+                                        const displayName = zhName
+                                          ? `(${zhName}) ${entry.Name}`
+                                          : entry.Name;
 
                                         return (
                                           <>
                                             <div
                                               className={`truncate text-[13px] font-semibold text-gray-800 dark:text-gray-200 ${entry.IsDisabled ? "line-through opacity-60" : ""}`}
-                                              title={
-                                                zhName ? entry.Name : undefined
-                                              }
+                                              title={displayName}
                                             >
-                                              {zhName || entry.Name}
+                                              {displayName}
                                             </div>
                                             <div className="truncate text-[11px] text-gray-400">
-                                              {zhName
-                                                ? `${entry.Name} · ${entry.MetadataLine}`
-                                                : entry.MetadataLine}
+                                              {entry.MetadataLine}
                                             </div>
                                           </>
                                         );

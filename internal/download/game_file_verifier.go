@@ -33,10 +33,18 @@ func (v *GameFileVerifier) VerifyAndRepair(
 	root := filepath.Clean(minecraftDirectory)
 	repaired := 0
 	visited := map[string]bool{}
-	currentID := versionID
+	// 待校验队列：inheritsFrom 的父版本与 jar 字段的客户端 jar 来源都入队。
+	// 后者在载荷里只带描述文件（不下发 jar 本体，见 internal/solo/export.go），
+	// 必须靠本函数从官方地址补下——只走 inheritsFrom 会漏掉 jar 指向旁支的版本。
+	pending := []string{versionID}
 
-	// 沿 inheritsFrom 链逐级校验
-	for strings.TrimSpace(currentID) != "" && !visited[strings.ToLower(currentID)] {
+	// 沿 inheritsFrom / jar 引用逐级校验
+	for len(pending) > 0 {
+		currentID := pending[0]
+		pending = pending[1:]
+		if strings.TrimSpace(currentID) == "" || visited[strings.ToLower(currentID)] {
+			continue
+		}
 		visited[strings.ToLower(currentID)] = true
 		if err := ctx.Err(); err != nil {
 			return repaired, err
@@ -62,6 +70,7 @@ func (v *GameFileVerifier) VerifyAndRepair(
 		jarPath := filepath.Join(versionDir, currentID+".jar")
 		hasClientDownload := false
 		parentID := ""
+		jarProviderID := ""
 
 		jsonBytes, err := os.ReadFile(jsonPath)
 		if err != nil {
@@ -90,6 +99,10 @@ func (v *GameFileVerifier) VerifyAndRepair(
 			}
 			if inherits, ok := rootElement["inheritsFrom"]; ok {
 				_ = json.Unmarshal(inherits, &parentID)
+			}
+			// jar 字段：客户端 jar 借用了另一个版本，那个版本的 jar 同样要能补下
+			if jar, ok := rootElement["jar"]; ok {
+				_ = json.Unmarshal(jar, &jarProviderID)
 			}
 
 			// 3. 校验库文件（并识别是否为 NeoForge/Forge Loader 实例）
@@ -196,7 +209,8 @@ func (v *GameFileVerifier) VerifyAndRepair(
 			}
 		}
 
-		currentID = parentID
+		// 父版本与 jar 来源版本都继续入队（去重由 visited 负责）
+		pending = append(pending, parentID, jarProviderID)
 	}
 
 	return repaired, nil

@@ -103,9 +103,14 @@ export interface PluginManifest {
    * 用途清单，并决定对应 API 能否调用：未声明就调用会直接抛错。
    * 权限键见 docs/Extensions_Guide.md 的权限表：storage / launch / instances /
    * accounts / launcher-config / notifications / clipboard / open-url /
-   * open-path / server-status。
+   * open-path / server-status / styles。
    */
   capabilities?: Record<string, boolean>;
+  /**
+   * 样式文件列表（相对插件目录、须为 .css）：插件加载时自动注入为全局样式，
+   * 可自定义任意控件的样式；卸载/重载/停用时宿主自动移除。
+   */
+  styles?: string[];
   /**
    * 默认设置：首次加载时逐项种入 api.config（仅当对应键为空时写入，
    * 用户改过的值不会被覆盖）。
@@ -152,6 +157,18 @@ export interface PluginApi {
     get: (key: string) => Promise<string>;
     set: (key: string, value: string) => Promise<void>;
     clear: (key: string) => Promise<void>;
+  };
+  /**
+   * 注入全局 CSS（作用于整个启动器，可改任意控件的样式）。同 key 重复注入
+   * 为替换；卸载/重载/停用时宿主自动移除该插件注入的全部样式，无需清理。
+   * 清单里静态的样式文件请用 styles 字段，这个 API 面向运行时动态样式
+   * （如随插件设置切换主题）。需要权限：styles——未声明时调用直接抛错。
+   */
+  styles: {
+    /** 注入（或按 key 替换）一条全局 CSS；key 缺省 "inline" */
+    inject: (css: string, key?: string) => void;
+    /** 按 inject 时的 key 移除一条样式 */
+    remove: (key: string) => void;
   };
   log: (...args: unknown[]) => void;
   /**

@@ -12,6 +12,7 @@ import (
 	"nekolauncher/internal/config"
 	"nekolauncher/internal/instance"
 	"nekolauncher/internal/launch"
+	"nekolauncher/internal/logs"
 	"nekolauncher/internal/network"
 )
 
@@ -163,14 +164,41 @@ func (a *ConfigAPI) SaveVerifyFilesBeforeLaunch(enabled bool) {
 	config.SaveVerifyFilesBeforeLaunch(enabled)
 }
 
-// SetValue 写入任意配置键。
-func (a *ConfigAPI) SetValue(key, value string) bool { return config.SetValue(key, value) }
+// 账户域键（accounts / authlibClientToken 等）只允许 Go 侧（internal/auth）
+// 读写：这些键背后是 accounts.yaml 的加密凭据。前端/插件的合法账号操作
+// 全部走 AccountAPI；从 WebView 直呼这三个通用键值接口触碰账户域，
+// 只可能是恶意插件在绕过权限门——直接拒绝并记 WARN。
+func guardAccountDomainKey(key string) bool {
+	if !config.IsAccountDomainKey(key) {
+		return true
+	}
+	logs.Write("WARN", "已拒绝来自界面层的账户域配置访问："+key)
+	return false
+}
 
-// GetValue 读取任意配置键（不存在为空串）。
-func (a *ConfigAPI) GetValue(key string) string { return config.GetValue(key) }
+// SetValue 写入任意配置键（账户域键被拒绝，见 guardAccountDomainKey）。
+func (a *ConfigAPI) SetValue(key, value string) bool {
+	if !guardAccountDomainKey(key) {
+		return false
+	}
+	return config.SetValue(key, value)
+}
 
-// ClearValue 删除配置键。
-func (a *ConfigAPI) ClearValue(key string) bool { return config.ClearValue(key) }
+// GetValue 读取任意配置键（不存在为空串；账户域键被拒绝，恒返回空串）。
+func (a *ConfigAPI) GetValue(key string) string {
+	if !guardAccountDomainKey(key) {
+		return ""
+	}
+	return config.GetValue(key)
+}
+
+// ClearValue 删除配置键（账户域键被拒绝）。
+func (a *ConfigAPI) ClearValue(key string) bool {
+	if !guardAccountDomainKey(key) {
+		return false
+	}
+	return config.ClearValue(key)
+}
 
 // ---- 全局高级启动设置 ----
 

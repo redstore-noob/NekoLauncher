@@ -33,6 +33,11 @@ import {
   ApplyLauncherUpdate,
   CheckLauncherUpdate,
   DownloadLauncherUpdate,
+  GetAutoUpdateEnabled,
+  GetUpdateChannel,
+  GetUpdateChannels,
+  SaveAutoUpdateEnabled,
+  SaveUpdateChannel,
 } from "../../../wailsjs/go/bindings/UpdateAPI";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
 import { useLogViewer } from "../../components/LogViewer";
@@ -53,7 +58,15 @@ const AboutSection: React.FC = () => {
   const { openLogs } = useLogViewer();
 
   // ---- 启动器自身更新（X-1）----
-  const [includePrerelease, setIncludePrerelease] = useState(true);
+  // 更新通道：stable=只看正式版 / preview=含预发布（默认，项目以 preview 发版为主）
+  const [channel, setChannel] = useState("preview");
+  const [channelOptions, setChannelOptions] = useState<
+    { Value: string; Label: string }[]
+  >([
+    { Value: "stable", Label: "稳定版" },
+    { Value: "preview", Label: "预览版" },
+  ]);
+  const [autoCheck, setAutoCheck] = useState(true);
   const [checking, setChecking] = useState(false);
   const [updateHint, setUpdateHint] = useState("");
   const [latest, setLatest] = useState<update.CheckResult | null>(null);
@@ -70,8 +83,26 @@ const AboutSection: React.FC = () => {
       setVersion(asText(await GetFormattedVersion()));
       setStorage(asText(await GetStorageDirectory()));
       setPortable(await IsPortableMode().catch(() => false));
+      // 更新偏好从配置恢复（默认开启+预览通道，见 internal/config 的回退值）
+      setAutoCheck(await GetAutoUpdateEnabled().catch(() => true));
+      setChannel(await GetUpdateChannel().catch(() => "preview"));
+      const options = await GetUpdateChannels().catch(() => null);
+
+      if (Array.isArray(options) && options.length > 0)
+        setChannelOptions(options);
     })();
   }, []);
+
+  // 开关变化即落盘；手动检查沿用同一份通道
+  const toggleAutoCheck = (enabled: boolean) => {
+    setAutoCheck(enabled);
+    void SaveAutoUpdateEnabled(enabled).catch(() => undefined);
+  };
+
+  const chooseChannel = (next: string) => {
+    setChannel(next);
+    void SaveUpdateChannel(next).catch(() => undefined);
+  };
 
   // 下载进度由后端推送（update:progress），前端只做展示
   useEffect(() => {
@@ -95,7 +126,7 @@ const AboutSection: React.FC = () => {
     setUpdateHint(t("正在检查更新…"));
     setLatest(null);
     try {
-      const result = await CheckLauncherUpdate(includePrerelease);
+      const result = await CheckLauncherUpdate(channel);
 
       setLatest(result);
       if (result.UpdateAvailable) {
@@ -174,16 +205,43 @@ const AboutSection: React.FC = () => {
           </span>
         </SettingRow>
 
+        <SettingRow
+          hint={t(
+            "启动时自动检查 GitHub Releases，有新版本时弹窗询问（不会静默替换）",
+          )}
+          label={t("自动检查更新")}
+        >
+          <Switch
+            isSelected={autoCheck}
+            size="sm"
+            onValueChange={toggleAutoCheck}
+          />
+        </SettingRow>
+
+        <SettingRow
+          hint={t(
+            "更新通道：预览版最先拿到新功能，稳定版只收正式发布（预览版较少时可能长期无更新）",
+          )}
+          label={t("更新通道")}
+        >
+          <div className="flex items-center gap-1">
+            {channelOptions.map((option) => (
+              <Chip
+                key={option.Value}
+                className="cursor-pointer"
+                color={channel === option.Value ? "primary" : "default"}
+                size="sm"
+                variant="flat"
+                onClick={() => chooseChannel(option.Value)}
+              >
+                {t(option.Label)}
+              </Chip>
+            ))}
+          </div>
+        </SettingRow>
+
         <SettingRow hint={updateHint || undefined} label={t("检查更新")}>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <span className="text-[11px] text-gray-500 dark:text-gray-400">
-              {t("包含预发布版")}
-            </span>
-            <Switch
-              isSelected={includePrerelease}
-              size="sm"
-              onValueChange={setIncludePrerelease}
-            />
             <Button
               isLoading={checking}
               size="sm"
@@ -315,7 +373,7 @@ const AboutSection: React.FC = () => {
           <div className="max-w-md text-right text-[11px] text-gray-400">
             <p>
               {t(
-                "「已安装模组」列表中的中文译名通过模组文件名检索 MC百科（mcmod.cn）获得，数据与译名版权归 MC百科 所有。",
+                "「已安装模组」列表中的中文译名优先来自 SCL 社区译名数据集，未收录时通过模组文件名检索 MC百科（mcmod.cn）获得，数据与译名版权归 MC百科 所有。",
               )}
             </p>
             <a
@@ -327,7 +385,9 @@ const AboutSection: React.FC = () => {
               www.mcmod.cn
             </a>
             <p className="mt-1 opacity-70">
-              {t("实现方式参考了 PCL2 的同名功能，特此致谢。")}
+              {t(
+                "实现方式参考了 PCL2 的同名功能与 SCL 启动器的译名数据集，特此致谢。",
+              )}
             </p>
           </div>
         </SettingRow>

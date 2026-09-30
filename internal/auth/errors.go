@@ -69,9 +69,12 @@ func (e *RotatedCredentialsError) Error() string {
 func (e *RotatedCredentialsError) Unwrap() error { return e.Inner }
 
 // AuthlibAuthenticationError 皮肤站认证流程中抛出的错误；Message 已面向用户可读。
+// CaptchaRequired 为 true 表示皮肤站开启了验证码（Blessing Skin 私有行为，
+// Yggdrasil 规范无此扩展）：调用方应引导用户到皮肤站网页完成验证后重试。
 type AuthlibAuthenticationError struct {
-	Message string
-	Inner   error
+	Message        string
+	Inner          error
+	CaptchaRequired bool
 }
 
 func (e *AuthlibAuthenticationError) Error() string {
@@ -85,6 +88,12 @@ func (e *AuthlibAuthenticationError) Unwrap() error { return e.Inner }
 
 func newAuthlibError(message string) *AuthlibAuthenticationError {
 	return &AuthlibAuthenticationError{Message: message}
+}
+
+// newAuthlibCaptchaError 皮肤站要求验证码时返回的结构化错误：
+// Message 引导用户到网页端完成验证；CaptchaRequired 供绑定层/前端识别。
+func newAuthlibCaptchaError(message string) *AuthlibAuthenticationError {
+	return &AuthlibAuthenticationError{Message: message, CaptchaRequired: true}
 }
 
 func newAuthlibErrorWrap(message string, inner error) *AuthlibAuthenticationError {

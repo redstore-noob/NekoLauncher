@@ -9,6 +9,11 @@
 //	                       内容直接进 versions/<id>/，配合首启显式开启的版本隔离，
 //	                       开箱即是"隔离实例"，且首启补齐缺失的 libraries/assets
 //	jre/…                  可选，解压到 <数据目录>/runtime/jre/
+//
+// 载荷**不含任何 Minecraft 客户端本体**（versions/<id>/<id>.jar）：客户端是
+// Mojang 的版权物，随安装包分发属于再分发。载荷只带版本描述 JSON（内含官方
+// 下载地址），玩家首次启动时由启动前文件校验从 Mojang 官方地址拉取——与
+// libraries/assets 走同一条既有的联网补全路径。
 package solo
 
 import (
@@ -138,12 +143,16 @@ func ExportSolo(
 	javaEntries := []payloadEntry{}
 	if options.BundleJava {
 		emitProgress(progress, "正在收集 Java 运行时", 0, 1)
-		javaEntries, err = collectJavaEntries(primaryJavaHome())
+		javaHome := primaryJavaHome()
+		javaEntries, err = collectJavaEntries(javaHome)
 		if err != nil {
 			return result, err
 		}
 		if len(javaEntries) == 0 {
 			warnings = append(warnings, "未配置首选 Java，跳过捆绑：玩家首次启动时需自行安装 Java。")
+		} else if notice := javaRedistributionNotice(javaHome); notice != "" {
+			// 载荷会把作者本机的 Java 整个分发给玩家：供应商条款必须让作者知道
+			warnings = append(warnings, notice)
 		}
 	}
 
@@ -300,9 +309,16 @@ type payloadEntry struct {
 	sourcePath  string
 }
 
-// collectVersionChain 收集版本目录及其 inheritsFrom/jar 依赖链的文件
-// （json + jar），载荷路径以 minecraft/versions/ 为根。根版本缺失 json 报错，
-// 依赖链缺失报错（这样的版本装上也无法被扫描识别）。
+// collectVersionChain 收集版本目录及其 inheritsFrom / jar 依赖链的版本描述文件。
+//
+// **只收 <id>.json，不收任何 .jar**：客户端本体是 Mojang 的版权物，随安装包
+// 分发属于再分发。描述文件里带着官方下载地址，玩家首次启动由启动前文件校验
+// （download/game_file_verifier）从 Mojang 官方地址补下，与 libraries/assets
+// 走同一条路径。根版本缺失 json 报错，依赖链缺失同样报错（这样的版本装上
+// 也无法被扫描识别）。
+//
+// jar 字段（客户端 jar 借用另一版本）指向的版本只收描述文件，并一并入队：
+// 校验器会沿同一张图找到它并补下 jar（见 game_file_verifier 的链式遍历）。
 func collectVersionChain(versionsRoot, versionID string) ([]payloadEntry, error) {
 	entries := []payloadEntry{}
 	seen := map[string]bool{}
@@ -329,13 +345,6 @@ func collectVersionChain(versionsRoot, versionID string) ([]payloadEntry, error)
 			archivePath: "minecraft/versions/" + item.id + "/" + item.id + ".json",
 			sourcePath:  jsonPath,
 		})
-		jarPath := filepath.Join(versionDirectory, item.id+".jar")
-		if _, err := os.Stat(jarPath); err == nil {
-			entries = append(entries, payloadEntry{
-				archivePath: "minecraft/versions/" + item.id + "/" + item.id + ".jar",
-				sourcePath:  jarPath,
-			})
-		}
 
 		var meta struct {
 			InheritsFrom string `json:"inheritsFrom"`
@@ -348,19 +357,16 @@ func collectVersionChain(versionsRoot, versionID string) ([]payloadEntry, error)
 		if err := json.Unmarshal(raw, &meta); err != nil {
 			return nil, fmt.Errorf("版本描述文件不是有效 JSON（%s）：%w", item.id, err)
 		}
-		// jar 字段：客户端 jar 借用另一版本的文件，只拷那一个 jar
+		// jar 字段：客户端 jar 借用另一版本的描述（jar 本体不下发，由校验器补下）。
+		// 该来源版本的描述文件必须存在，否则玩家侧无从得知它的下载地址。
 		if jar := strings.TrimSpace(meta.Jar); jar != "" && !strings.EqualFold(jar, item.id) && !seen[strings.ToLower(jar)] {
-			borrowed := filepath.Join(versionsRoot, jar, jar+".jar")
-			if _, err := os.Stat(borrowed); err != nil {
-				return nil, fmt.Errorf("版本 %s 声明的客户端 jar 不存在：%s", item.id, borrowed)
+			jarJSON := filepath.Join(versionsRoot, jar, jar+".json")
+			if info, err := os.Stat(jarJSON); err != nil || info.IsDir() {
+				return nil, fmt.Errorf("版本 %s 声明的客户端 jar 来源 %s 缺少描述文件：%s", item.id, jar, jarJSON)
 			}
-			entries = append(entries, payloadEntry{
-				archivePath: "minecraft/versions/" + jar + "/" + jar + ".jar",
-				sourcePath:  borrowed,
-			})
-			seen[strings.ToLower(jar)] = true
+			queue = append(queue, chainItem{jar, item.depth})
 		}
-		// inheritsFrom：整个父版本目录（json + jar）都要带上
+		// inheritsFrom：父版本的描述文件同样要带上（同为同层引用，深度不累加）
 		if parent := strings.TrimSpace(meta.InheritsFrom); parent != "" && !strings.EqualFold(parent, item.id) {
 			if item.depth >= maxInheritDepth {
 				return nil, fmt.Errorf("版本 %s 的 inheritsFrom 链过深（>%d）", item.id, maxInheritDepth)
@@ -494,6 +500,70 @@ func collectJavaEntries(javaHome string) ([]payloadEntry, error) {
 		return nil, err
 	}
 	return entries, nil
+}
+
+// javaVendorPermissive 已知许可宽松、可随安装包再分发的 Java 供应商关键字
+// （GPLv2 + Classpath Exception 或同等的宽松条款）。按小写子串匹配。
+var javaVendorPermissive = []string{
+	"zulu", "azul", "temurin", "adoptium", "eclipse", "openjdk",
+	"amazon", "corretto", "microsoft", "bellsoft", "liberica",
+	"ibm", "semeru", "red hat", "alibaba", "dragonwell",
+	"tencent", "kona", "huawei", "bisheng", "sapmachine",
+}
+
+// javaVendorIdentifier 取待捆绑 Java 的供应商标识：优先读主目录下的 release
+// 文件（JDK 9+ 必带 IMPLEMENTOR / JAVA_VENDOR），读不到时回退启动器自管的
+// 目录名（java-zulu-21 / java-temurin-8 / java-oracle-17）。均取不到返回空串。
+func javaVendorIdentifier(javaHome string) string {
+	if strings.TrimSpace(javaHome) == "" {
+		return ""
+	}
+	if raw, err := os.ReadFile(filepath.Join(javaHome, "release")); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			key, value, found := strings.Cut(line, "=")
+			if !found {
+				continue
+			}
+			switch strings.TrimSpace(key) {
+			case "IMPLEMENTOR", "JAVA_VENDOR":
+				if vendor := strings.Trim(strings.TrimSpace(value), `"`); vendor != "" {
+					return vendor
+				}
+			}
+		}
+	}
+	base := strings.ToLower(filepath.Base(javaHome))
+	for _, vendor := range []string{"zulu", "temurin", "azul", "adoptium", "oracle"} {
+		if strings.Contains(base, vendor) {
+			return vendor
+		}
+	}
+	return ""
+}
+
+// javaRedistributionNotice 判断待捆绑 Java 的再分发条件，返回需要提示作者的
+// 警告文案；许可宽松、可放心分发时返回空串。
+//
+// 为什么必须提示：载荷会把作者本机配置的首选 Java 整个打进去分发给玩家，而
+// 启动器支持的供应商里 Oracle JDK 的条款与 Zulu / Temurin 的 GPLv2+CE 差别
+// 很大（见 download/java_runtime_installer.go 的三家供应商）。这里只提示不拦截
+// ——条款是否满足最终要作者自己确认。
+func javaRedistributionNotice(javaHome string) string {
+	vendor := javaVendorIdentifier(javaHome)
+	normalized := strings.ToLower(vendor)
+	if strings.Contains(normalized, "oracle") {
+		return "捆绑的 Java 运行时来自 Oracle（" + vendor + "）：Oracle JDK 的再分发条款与 Zulu / Temurin 等宽松许可不同，" +
+			"随安装包分发给玩家前请确认已满足其条件；不确定时请改用 Zulu 或 Temurin。"
+	}
+	for _, known := range javaVendorPermissive {
+		if strings.Contains(normalized, known) {
+			return ""
+		}
+	}
+	if vendor == "" {
+		return "无法识别待捆绑 Java 的供应商（未找到 release 文件）：请确认其许可允许随安装包再分发。Zulu 与 Temurin 可放心使用。"
+	}
+	return "待捆绑 Java 的供应商为「" + vendor + "」：请确认其许可允许随安装包再分发。Zulu 与 Temurin 可放心使用。"
 }
 
 // writePayload 把全部条目写成载荷 zip；返回载荷长度与 CRC32。

@@ -57,6 +57,9 @@ func buildFakeWorld(t *testing.T, root string) (versionsRoot, contentDirectory, 
 	writeFile(t, filepath.Join(javaHome, "lib", "rt.jar"), "rt-bytes")
 	writeFile(t, filepath.Join(javaHome, "jmods", "java.base.jmod"), "should-be-skipped")
 	writeFile(t, filepath.Join(javaHome, "src.zip"), "should-be-skipped")
+	// JDK 9+ 的 release 文件：供应商探测读它判定再分发条件
+	writeFile(t, filepath.Join(javaHome, "release"),
+		"IMPLEMENTOR=\"Azul Systems, Inc.\"\nJAVA_VERSION=\"17.0.9\"\n")
 
 	return filepath.Join(root, "versions"), forgeDir, javaHome
 }
@@ -168,7 +171,7 @@ func TestExportSoloEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportSolo 失败：%v", err)
 	}
-	if result.OutputPath != outputPath || result.OverrideFiles != 4 || result.DeclaredFiles != 4 {
+	if result.OutputPath != outputPath || result.OverrideFiles != 4 || result.DeclaredFiles != 2 {
 		t.Fatalf("导出统计不符：%+v", result)
 	}
 	if phases[len(phases)-1] != "完成" {
@@ -198,16 +201,21 @@ func TestExportSoloEndToEnd(t *testing.T) {
 		t.Fatal("载荷缺少 portable.flag")
 	}
 
-	// minecraft/：版本链（json+jar）+ 内容（进版本目录）
+	// minecraft/：只带版本描述（json）+ 内容（进版本目录），不带客户端本体
 	if got := zipEntryText(t, reader, "minecraft/versions/"+forgeID+"/"+forgeID+".json"); !strings.Contains(got, "inheritsFrom") {
 		t.Fatalf("Forge 版本 json 内容不符：%q", got)
 	}
-	if !zipHasEntry(reader, "minecraft/versions/"+forgeID+"/"+forgeID+".jar") {
-		t.Fatal("载荷缺少 Forge jar")
+	if !zipHasEntry(reader, "minecraft/versions/1.20.1/1.20.1.json") {
+		t.Fatal("载荷缺少 inheritsFrom 父版本的描述文件")
 	}
-	if !zipHasEntry(reader, "minecraft/versions/1.20.1/1.20.1.json") ||
-		!zipHasEntry(reader, "minecraft/versions/1.20.1/1.20.1.jar") {
-		t.Fatal("载荷缺少 inheritsFrom 父版本文件")
+	// 客户端本体是 Mojang 版权物：绝不可随安装包分发，改由启动前校验联网补下
+	for _, forbidden := range []string{
+		"minecraft/versions/" + forgeID + "/" + forgeID + ".jar",
+		"minecraft/versions/1.20.1/1.20.1.jar",
+	} {
+		if zipHasEntry(reader, forbidden) {
+			t.Fatalf("载荷不得包含客户端本体 %s（应由启动前校验从官方地址补下）", forbidden)
+		}
 	}
 	for _, required := range []string{
 		"minecraft/versions/" + forgeID + "/mods/jei.jar",
@@ -219,12 +227,185 @@ func TestExportSoloEndToEnd(t *testing.T) {
 		}
 	}
 
-	// jre/：运行时带上了，排除项没带上
+	// jre/：运行时带上了，排除项没带上；Zulu 属宽松许可，不应有再分发警告
 	if got := zipEntryText(t, reader, "jre/bin/java.exe"); got != "fake-java" {
 		t.Fatalf("捆绑 Java 内容不符：%q", got)
 	}
 	if zipHasEntry(reader, "jre/jmods/java.base.jmod") || zipHasEntry(reader, "jre/src.zip") {
 		t.Fatal("捆绑 Java 不应包含 jmods / src.zip")
+	}
+	for _, warning := range result.Warnings {
+		if strings.Contains(warning, "Java") {
+			t.Fatalf("Zulu 运行时不应触发再分发警告：%v", result.Warnings)
+		}
+	}
+}
+
+// 捆绑 Java 的再分发提示：Oracle 与识别不出的供应商要警告，宽松许可不警告。
+func TestExportSoloJavaRedistributionNotice(t *testing.T) {
+	cases := []struct {
+		name       string
+		release    string
+		wantWarn   bool
+		wantSubstr string
+	}{
+		{
+			name:       "Zulu 宽松许可",
+			release:    "IMPLEMENTOR=\"Azul Systems, Inc.\"\n",
+			wantWarn:   false,
+			wantSubstr: "",
+		},
+		{
+			name:       "Temurin 宽松许可",
+			release:    "IMPLEMENTOR=\"Eclipse Adoptium\"\n",
+			wantWarn:   false,
+			wantSubstr: "",
+		},
+		{
+			name:       "Oracle 需要核对条款",
+			release:    "IMPLEMENTOR=\"Oracle Corporation\"\n",
+			wantWarn:   true,
+			wantSubstr: "Oracle",
+		},
+		{
+			name:       "识别不出的供应商",
+			release:    "IMPLEMENTOR=\"Some Tiny Vendor\"\n",
+			wantWarn:   true,
+			wantSubstr: "Some Tiny Vendor",
+		},
+		{
+			name:       "没有 release 文件",
+			release:    "",
+			wantWarn:   true,
+			wantSubstr: "无法识别",
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if err := config.SetStorageDirectory(t.TempDir()); err != nil {
+				t.Fatalf("重定向存储目录失败：%v", err)
+			}
+			world := t.TempDir()
+			versionsRoot, contentDirectory, javaHome := buildFakeWorld(t, world)
+			// buildFakeWorld 写的是 Azul 的 release：按用例覆盖
+			releasePath := filepath.Join(javaHome, "release")
+			if testCase.release == "" {
+				if err := os.Remove(releasePath); err != nil {
+					t.Fatalf("移除 release 失败：%v", err)
+				}
+				// 目录名也不含供应商关键字，才能落到「无法识别」分支
+				javaHome = filepath.Join(world, "jdk")
+				writeFile(t, filepath.Join(javaHome, "bin", "java.exe"), "fake-java")
+			} else {
+				writeFile(t, releasePath, testCase.release)
+			}
+
+			stubPath := filepath.Join(t.TempDir(), "stub.exe")
+			writeFile(t, stubPath, "STUB")
+			t.Setenv(stubEnvKey, stubPath)
+
+			launcherPath := filepath.Join(t.TempDir(), "NekoLauncher.exe")
+			writeFile(t, launcherPath, "LAUNCHER")
+			previous := launcherExecutable
+			launcherExecutable = func() (string, error) { return launcherPath, nil }
+			defer func() { launcherExecutable = previous }()
+
+			if !config.AddJava(filepath.Join(javaHome, "bin", "java.exe"), "17") {
+				t.Fatal("注册首选 Java 失败")
+			}
+
+			forgeID := "1.20.1-forge-47.2.0"
+			result, err := ExportSolo(t.Context(), SoloExportOptions{
+				PackName:         "Vendor Pack",
+				PackVersion:      "1.0.0",
+				MinecraftVersion: "1.20.1",
+				IncludedPaths:    []string{"options.txt"},
+				ContentDirectory: contentDirectory,
+				VersionDirectory: filepath.Join(versionsRoot, forgeID),
+				VersionID:        forgeID,
+				BundleJava:       true,
+			}, filepath.Join(t.TempDir(), "Out-Setup.exe"), nil)
+			if err != nil {
+				t.Fatalf("ExportSolo 失败：%v", err)
+			}
+
+			matched := false
+			for _, warning := range result.Warnings {
+				if strings.Contains(warning, testCase.wantSubstr) {
+					matched = true
+				}
+			}
+			if testCase.wantWarn {
+				if !matched {
+					t.Fatalf("期望出现含 %q 的再分发警告，实际：%v", testCase.wantSubstr, result.Warnings)
+				}
+			} else if len(result.Warnings) != 0 {
+				t.Fatalf("宽松许可不应有警告，实际：%v", result.Warnings)
+			}
+		})
+	}
+}
+
+// 客户端 jar 的引用必须靠描述文件传递：jar 指向旁支版本时，该版本的 json
+// 也要进载荷（否则玩家侧无从得知它的下载地址），但 jar 本体一律不下发。
+func TestExportSoloJarProviderWithoutJar(t *testing.T) {
+	if err := config.SetStorageDirectory(t.TempDir()); err != nil {
+		t.Fatalf("重定向存储目录失败：%v", err)
+	}
+	world := t.TempDir()
+	versionsRoot := filepath.Join(world, "versions")
+	instanceID := "MyPack"
+	instanceDir := filepath.Join(versionsRoot, instanceID)
+	// 实例声明 jar 借用旁支版本 "1.7.10"，inheritsFrom 指向 "1.20.1"
+	writeFile(t, filepath.Join(instanceDir, instanceID+".json"),
+		`{"id":"`+instanceID+`","inheritsFrom":"1.20.1","jar":"1.7.10"}`)
+	writeFile(t, filepath.Join(instanceDir, instanceID+".jar"), "client-jar-bytes")
+	writeFile(t, filepath.Join(versionsRoot, "1.20.1", "1.20.1.json"), `{"id":"1.20.1"}`)
+	writeFile(t, filepath.Join(versionsRoot, "1.20.1", "1.20.1.jar"), "vanilla-jar")
+	writeFile(t, filepath.Join(versionsRoot, "1.7.10", "1.7.10.json"), `{"id":"1.7.10"}`)
+	writeFile(t, filepath.Join(versionsRoot, "1.7.10", "1.7.10.jar"), "old-jar")
+
+	stubPath := filepath.Join(t.TempDir(), "stub.exe")
+	writeFile(t, stubPath, "STUB")
+	t.Setenv(stubEnvKey, stubPath)
+
+	launcherPath := filepath.Join(t.TempDir(), "NekoLauncher.exe")
+	writeFile(t, launcherPath, "LAUNCHER")
+	previous := launcherExecutable
+	launcherExecutable = func() (string, error) { return launcherPath, nil }
+	defer func() { launcherExecutable = previous }()
+
+	outputPath := filepath.Join(t.TempDir(), "Jar-Setup.exe")
+	if _, err := ExportSolo(t.Context(), SoloExportOptions{
+		PackName:         "Jar Field Pack",
+		MinecraftVersion: "1.20.1",
+		IncludedPaths:    []string{},
+		ContentDirectory: instanceDir,
+		VersionDirectory: instanceDir,
+		VersionID:        instanceID,
+	}, outputPath, nil); err != nil {
+		t.Fatalf("ExportSolo 失败：%v", err)
+	}
+
+	reader, _ := readSoloPayload(t, outputPath)
+	for _, required := range []string{
+		"minecraft/versions/" + instanceID + "/" + instanceID + ".json",
+		"minecraft/versions/1.20.1/1.20.1.json",
+		"minecraft/versions/1.7.10/1.7.10.json",
+	} {
+		if !zipHasEntry(reader, required) {
+			t.Fatalf("载荷缺少描述文件 %s", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"minecraft/versions/" + instanceID + "/" + instanceID + ".jar",
+		"minecraft/versions/1.20.1/1.20.1.jar",
+		"minecraft/versions/1.7.10/1.7.10.jar",
+	} {
+		if zipHasEntry(reader, forbidden) {
+			t.Fatalf("载荷不得包含客户端本体 %s", forbidden)
+		}
 	}
 }
 

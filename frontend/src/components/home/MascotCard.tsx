@@ -28,9 +28,8 @@ import { t } from "../../i18n";
 /** 立绘路径：图片放在 frontend/public 下，构建后按原路径访问 */
 const MASCOT_IMAGE = "/mascot/neko.png";
 
-/** 气泡里的随机台词：点一下换一句 */
-const MASCOT_LINES = [
-  t("在实例管理界面存档管理中的Rewind有备份功能喵"),
+/** 气泡里的闲聊台词 */
+const MASCOT_CHATTER = [
   t("点我干嘛呀，痒痒的喵"),
   t("启动之前记得存个档哦"),
   t("又在偷偷看我，喵~"),
@@ -38,21 +37,42 @@ const MASCOT_LINES = [
   t("今天的运气看起来不错呢"),
   t("呜…再戳就要生气了喵"),
   t("快去玩吧，我在这里等你"),
-  t("模组装太多了会卡哦"),
   t("摸摸头也不是不可以啦"),
   t("今天想玩哪个版本呀？"),
   t("喵呜~ 被你发现啦"),
   t("游戏加载中…要不要撸猫？"),
   t("别熬夜啦，对身体不好喵"),
   t("你点的每一版我都记得哦"),
-  t("要不要试试新的整合包？"),
-  t("我可不是装饰品喵！"),
   t("嘿嘿，被我萌到了吧"),
   t("困了…让我打个盹喵"),
 ];
 
+/** 启动器功能 Tips：混在台词里冒出来，帮玩家发现冷门好功能 */
+const MASCOT_TIPS = [
+  t("实例的存档管理里有 Rewind 备份功能，手滑删档也不怕喵"),
+  t("把 .jar 或 .zip 直接拖进窗口就能装进实例哦"),
+  t("下载大厅里能看到模组的中文名呢，搜中文也找得到"),
+  t("模组列表右键可以打开版本管理，升降级都在那里喵"),
+  t("整合包页面可以把整个实例打包成 .mrpack 分享给朋友"),
+  t("导入其它启动器的实例？实例管理里有现成入口喵"),
+  t("联机功能可以建房间和朋友一起玩，不用开服务器"),
+  t("给实例换个自定义图标吧，在实例设置里就能换喵"),
+  t("存档也能拍快照哦，开大工程前存一个很安心"),
+  t("外置登录支持皮肤站账号，设置里填地址就行喵"),
+  t("模组太多加载慢？在内容页把不用的先禁用掉喵"),
+  t("设置里可以调内存上限，分配太多反而会卡哦"),
+  t("下载大厅还有光影和资源包，材质一下子就变好看了"),
+  t("实例可以一键复制，试新模组前先复制一份喵"),
+];
+
+/** 全部台词池：闲聊与 Tips 混合，点击时随机抽取 */
+const MASCOT_LINES = [...MASCOT_CHATTER, ...MASCOT_TIPS];
+
 const MascotCard: React.FC = () => {
-  const [line, setLine] = useState("");
+  // 打开主页就先冒一句话（闲聊/Tips 随机），别让气泡一直空着
+  const [line, setLine] = useState(
+    () => MASCOT_LINES[Math.floor(Math.random() * MASCOT_LINES.length)],
+  );
   const [bouncing, setBouncing] = useState(false);
   const [imageFailed, setImageFailed] = useState(false);
   const lastIndexRef = useRef(-1);

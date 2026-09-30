@@ -232,8 +232,8 @@ const dict: Record<string, string> = {
   单曲循环: "Repeat one",
   当前: "Current",
   "当前：": "Current: ",
-  "当前版本导出暂不支持中途取消。":
-    "Canceling mid-way is not supported for the current version export.",
+  "正在取消导出…": "Canceling export…",
+  "导出已取消。": "Export canceled.",
   "当前壁纸：{title}{suffix}": "Current wallpaper: {title}{suffix}",
   当前播放曲目与快捷播放控制: "Current track and quick playback controls",
   "当前工程的内容会被模板替换，确定继续吗？":

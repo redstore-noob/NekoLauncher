@@ -449,6 +449,16 @@ const DownloadPage: React.FC = () => {
   // ?? 的右值每次渲染都是新对象，会让下面的 useMemo 依赖永远变化；
   // 固定成一个常量作为空态
   const contentState = contentCache[activeTab] ?? EMPTY_CONTENT_STATE;
+
+  // ---------- 资源中文名（MC百科） ----------
+  // 下载大厅的资源标题是英文原名；复用实例页同一套 MC百科（mcmod.cn）译名服务：
+  // 先秒回缓存命中，未命中的由后端限流补查（与已装 Mod 共用一份持久缓存），
+  // 补到后经 "modname:updated" 事件触发重查。只查当前页条目，尊重搜索配额。
+  // 声明在 contentFiltered 之前：过滤要拿中文名做本地二次匹配。
+  const [contentNames, setContentNames] = useState<Record<string, string>>({});
+
+  // 本地二次过滤：标题/描述之外，中文名（MC百科译名）也参与匹配——
+  // 输入"钠"能筛出 Sodium。contentNames 补查回来后重算。
   const contentFiltered = useMemo(() => {
     const query = contentQuery.trim().toLowerCase();
     const all = contentState.all;
@@ -462,9 +472,12 @@ const DownloadPage: React.FC = () => {
           .includes(query) ||
         String(p.description ?? "")
           .toLowerCase()
+          .includes(query) ||
+        String(contentNames[String(p.title ?? "")] ?? "")
+          .toLowerCase()
           .includes(query),
     );
-  }, [contentState, contentQuery]);
+  }, [contentState, contentQuery, contentNames]);
 
   const versionTotalPages = Math.max(
     1,
@@ -483,11 +496,6 @@ const DownloadPage: React.FC = () => {
     contentPage * PAGE_SIZE,
   );
 
-  // ---------- 资源中文名（MC百科） ----------
-  // 下载大厅的资源标题是英文原名；复用实例页同一套 MC百科（mcmod.cn）译名服务：
-  // 先秒回缓存命中，未命中的由后端限流补查（与已装 Mod 共用一份持久缓存），
-  // 补到后经 "modname:updated" 事件触发重查。只查当前页条目，尊重搜索配额。
-  const [contentNames, setContentNames] = useState<Record<string, string>>({});
   const contentPageTitles = useMemo(
     () =>
       contentPageItems
@@ -1005,15 +1013,18 @@ const DownloadPage: React.FC = () => {
                         </span>
                       )}
                       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                        <span className="flex items-baseline gap-2 overflow-hidden">
-                          <span className="overflow-hidden text-sm font-semibold text-ellipsis whitespace-nowrap">
-                            {String(p.title ?? "")}
-                          </span>
-                          {contentNames[String(p.title ?? "")] && (
-                            <span className="flex-none text-xs font-medium text-primary/80">
-                              {contentNames[String(p.title ?? "")]}
-                            </span>
-                          )}
+                        <span
+                          className="overflow-hidden text-sm font-semibold text-ellipsis whitespace-nowrap"
+                          title={
+                            contentNames[String(p.title ?? "")]
+                              ? // 与实例页同一展示格式 "(中文名) 原名"
+                                `(${contentNames[String(p.title ?? "")]}) ${String(p.title ?? "")}`
+                              : String(p.title ?? "")
+                          }
+                        >
+                          {contentNames[String(p.title ?? "")]
+                            ? `(${contentNames[String(p.title ?? "")]}) ${String(p.title ?? "")}`
+                            : String(p.title ?? "")}
                         </span>
                         <span className="overflow-hidden text-xs text-gray-400 text-ellipsis whitespace-nowrap">
                           {String(p.description ?? "")}

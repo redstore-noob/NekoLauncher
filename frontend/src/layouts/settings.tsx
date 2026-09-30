@@ -33,9 +33,11 @@ import MemorySection from "./settings/MemorySection";
 import DownloadSection from "./settings/DownloadSection";
 import NetworkSection from "./settings/NetworkSection";
 import AboutSection from "./settings/AboutSection";
+import { SIMPLE_MODE_HIDDEN_SETTINGS_IDS, useSimpleMode } from "./simple-mode";
 
 const SettingsPage: React.FC = () => {
   const { t } = useI18n();
+  const { simpleMode } = useSimpleMode();
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Record<string, number>>({});
   const searching = query.trim().length > 0;
@@ -44,6 +46,12 @@ const SettingsPage: React.FC = () => {
     setHits((prev) => (prev[key] === n ? prev : { ...prev, [key]: n }));
   }, []);
   const searchValue = useMemo(() => ({ query, report }), [query, report]);
+  // S 模式隐藏的硬核分区（游戏目录 / Java / 下载 / 网络），见 simple-mode.tsx
+  const hiddenSections = useMemo(
+    () =>
+      simpleMode ? new Set<string>(SIMPLE_MODE_HIDDEN_SETTINGS_IDS) : null,
+    [simpleMode],
+  );
 
   // 主页网络状态卡片等请求定位到下载设置；帮助页会请求定位到 Java 分区。
   // 两个来源：页面已挂载 → 走导航总线实时事件；跨页跳过来 → 读挂载时暂存的 detail
@@ -102,31 +110,45 @@ const SettingsPage: React.FC = () => {
             </div>
           ) : (
             <>
-              {/* 非搜索态下分区依次入场（stagger）；搜索过滤时立即显示不重播 */}
+              {/* 非搜索态下分区依次入场（stagger）；搜索过滤时立即显示不重播。
+                  带 id 的先按分区 id 过滤再入场：S 模式下被隐藏的分区不渲染，
+                  既不参与搜索命中计数，也不留下空的入场槽位 */}
               {[
-                <GameDirectorySection key="dir" />,
-                <BehaviorSection key="behavior" />,
-                <div key="java" id="settings-java">
-                  <JavaSection />
-                </div>,
-                <LaunchSection key="launch" />,
-                <MemorySection key="memory" />,
-                <div key="download" id="settings-download">
-                  <DownloadSection />
-                </div>,
-                <NetworkSection key="network" />,
-                <AboutSection key="about" />,
-              ].map((node, index) => (
-                <div
-                  key={index}
-                  className={searching ? "" : "nya-enter"}
-                  style={{
-                    animationDelay: `${index * 60}ms`,
-                  }}
-                >
-                  {node}
-                </div>
-              ))}
+                { id: "game-directory", node: <GameDirectorySection /> },
+                { id: "behavior", node: <BehaviorSection /> },
+                {
+                  id: "java",
+                  node: (
+                    <div id="settings-java">
+                      <JavaSection />
+                    </div>
+                  ),
+                },
+                { id: "launch", node: <LaunchSection /> },
+                { id: "memory", node: <MemorySection /> },
+                {
+                  id: "download",
+                  node: (
+                    <div id="settings-download">
+                      <DownloadSection />
+                    </div>
+                  ),
+                },
+                { id: "network", node: <NetworkSection /> },
+                { id: "about", node: <AboutSection /> },
+              ]
+                .filter((section) => !hiddenSections?.has(section.id))
+                .map((section, index) => (
+                  <div
+                    key={section.id}
+                    className={searching ? "" : "nya-enter"}
+                    style={{
+                      animationDelay: `${index * 60}ms`,
+                    }}
+                  >
+                    {section.node}
+                  </div>
+                ))}
             </>
           )}
         </div>

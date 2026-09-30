@@ -9,6 +9,9 @@
  * useShellPages 是侧边栏与内容区共用的页面列表：普通模式原样返回注册表，
  * S 模式按白名单过滤并替换主页标签。隐藏只影响导航，页面本身仍注册
  * （下载指示器等入口跳转不受影响，落点页面照常渲染）。
+ *
+ * 保留页内部还有第二层过滤：账户页的皮肤 3D 展示、设置页的四个硬核分区
+ * （见 SIMPLE_MODE_HIDDEN_SETTINGS_IDS）。两层都以本文件的常量为准。
  */
 import React, {
   createContext,
@@ -38,6 +41,21 @@ export const SIMPLE_MODE_PAGE_IDS = [
   "account",
   "settings",
 ];
+
+/**
+ * S 模式在保留页内部另行隐藏的设置分区 id（settings.tsx 按此过滤）。
+ *
+ * 收的都是"改了会让整合包玩家开不了游戏"的硬核项：游戏目录、Java 运行时、
+ * 下载源与代理。启动参数、内存等仍在，设置页不会因此变空。
+ * 注意：隐藏分区同时失去 settings-java / settings-download 两个锚点，
+ * 帮助页与主页网络卡片的定位跳转在这些分区不可见时静默落空（不报错）。
+ */
+export const SIMPLE_MODE_HIDDEN_SETTINGS_IDS = [
+  "game-directory",
+  "java",
+  "download",
+  "network",
+] as const;
 
 interface SimpleModeState {
   simpleMode: boolean;
