@@ -97,6 +97,10 @@ jobs:
       matrix:
         include:
           - name: windows/amd64
+            # artifact 名不能含斜杠：upload-artifact@v4 会报
+            # "The artifact name is not valid: ... Contains the following character: Forward slash"。
+            # name 给人看（带斜杠更清楚），artifact 另用一个无斜杠的字段。
+            artifact: NekoLauncher-windows-amd64
             os: windows-latest
             platform: windows/amd64
             # use-setup-actions 显式标出"用 setup-go/setup-node"的 job。
@@ -118,11 +122,13 @@ jobs:
           #      b) 用一个 debian:12 容器代替 ubuntu-22.04 来产这份 glibc 2.35 的包。
           #    倾向 (b)：Debian 12 的生命周期比 Ubuntu 22.04 长，且同样提供 4.0。
           - name: linux/amd64 (apt · glibc 2.35)
+            artifact: NekoLauncher-linux-amd64-apt-glibc-2.35
             os: ubuntu-22.04
             platform: linux/amd64
             linux-artifacts: deb-glibc-2.35
             use-setup-actions: 'yes'
           - name: linux/amd64 (apt · glibc 2.39)
+            artifact: NekoLauncher-linux-amd64-apt-glibc-2.39
             os: ubuntu-24.04
             platform: linux/amd64
             linux-artifacts: deb-glibc-2.39
@@ -132,15 +138,24 @@ jobs:
           # 它自带 webkit2gtk-4.1，但 glibc 基线比 24.04 还新，
           # 从它上面编的二进制在 Debian 上跑不起来，所以 deb 交给上面两个 ubuntu job。
           - name: linux/amd64 (rpm)
+            artifact: NekoLauncher-linux-amd64-rpm
             os: ubuntu-24.04
             container: fedora:42
+            # ⚠️ 不要用 `case "${{ matrix.container }}"` 来分支：`container:` 写成
+            # `fedora:42` 时 YAML 层是**对象**（{image: fedora:42}），表达式渲染出来
+            # 不是 "fedora:42"，任何 `fedora*` / `archlinux*` 通配都匹配不上，
+            # 结果是 case 一个分支都不进、什么都不装，job 秒挂。
+            # 所以另用一个纯字符串字段来标记用哪个包管理器。
+            in-container: fedora
             platform: linux/amd64
             linux-artifacts: rpm
           # Arch 官方镜像自带 webkit2gtk-4.1 与滚动版工具链，直接用它构建最省事
           # （不必去配 archlinuxcn 的源装 wails 的依赖）。
           - name: linux/amd64 (pacman)
+            artifact: NekoLauncher-linux-amd64-pacman
             os: ubuntu-24.04
             container: archlinux:latest
+            in-container: archlinux
             platform: linux/amd64
             linux-artifacts: pkg.tar.zst
           # ---- macOS：Intel 与 Apple Silicon 分开出包 ----
@@ -151,12 +166,14 @@ jobs:
           # GitHub 说 macOS 15 镜像退役后（2027 秋）不再有 Intel runner —— 到时候
           # 这个 job 要么去掉、要么改用交叉编译。
           - name: darwin/amd64
+            artifact: NekoLauncher-darwin-amd64
             os: macos-15-intel
             platform: darwin/amd64
             use-setup-actions: 'yes'
           # 用 macos-15 而不是 macos-14：14 的支持已于 2026-07-06 进入弃用期，
           # 2026-11-02 就会被摘掉（macos-latest 现在指 15+，14 属于最老那档）。
           - name: darwin/arm64
+            artifact: NekoLauncher-darwin-arm64
             os: macos-15
             platform: darwin/arm64
             use-setup-actions: 'yes'
@@ -176,24 +193,46 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install toolchain in container
         # 容器里没有 setup-go / setup-node 这类 action，工具链全靠发行版仓库。
         # 以 root 跑，不加 sudo。
+        # ⚠️ 必须排在 "Install frontend dependencies" 之前：那个步骤要用到 npm。
         if: matrix.use-setup-actions != 'yes'
         shell: bash
         run: |
-          case "${{ matrix.container }}" in
-            archlinux*)
+          case "${{ matrix.in-container }}" in
+            archlinux)
               pacman -Sy --noconfirm --needed go nodejs npm base-devel gtk3 \
                 webkit2gtk-4.1 libnss alsa-lib pkgconf zstd
               ;;
-            fedora*)
+            fedora)
               dnf install -y go nodejs npm gcc gcc-c++ make pkgconf-pkg-config \
                 gtk3-devel webkit2gtk4.1-devel libnss3-devel alsa-lib-devel \
                 rpm-build git tar which
               ;;
+            *)
+              echo "未知的容器类型: '${{ matrix.in-container }}'" >&2
+              exit 1
+              ;;
           esac
+
+      # 先把前端依赖装好：wails build 自己会跑 wails.json 里的 frontend:install
+      # （`npm install`）与 frontend:build，而 `npm install` 在 CI 上既慢又会按
+      # package.json 重新解析版本。这里用 `npm ci` 按 lock 文件装一次，
+      # 之后 wails 检测到 node_modules 已是最新就会跳过安装，链路更稳也更快。
+      # 注意别用 `-s` / `-skipbindings` 省这一步：main.go 要 embed frontend/dist，
+      # 没有前端产物时 embed 会直接失败。
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          if [ -f frontend/package-lock.json ]; then
+            npm ci --prefix frontend
+          else
+            npm install --prefix frontend
+          fi
 
       - name: Install Wails CLI
         shell: bash
@@ -388,7 +427,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: NekoLauncher-${{ matrix.name }}
+          name: ${{ matrix.artifact }}
           path: dist/*
 
   release:

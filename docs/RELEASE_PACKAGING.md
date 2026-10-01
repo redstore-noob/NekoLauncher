@@ -80,6 +80,13 @@ wails v2.15 的 Linux 端是 cgo，`pkg-config` 认的 soname 要么是 `webkit2
 > **false**，会让 Windows/macOS/Ubuntu 的 setup 步骤被静默跳过、构建直接失败。
 > 所以矩阵里用一个显式的 `use-setup-actions: 'yes'` 来标记。
 
+> 另一个坑：**别用 `matrix.container` 做 `case` 分支**。
+> `container: fedora:42` 这一行在 YAML 层会被解析成**对象** `{image: fedora:42}`，
+> `${{ matrix.container }}` 渲染出来不是 `fedora:42` 这个字符串，所以
+> `case "${{ matrix.container }}" in fedora*)` 一个分支都匹配不上 ——
+> 结果是**什么都不装**，随后 `go install`/`npm` 全都 `command not found`，
+> job 在几秒内就挂掉。用另一个纯字符串字段（本项目是 `in-container`）来标记。
+
 ### 4. macOS 为什么不用 `macos-latest`
 
 `macos-latest` / `macos-15` / `macos-26` 全是 **arm64**。要出 Intel 包只能用
