@@ -1,0 +1,57 @@
+# nfpm 打包配置：Linux 发行包（.deb / .rpm / .pkg.tar.zst）
+#
+# 由 CI 调用（.github/workflows/ci.yml 的 "Build & Package (Linux 发行包 + AppImage)" 步骤）：
+#
+#   nfpm package --config nfpm-merged.yaml --packager deb --target dist/
+#
+# 二进制由 wails build 产出（build/bin/NekoLauncher），nfpm 只负责套包元数据。
+#
+# 关于路径：所有 src/--target 都相对 nfpm 进程的工作目录（CI 里是仓库根），
+# 不是相对本文件，所以这里写 build/bin/... 与 packaging/... 是对的。
+#
+# 三点约定：
+#  1. 版本号取自环境变量 NPFPM_VERSION —— 同一个文件要服务 tag（v0.3.1）与普通分支
+#     push（0.0.0-snapshot），不硬编码在配置里；CI 负责去掉 tag 的 v 前缀。
+#  2. 依赖一律是运行时库（不是 -dev 包），由打包器自己解析。这里刻意不写 depends：
+#     nfpm 的 depends 是数组、不做环境变量展开（写成 ${XXX} 会报
+#     "cannot unmarshal !!str into []string"），而同一个库在 deb/rpm/pacman 里
+#     包名各不相同。所以依赖放在 packaging/depends/<packager>.yaml，CI 把那份
+#     追加到本文件后面拼成 nfpm-merged.yaml（nfpm 的 --config 只吃一个文件）。
+#  3. 千万把新增字段写在高缩进的注释下面（YAML 里注释也是缩进上下文），
+#     否则会被当成上一条目的续行。
+name: nekolauncher
+arch: amd64
+platform: linux
+version: ${NPFPM_VERSION}
+# CI 传进来的版本号是严格 semver（0.3.1 / 0.0.0-snapshot）：关掉 nfpm 的版本改写，
+# 否则它会把预发布后缀按各打包器自己的规矩重拼一遍，包名和 tag 对不上。
+version_schema: none
+section: games
+priority: optional
+maintainer: redstore_noob <redstore-noob@qq.com>
+description: |
+  NekoLauncher —— Minecraft Java 版启动器。
+  实例与版本管理、模组/资源包/光影下载、整合包导入导出、联机与皮肤站支持。
+vendor: NekoLauncher
+homepage: https://github.com/redstore-noob/NekoLauncher
+license: GPL-3.0
+
+contents:
+  # 裸二进制：AppImage 之外的第二条路，发行版用户直接用包管理器装。
+  - src: build/bin/NekoLauncher
+    dst: /usr/bin/NekoLauncher
+    file_info:
+      mode: 0755
+
+  - src: build/appicon.png
+    dst: /usr/share/icons/hicolor/256x256/apps/neko-launcher.png
+    file_info:
+      mode: 0644
+
+  - src: packaging/neko-launcher.desktop
+    dst: /usr/share/applications/neko-launcher.desktop
+    file_info:
+      mode: 0644
+
+# 说明：这里刻意不装 Java。启动器自己会按实例下载合适的 JRE（内置 Adoptium 下载链路），
+# 把 openjdk 写成硬依赖会把包体积和无谓的版本冲突一起带进来。

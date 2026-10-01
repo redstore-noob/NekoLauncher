@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=NekoLauncher
+Comment=Minecraft Java 版启动器
+Comment[en_US]=Minecraft Java Edition launcher
+Exec=NekoLauncher
+Icon=neko-launcher
+Categories=Game;
+Terminal=false
+StartupWMClass=NekoLauncher

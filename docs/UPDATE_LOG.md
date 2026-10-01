@@ -1,3 +1,11 @@
+# 0.3.2
+
+- Linux 新增发行版安装包：Debian/Ubuntu 的 `.deb`、Fedora 的 `.rpm`、Arch 的 `pkg.tar.zst`（`deb` 分 glibc 2.35 / 2.39 两份，分别对应 webkit2gtk 4.0 与 4.1 的系统）
+- macOS 安装包拆成 `darwin-arm64` 与 `darwin-amd64` 两份（此前是一个体积翻倍的 universal 包）
+- 修复 CI 无法启动：工作流里 AppImage 步骤的 `if:` 与 `shell:` 被写在同一行，导致整个 YAML 解析失败、所有 job 一起挂掉
+- 修复 Linux 打包后的资产改名会重复处理自身改名结果的问题：改用先取文件快照再改名的写法，并跳过已经是目标名的文件
+- 补齐前端遗留的格式告警（`eslint --max-warnings 0` 下会让前端 job 直接失败）
+
 # 0.3.1
 
 - 修复 MultiMC / Prism 整合包导入：此前读不出 `mmc-pack.json`，不会自动安装对应的 MC 版本与加载器，内容还会被解到共享目录而不是独立实例

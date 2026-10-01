@@ -1,0 +1,9 @@
+# 依赖片（deb · Ubuntu 24.04 及以上 / webkit2gtk 4.1）
+#
+# 与 nfpm.yaml 叠加使用：nfpm package --config nfpm.yaml --config depends/deb-glibc-2.39.yaml ...
+# 4.0 的 API 包在 Ubuntu 24.04 / Debian 13 上已经不存在了，只能依赖 4.1。
+depends:
+  - libgtk-3-0
+  - libwebkit2gtk-4.1-0
+  - libnss3
+  - libasound2

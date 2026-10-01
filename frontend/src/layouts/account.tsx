@@ -549,18 +549,23 @@ const AccountPage: React.FC = () => {
       }
     } catch (ex) {
       const message = (ex as Error)?.message ?? String(ex);
+
       // 皮肤站开启验证码（Blessing Skin 私有行为，密码登录无法携带）：
       // 自动在浏览器打开皮肤站首页，引导用户完成一次网页登录验证后回来重试
       if (message.includes("该皮肤站开启了验证码")) {
         const homepage =
           serverText.replace(/\/api\/yggdrasil\/?$/i, "") || serverText;
+
         void BrowserOpenURL(homepage);
         setAddHint(
-          t("该皮肤站开启了验证码：已在浏览器打开皮肤站，请完成一次登录验证后回来重试。"),
+          t(
+            "该皮肤站开启了验证码：已在浏览器打开皮肤站，请完成一次登录验证后回来重试。",
+          ),
         );
 
         return;
       }
+
       setAddHint(t("登录失败：{0}", { "0": message }));
     } finally {
       setExtBusy(false);

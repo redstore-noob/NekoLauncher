@@ -1,0 +1,13 @@
+# 依赖片（deb · Ubuntu 22.04 上编的包 / webkit2gtk 4.0）
+#
+# 与 nfpm.yaml 叠加使用：nfpm package --config nfpm.yaml --config depends/deb-glibc-2.35.yaml ...
+# 拆成独立文件是因为 nfpm 不对 depends 数组做环境变量展开（见 nfpm.yaml 的说明）。
+#
+# 只写运行时库，不写 -dev：用户装包时 apt 自己去解析。
+# webkit2gtk 4.0 与 4.1 的 API 不兼容且不能共存，装哪个由链接的 so 决定，
+# 所以 22.04 与 24.04 的 deb 各带各的依赖。
+depends:
+  - libgtk-3-0
+  - libwebkit2gtk-4.0-37
+  - libnss3
+  - libasound2

@@ -205,6 +205,39 @@ func TestSanitizeAssetName(t *testing.T) {
 	}
 }
 
+// TestPickAssetNames 资产命名要与 CI（.github/workflows/ci.yml）保持一致：
+// 发行包里 Windows 用裸 exe 就地替换，其余平台（AppImage/deb/rpm/pkg.tar.zst/macOS zip）
+// 一律不自动替换，只靠 ManualHint 引导用户去版本页。命名对不上时用户会"看到新版本却下不到"，
+// 所以这里把每个平台的产物名都钉住。
+func TestPickAssetNames(t *testing.T) {
+	assets := []releaseAsset{
+		{Name: "NekoLauncher.exe", URL: "https://example.com/NekoLauncher.exe", Size: 1},
+		{Name: "NekoLauncher-windows-amd64-portable.zip", URL: "https://example.com/win.zip", Size: 1},
+		{Name: "NekoLauncher-linux-amd64.AppImage", URL: "https://example.com/app.AppImage", Size: 1},
+		{Name: "NekoLauncher-linux-amd64.tar.gz", URL: "https://example.com/linux.tar.gz", Size: 1},
+		{Name: "NekoLauncher-1.2.3-linux-amd64-debian-glibc-2.35.deb", URL: "https://example.com/old.deb", Size: 1},
+		{Name: "NekoLauncher-1.2.3-linux-amd64-debian-glibc-2.39.deb", URL: "https://example.com/new.deb", Size: 1},
+		{Name: "NekoLauncher-1.2.3-linux-amd64-fedora.rpm", URL: "https://example.com/fedora.rpm", Size: 1},
+		{Name: "NekoLauncher-1.2.3-linux-amd64-arch.pkg.tar.zst", URL: "https://example.com/arch.pkg.tar.zst", Size: 1},
+		{Name: "NekoLauncher-darwin-arm64.zip", URL: "https://example.com/mac-arm.zip", Size: 1},
+		{Name: "NekoLauncher-darwin-amd64.zip", URL: "https://example.com/mac-intel.zip", Size: 1},
+	}
+
+	asset, ok := pickAsset(assets)
+	if runtime.GOOS == "windows" {
+		if !ok || asset.Name != "NekoLauncher.exe" {
+			t.Fatalf("Windows 应选中裸 exe：%+v / %v", asset, ok)
+		}
+
+		return
+	}
+
+	// 非 Windows：必须明确拒绝自动替换，否则前端会引导用户下载一个装不上去的包
+	if ok || asset.Name != "" {
+		t.Fatalf("非 Windows 不该选中自动替换资产：%+v / %v", asset, ok)
+	}
+}
+
 // TestValidateReplacement 替换前的粗筛：目录、空文件、过小文件都要被拒。
 func TestValidateReplacement(t *testing.T) {
 	directory := t.TempDir()

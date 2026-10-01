@@ -1,0 +1,9 @@
+# 依赖片（rpm · Fedora）
+#
+# 与 nfpm.yaml 叠加使用：nfpm package --config nfpm.yaml --config depends/rpm.yaml ...
+# Fedora 自带 webkit2gtk4.1，包名在 dnf 里是 webkit2gtk4.1（提供 libwebkit2gtk-4.1.so.0）。
+depends:
+  - gtk3
+  - webkit2gtk4.1
+  - nss
+  - alsa-lib

@@ -19,6 +19,11 @@
 | MacOS(x64/arm)           | ⚠️理论支持，CI构建时一同构建，但是开发者并没有相关测试，无官方支持，但可以协助修改Bug                 |
 | Linux arm/Windows on arm | 🤔同上                                                                                                |
 
+发行包：Windows 提供安装器与便携 zip；Linux 提供 AppImage、裸二进制 tar.gz 以及
+`.deb`（分 glibc 2.35 / 2.39 两份）、`.rpm`、Arch 的 `pkg.tar.zst`；macOS 按
+Intel 与 Apple Silicon 各出一份 zip。构建矩阵与打包细节见
+[docs/RELEASE_PACKAGING.md](docs/RELEASE_PACKAGING.md)。
+
 ## 项目创新
 
 - 基于React的插件系统:编写更简单，同时限制插件部分权力保障数据安全。
@@ -76,6 +81,25 @@ wails build #构建发布版
 wails build -platform linux/amd64 # 交叉编译(Linux需webkit2gtk)
 
 ```
+
+### 本地打 Linux 发行包
+
+`.deb` / `.rpm` / `pkg.tar.zst` 由 [nfpm](https://nfpm.goreleaser.com/) 生成，
+配置在 [`packaging/`](packaging/)：
+
+```bash
+go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0
+wails build -platform linux/amd64
+chmod +x build/bin/NekoLauncher
+
+# nfpm 只吃一个 config，依赖片要自己拼进主配置（见 docs/RELEASE_PACKAGING.md）
+cat packaging/nfpm.yaml packaging/depends/deb-glibc-2.39.yaml > /tmp/nfpm-merged.yaml
+NPFPM_VERSION=0.3.2 nfpm package --config /tmp/nfpm-merged.yaml --packager deb --target dist/
+```
+
+打包要**在目标发行版自己身上做**：webkit2gtk 4.0 / 4.1 的 API 绑死在编译产物里，
+在 24.04 上编的包装不进 Debian 12。具体见
+[docs/RELEASE_PACKAGING.md](docs/RELEASE_PACKAGING.md)。
 
 ## 🫂社区
 

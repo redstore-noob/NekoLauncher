@@ -238,6 +238,7 @@ const ModVersionDialog: React.FC<ModVersionDialogProps> = ({
                       const directory =
                         target.FilePath.replace(/[\\/][^\\/]+$/, "") ||
                         target.FilePath;
+
                       void OpenPath(directory).catch(() => undefined);
                     }}
                   >

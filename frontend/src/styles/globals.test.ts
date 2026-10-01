@@ -53,9 +53,7 @@ function collectRenderedSlots(dir: string): Set<string> {
 
       const code = readFileSync(full, "utf8");
 
-      for (const match of code.matchAll(
-        /"data-slot"\s*:\s*"([a-zA-Z-]+)"/g,
-      )) {
+      for (const match of code.matchAll(/"data-slot"\s*:\s*"([a-zA-Z-]+)"/g)) {
         slots.add(match[1]);
       }
     }

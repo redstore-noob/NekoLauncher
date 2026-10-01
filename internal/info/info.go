@@ -4,11 +4,11 @@ package info
 import "fmt"
 
 // 版本号各段，发版只改这里的常量。
-// 注意拼接顺序是 主.次.修：要得到 "0.3.1" 要改 FixVersion，改 SubVersion 会变成 "0.4.0"。
+// 注意拼接顺序是 主.次.修：要得到 "0.3.2" 要改 FixVersion，改 SubVersion 会变成 "0.4.0"。
 const (
 	MainVersion = 0
 	SubVersion  = 3
-	FixVersion  = 1
+	FixVersion  = 2
 	Suffix      = ""
 )
 

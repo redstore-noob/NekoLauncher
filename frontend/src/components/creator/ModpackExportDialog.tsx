@@ -786,6 +786,7 @@ const ModpackExportDialog: React.FC<{
       setPackStatus("");
       // 主动取消（后端 ctx 中断，错误消息为 Go 的 context canceled）提示「已取消」
       const message = asMessage(ex);
+
       if (cancelRequested || /context canceled/i.test(message)) {
         setStatusText(t("导出已取消。"));
       } else {

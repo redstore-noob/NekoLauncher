@@ -86,7 +86,7 @@ jobs:
           npm test
 
   build:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
     # 内置 CurseForge API Key（builtin_keys.go 编译期注入）。Secret 缺省为空串
     # 时 ldflags 注入空值，行为等同未注入：CurseForge 走"未配置 Key"引导。
@@ -96,36 +96,133 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          - name: windows/amd64
+            os: windows-latest
             platform: windows/amd64
-          # 22.04：wails v2.15 的 linux 端 pkg-config 认 webkit2gtk-4.0
-          # （4.0 的 API 包在 24.04 已移除；libasound2t64 是 24.04 包名，22.04 用 libasound2）
-          - os: ubuntu-22.04
+            # use-setup-actions 显式标出"用 setup-go/setup-node"的 job。
+            # 不要改用 `matrix.container == ''` 来判断：没写 container 的 job 里
+            # 这个键是 null，而 GitHub 表达式的 null == '' 是 false，
+            # 会让 Windows/macOS/ubuntu 的 setup 步骤被静默跳过。
+            use-setup-actions: 'yes'
+          # ---- Linux：一个发行版一个 job，因为 webkit2gtk 的 API 版本绑死在编译器上 ----
+          # wails v2.15 的 linux 端是 cgo，pkg-config 要么认 webkit2gtk-4.0、要么认 4.1，
+          # 两套 API 包不能共存，所以"哪个环境编出来的"直接决定了能装哪些发行版：
+          #   ubuntu-22.04（4.0）→ glibc 基线 2.35：Debian 12 / Ubuntu 22.04 及更老的 apt 系
+          #   ubuntu-24.04（4.1）→ glibc 基线 2.39：Debian 13 / Ubuntu 24.04 及更新的 apt 系
+          # 打包走 nfpm，不依赖 dpkg-deb；两个 deb 的资产名带 glibc 基线，避免同名互相覆盖。
+          #
+          # ⚠️ ubuntu-22.04 已过支持期：GitHub 于 2026-09-17 结束它的 active support，
+          #    2027-04-17 彻底移除（runner 仍能跑，只是不再更新且随时可能进 brownout）。
+          #    到那天只能二选一：
+          #      a) 放弃 webkit2gtk 4.0 的老 apt 系（Debian 12 / Ubuntu 22.04 用户）；
+          #      b) 用一个 debian:12 容器代替 ubuntu-22.04 来产这份 glibc 2.35 的包。
+          #    倾向 (b)：Debian 12 的生命周期比 Ubuntu 22.04 长，且同样提供 4.0。
+          - name: linux/amd64 (apt · glibc 2.35)
+            os: ubuntu-22.04
             platform: linux/amd64
-          - os: macos-latest
-            platform: darwin/universal
+            linux-artifacts: deb-glibc-2.35
+            use-setup-actions: 'yes'
+          - name: linux/amd64 (apt · glibc 2.39)
+            os: ubuntu-24.04
+            platform: linux/amd64
+            linux-artifacts: deb-glibc-2.39
+            use-setup-actions: 'yes'
+          # Fedora 只出 rpm：用官方 fedora 镜像跑（GitHub 没有 fedora 的 hosted runner，
+          # `runs-on: fedora-*` 无效，只能 container）。
+          # 它自带 webkit2gtk-4.1，但 glibc 基线比 24.04 还新，
+          # 从它上面编的二进制在 Debian 上跑不起来，所以 deb 交给上面两个 ubuntu job。
+          - name: linux/amd64 (rpm)
+            os: ubuntu-24.04
+            container: fedora:42
+            platform: linux/amd64
+            linux-artifacts: rpm
+          # Arch 官方镜像自带 webkit2gtk-4.1 与滚动版工具链，直接用它构建最省事
+          # （不必去配 archlinuxcn 的源装 wails 的依赖）。
+          - name: linux/amd64 (pacman)
+            os: ubuntu-24.04
+            container: archlinux:latest
+            platform: linux/amd64
+            linux-artifacts: pkg.tar.zst
+          # ---- macOS：Intel 与 Apple Silicon 分开出包 ----
+          # 之前的 darwin/universal 是把两个架构的二进制 lipo 进同一个 .app，包大一倍；
+          # 现在各出各的。
+          # macos-15-intel 是 GitHub 给 x86_64 的标签（macos-13 已于 2025-12-04 退役，
+          # macos-latest / macos-15 / macos-26 都是 arm64）。Apple 已弃用 Intel，
+          # GitHub 说 macOS 15 镜像退役后（2027 秋）不再有 Intel runner —— 到时候
+          # 这个 job 要么去掉、要么改用交叉编译。
+          - name: darwin/amd64
+            os: macos-15-intel
+            platform: darwin/amd64
+            use-setup-actions: 'yes'
+          # 用 macos-15 而不是 macos-14：14 的支持已于 2026-07-06 进入弃用期，
+          # 2026-11-02 就会被摘掉（macos-latest 现在指 15+，14 属于最老那档）。
+          - name: darwin/arm64
+            os: macos-15
+            platform: darwin/arm64
+            use-setup-actions: 'yes'
     steps:
       - uses: actions/checkout@v4
 
+      # 容器里是滚动版 / 自带工具链：自己挑 Go 版本反而容易踩新语言的坑，
+      # 直接用镜像里 pacman / dnf 装的那份。
       - name: Set up Go
+        if: matrix.use-setup-actions == 'yes'
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Set up Node.js
+        if: matrix.use-setup-actions == 'yes'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      - name: Install Wails CLI
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
-
-      - name: Install Linux dependencies (webkit2gtk)
-        if: runner.os == 'Linux'
+      - name: Install toolchain in container
+        # 容器里没有 setup-go / setup-node 这类 action，工具链全靠发行版仓库。
+        # 以 root 跑，不加 sudo。
+        if: matrix.use-setup-actions != 'yes'
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev \
-            libnss3-dev libasound2 pkg-config imagemagick
+          case "${{ matrix.container }}" in
+            archlinux*)
+              pacman -Sy --noconfirm --needed go nodejs npm base-devel gtk3 \
+                webkit2gtk-4.1 libnss alsa-lib pkgconf zstd
+              ;;
+            fedora*)
+              dnf install -y go nodejs npm gcc gcc-c++ make pkgconf-pkg-config \
+                gtk3-devel webkit2gtk4.1-devel libnss3-devel alsa-lib-devel \
+                rpm-build git tar which
+              ;;
+          esac
+
+      - name: Install Wails CLI
+        shell: bash
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.15.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install Linux dependencies
+        # 容器 job 的依赖已经在上一步装好了
+        if: runner.os == 'Linux' && matrix.use-setup-actions == 'yes'
+        shell: bash
+        # apt 的 22.04/24.04 之间 webkit 与 libasound 包名也不一样
+        # （4.0 的 API 包在 24.04 已被移除，4.1 在 22.04 还没有），必须逐版本分支。
+        run: |
+          case "${{ matrix.os }}" in
+            ubuntu-22.04)
+              # webkit2gtk-4.0 + ImageMagick：这一套只做构建与 AppImage，
+              # deb 交给 nfpm（纯 Go，用不到 dpkg-deb / rpm 工具链）。
+              sudo apt-get update
+              sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev \
+                libnss3-dev libasound2 pkg-config imagemagick
+              ;;
+            ubuntu-24.04)
+              # 4.0 的 API 包在 24.04 已被移除，只能装 4.1；libasound2 也改叫 libasound2t64。
+              sudo apt-get update
+              sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev \
+                libnss3-dev libasound2t64 pkg-config imagemagick
+              ;;
+          esac
 
       - name: Build (Windows)
         if: runner.os == 'Windows'
@@ -145,30 +242,111 @@ jobs:
           cd build && 7z a -tzip ../NekoLauncher-windows-amd64-portable.zip \
             bin/NekoLauncher.exe tools/NekoSolo/NekoSolo.Installer.exe
 
-      - name: Build (Linux)
+      - name: Install nfpm (Linux 发行包)
+        if: runner.os == 'Linux'
+        shell: bash
+        # 用 go install 而不是下载 release 二进制：CI 里多一个下载源就多一个断点。
+        # nfpm 只在打包那一步用到（deb/rpm/pkg.tar.zst 都是它产的），且不进 go.mod。
+        # arch 容器里 go 是 pacman 装的，GOPATH 落在容器的 /root 下，同样能装。
+        run: |
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Build & Package (Linux 发行包 + AppImage)
+        # 三个 Linux job 都跑这一步，区别只在 matrix.linux-artifacts（见矩阵注释）：
+        #   deb-glibc-2.35 → Ubuntu 22.04 上编的 .deb（webkit2gtk 4.0）
+        #   deb-glibc-2.39 → Ubuntu 24.04 上编的 .deb（webkit2gtk 4.1）+ AppImage
+        #   rpm            → Fedora 上编的 .rpm
+        #   pkg.tar.zst    → Arch 容器里编的 pacman 包
+        # 每个发行版在自己家编，二进制才最贴合那边的 glibc 与 webkit 版本。
         if: runner.os == 'Linux'
         shell: bash
         run: |
           wails build -platform linux/amd64 \
             -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY"
           chmod +x build/bin/NekoLauncher
-          # ---- AppImage 打包 ----
+
+          case "${{ matrix.linux-artifacts }}" in
+            deb-glibc-2.35) formats="deb";       tag="debian-glibc-2.35" ;;
+            deb-glibc-2.39) formats="deb";       tag="debian-glibc-2.39" ;;
+            rpm)            formats="rpm";       tag="fedora" ;;
+            pkg.tar.zst)    formats="archlinux"; tag="arch" ;;
+            *)              formats="deb rpm archlinux"; tag="linux" ;;
+          esac
+
+          # 包名里的版本：tag（v0.3.1）去掉 v 前缀；普通分支 push 用 0.0.0-snapshot，
+          # 免得同一版本号被反复重发、用户分不清手里那份是哪次构建。
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            export NPFPM_VERSION="${GITHUB_REF_NAME#v}"
+          else
+            export NPFPM_VERSION="0.0.0-snapshot"
+          fi
+
+          # nfpm 的 --target 要求目录已存在，先建好（Windows 那条路径里也建过，互不冲突）
+          mkdir -p dist
+
+          for format in $formats; do
+            case "$format" in
+              deb)
+                # 22.04 上编出来的链的是 webkit2gtk 4.0，24.04 及以上才是 4.1
+                if [ "${{ matrix.linux-artifacts }}" = "deb-glibc-2.35" ]; then
+                  depends="packaging/depends/deb-glibc-2.35.yaml"
+                else
+                  depends="packaging/depends/deb-glibc-2.39.yaml"
+                fi
+                ;;
+              rpm)       depends="packaging/depends/rpm.yaml" ;;
+              archlinux) depends="packaging/depends/archlinux.yaml" ;;
+            esac
+
+            # nfpm 只吃一个 config（--config 是普通字符串 flag，传两次是覆盖不是合并），
+            # 所以在这里把依赖片并进主配置，拼一份临时配置出来。
+            {
+              cat packaging/nfpm.yaml
+              echo
+              cat "$depends"
+            } > nfpm-merged.yaml
+
+            nfpm package --config nfpm-merged.yaml --packager "$format" --target dist/
+          done
+
+          # 收尾改名：nfpm 的默认名只带"名字-版本-架构"，几个 job 会撞名
+          # （deb 两个 job 都是 nekolauncher_<版本>_amd64.deb），而 Release 资产是
+          # 拍平在一个目录里的，撞名就是相互覆盖。所以统一改成
+          # NekoLauncher-<版本>-linux-amd64-<发行版>.deb / .rpm / .pkg.tar.zst。
+          #
+          # 注意：通配符会把**上一步刚改好名**的文件也匹配进来（新名字同样以 .deb 结尾），
+          # 而循环体内的 mv 又继续往 dist/ 里加新的匹配项，会变成边遍历边追加。
+          # 所以先用 find 把待改名的文件列成一个快照再处理，并跳过已经是目标名的文件。
+          version="${NPFPM_VERSION}"
+          while IFS= read -r file; do
+            case "$file" in
+              *"NekoLauncher-${version}-linux-amd64-"*) continue ;;
+            esac
+            case "$file" in
+              *.deb)          ext="deb" ;;
+              *.rpm)          ext="rpm" ;;
+              *.pkg.tar.zst)  ext="pkg.tar.zst" ;;
+              *)              continue ;;
+            esac
+            mv "$file" "dist/NekoLauncher-${version}-linux-amd64-${tag}.${ext}"
+          done < <(find dist -maxdepth 1 -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.pkg.tar.zst' \) | sort)
+          ls -l dist
+
+      - name: Package AppImage
+        # AppImage 只做一份：它自带依赖，不含 glibc/webkit 的版本包袱，
+        # 每个 job 各做一遍纯属浪费 runner 时间。
+        if: matrix.linux-artifacts == 'deb-glibc-2.39'
+        shell: bash
+        run: |
           # 注意：linuxdeploy 校验图标必须为标准尺寸（历史上 63x63 图标被打回），
           # 这里用 ImageMagick 从 appicon 生成 256x256 标准图标并按 basename 部署。
           convert build/appicon.png -resize 256x256 neko-launcher.png
-          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps
+          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps dist
           cp build/bin/NekoLauncher AppDir/usr/bin/
           cp neko-launcher.png AppDir/usr/share/icons/hicolor/256x256/apps/
-          cat > AppDir/neko-launcher.desktop <<'EOF'
-          [Desktop Entry]
-          Type=Application
-          Name=NekoLauncher
-          Comment=Minecraft Java 版启动器
-          Exec=NekoLauncher
-          Icon=neko-launcher
-          Categories=Game;
-          Terminal=false
-          EOF
+          cp packaging/neko-launcher.desktop AppDir/
           curl -L -o linuxdeploy.AppImage \
             https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
           chmod +x linuxdeploy.AppImage
@@ -179,39 +357,38 @@ jobs:
           linuxdeploy.AppImage --appimage-extract-and-run \
             --appdir "$PWD/AppDir" --desktop-file="$PWD/AppDir/neko-launcher.desktop" \
             --icon-file="$PWD/neko-launcher.png" --output appimage
-          mv NekoLauncher*.AppImage "NekoLauncher-linux-amd64.AppImage"
+          mv NekoLauncher*.AppImage "dist/NekoLauncher-linux-amd64.AppImage"
           # 同时提供裸二进制 tar.gz（无 FUSE 环境兜底）
-          tar -czf "NekoLauncher-linux-amd64.tar.gz" -C build/bin NekoLauncher
+          tar -czf "dist/NekoLauncher-linux-amd64.tar.gz" -C build/bin NekoLauncher
 
       - name: Build (macOS)
         if: runner.os == 'MacOS'
         shell: bash
         run: |
-          wails build -platform darwin/universal \
+          # 按 matrix.platform 各出各的包：Intel 与 Apple Silicon 不再 lipo 成一个 universal
+          # （通用包体积翻倍，且 Intel 机器下 arm64 那半永远用不上）。
+          wails build -platform "${{ matrix.platform }}" \
             -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY"
           # 未签名 app 打成 zip；签名/公证需要 Apple 开发者证书，暂不配置
           cd build/bin
-          zip -r "../../NekoLauncher-darwin-universal.zip" NekoLauncher.app
+          zip -r -y "../../NekoLauncher-${{ matrix.platform }}.zip" NekoLauncher.app
 
       - name: Collect artifacts
         shell: bash
         run: |
           mkdir -p dist
-          # 各平台把产物集中到 dist/
+          # 各平台把产物集中到 dist/（Linux 的 nfpm/AppImage 已经在 dist/ 里了）
           if [ "$RUNNER_OS" = "Windows" ]; then
             cp build/bin/NekoLauncher.exe dist/ 2>/dev/null || true
             cp NekoLauncher-windows-amd64-portable.zip dist/ 2>/dev/null || true
-          elif [ "$RUNNER_OS" = "Linux" ]; then
-            cp NekoLauncher-linux-amd64.AppImage dist/ 2>/dev/null || true
-            cp NekoLauncher-linux-amd64.tar.gz dist/ 2>/dev/null || true
-          else
-            cp NekoLauncher-darwin-universal.zip dist/ 2>/dev/null || true
+          elif [ "$RUNNER_OS" = "MacOS" ]; then
+            cp "NekoLauncher-${{ matrix.platform }}.zip" dist/ 2>/dev/null || true
           fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: NekoLauncher-${{ matrix.os }}
+          name: NekoLauncher-${{ matrix.name }}
           path: dist/*
 
   release:

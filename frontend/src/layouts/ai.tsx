@@ -101,7 +101,6 @@ import {
   ReadTextFile,
 } from "../../wailsjs/go/bindings/SystemAPI";
 
-
 interface AiProvider {
   id: string;
   name: string;
@@ -193,7 +192,6 @@ interface AiSettings {
   /** 是否显示工具调用详情 */
   showToolCalls: boolean;
 }
-
 
 const BUILTIN_PROVIDERS: AiProvider[] = [
   {
@@ -2278,7 +2276,6 @@ function buildSystemPrompt(settings: AiSettings): string {
   return `${settings.systemPrompt}\n\n## 当前权限状态（用户可在 AI 设置 → 实例操作权限中修改）\n${permissionStatus}`;
 }
 
-
 const AiPage: React.FC = () => {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -3336,7 +3333,6 @@ const AiPage: React.FC = () => {
       apiFormat: provider?.apiFormat ?? prev.apiFormat,
     }));
   };
-
 
   return (
     <section className="flex h-full w-full min-h-0 overflow-hidden">

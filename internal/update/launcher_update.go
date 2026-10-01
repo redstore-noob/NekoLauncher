@@ -212,11 +212,15 @@ func releaseFilterLabel(includePrerelease bool) string {
 // 命名来自 CI（.github/workflows/ci.yml）：
 //
 //	windows: NekoLauncher.exe / NekoLauncher-windows-amd64-portable.zip
-//	linux:   NekoLauncher-linux-amd64.AppImage / .tar.gz
-//	darwin:  NekoLauncher-darwin-universal.zip
+//	linux:   NekoLauncher-linux-amd64.AppImage / NekoLauncher-linux-amd64.tar.gz
+//	         NekoLauncher-<版本>-linux-amd64-debian-glibc-2.35.deb（旧 apt 系）
+//	         NekoLauncher-<版本>-linux-amd64-debian-glibc-2.39.deb（新 apt 系）
+//	         NekoLauncher-<版本>-linux-amd64-fedora.rpm
+//	         NekoLauncher-<版本>-linux-amd64-arch.pkg.tar.zst
+//	darwin:  NekoLauncher-darwin-amd64.zip / NekoLauncher-darwin-arm64.zip
 //
-// 自动替换只用"能直接落到目标路径"的那一个：Windows 用裸 exe；其它平台（AppImage/zip）
-// 留给用户手动处理（返回 false → ManualHint）。
+// 自动替换只用"能直接落到目标路径"的那一个：Windows 用裸 exe；其它平台得走包管理器
+// 或手动替换（AppImage 要换自身文件、macOS 要处理签名与 quarantine），交给用户更安全。
 func pickAsset(assets []releaseAsset) (Asset, bool) {
 	if runtime.GOOS != "windows" {
 		return Asset{}, false
