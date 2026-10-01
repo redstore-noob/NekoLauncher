@@ -8,12 +8,14 @@
 | job | runner | 编出来的二进制链什么 | 产物 |
 | --- | --- | --- | --- |
 | windows/amd64 | `windows-latest` | WebView2 | `NekoLauncher.exe`、`NekoLauncher-windows-amd64-portable.zip`、`NekoSolo.Installer.exe` |
-| linux/amd64 (apt · glibc 2.35) | `ubuntu-22.04` ⚠️ | webkit2gtk **4.0** | `...-linux-amd64-debian-glibc-2.35.deb` |
-| linux/amd64 (apt · glibc 2.39) | `ubuntu-24.04` | webkit2gtk **4.1** | `...-linux-amd64-debian-glibc-2.39.deb`、`NekoLauncher-linux-amd64.AppImage`、`...tar.gz` |
-| linux/amd64 (rpm) | `ubuntu-24.04` + `fedora:42` 容器 | webkit2gtk **4.1** | `...-linux-amd64-fedora.rpm` |
-| linux/amd64 (pacman) | `ubuntu-24.04` + `archlinux:latest` 容器 | webkit2gtk **4.1** | `...-linux-amd64-arch.pkg.tar.zst` |
+| linux/amd64 (apt · glibc 2.35) | `ubuntu-22.04` ⚠️ | webkit2gtk **4.0**（无构建标签） | `...-linux-amd64-debian-glibc-2.35.deb` |
+| linux/amd64 (apt · glibc 2.39) | `ubuntu-24.04` | webkit2gtk **4.1**（`-tags webkit2_41`） | `...-linux-amd64-debian-glibc-2.39.deb`、`NekoLauncher-linux-amd64.AppImage`、`...tar.gz` |
+| linux/amd64 (rpm) | `ubuntu-24.04` | webkit2gtk **4.1**（`-tags webkit2_41`） | `...-linux-amd64-fedora.rpm` |
+| linux/amd64 (pacman) | `ubuntu-24.04` | webkit2gtk **4.1**（`-tags webkit2_41`） | `...-linux-amd64-arch.pkg.tar.zst` |
 | darwin/amd64 | `macos-15-intel` | Intel | `NekoLauncher-darwin-amd64.zip` |
 | darwin/arm64 | `macos-15` | Apple Silicon | `NekoLauncher-darwin-arm64.zip` |
+
+rpm / pacman 不再用 fedora / arch 容器，理由见下面第 3 节。
 
 ## Runner 生命周期（会过期，别写死就忘）
 
@@ -61,31 +63,42 @@ wails v2.15 的 Linux 端是 cgo，`pkg-config` 认的 soname 要么是 `webkit2
 
 - 老 apt 系 → 22.04 编的包
 - 新 apt 系 → 24.04 编的包
-- Fedora / Arch → 各自编的包（它们的 glibc 比 24.04 还新，只喂给自己）
+- Fedora / Arch → **直接用 24.04 编的那份二进制**（它们的 glibc 比 2.39 新，只在更老的系统上才会出问题）
 
-### 3. Fedora / Arch 走容器，不是因为偏好
+### 3. Fedora / Arch 不用容器
 
-**GitHub 没有 Fedora 或 Arch 的 hosted runner**（`runs-on: fedora-42` 是无效标签，
-只有 Ubuntu/Windows/macOS 三类），所以这两个 job 是 `runs-on: ubuntu-24.04` 加
-`container:`，在官方镜像里构建：
+早期设计里这两个 job 是 `runs-on: ubuntu-24.04` 加 `container: fedora:42` /
+`archlinux:latest`，想在目标发行版里原生构建。**这套已经去掉了**，两个原因：
 
-- `fedora:42`：自带 `webkit2gtk4.1`，`dnf` 装 `go nodejs gcc-c++` 等。
-- `archlinux:latest`：自带 `webkit2gtk-4.1` 与滚动版工具链，`pacman` 装依赖。
+1. **不需要原生工具链。** 发行包统一由 [nfpm](https://nfpm.goreleaser.com/) 产出，而它是
+   纯 Go，`deb` / `rpm` / `pkg.tar.zst` 三种格式都自己写，不依赖 `rpm-build` / `makepkg` /
+   `dpkg-deb`。（本地在 Windows 上实测能直接产全三种，可见与宿主无关。）
+2. **原生的反而更差。** Fedora / Arch 的 glibc 比 Ubuntu 24.04 还新，在它们上面编出来的
+   二进制要求的 glibc 更高，能覆盖的机器**更少**。24.04 编的（链 webkit2gtk-4.1）
+   在 Fedora 42 / Arch 上照样能跑。
 
-容器里以 root 运行，所以 `pacman`/`dnf`/`go install` 都**不加 `sudo`**，也不走
-`actions/setup-go` / `actions/setup-node`（那是给宿主机 runner 用的）。
+顺带省掉拉镜像的时间，`fail-fast: false` 下的矩阵也更好读。
 
-> 踩过的坑：判断"要不要跑 setup-go"时别写 `matrix.container == ''`。
-> 没写 `container` 的 job 里这个键是 `null`，而 GitHub 表达式的 `null == ''` 是
-> **false**，会让 Windows/macOS/Ubuntu 的 setup 步骤被静默跳过、构建直接失败。
-> 所以矩阵里用一个显式的 `use-setup-actions: 'yes'` 来标记。
+> 踩过的坑：**矩阵里的字段只有写进 job 定义才会生效。**
+> 之前矩阵里写着 `container: fedora:42`，但 job 上根本没有 `container:` 键，
+> 于是这两个 job 实际跑在 ubuntu 上 —— `pacman` / `dnf` 全部 `command not found`，
+> 步骤 **0 秒**就以 exit 127 失败。看到 exit 127 + 0 秒，先怀疑"命令根本不存在"。
 
-> 另一个坑：**别用 `matrix.container` 做 `case` 分支**。
-> `container: fedora:42` 这一行在 YAML 层会被解析成**对象** `{image: fedora:42}`，
-> `${{ matrix.container }}` 渲染出来不是 `fedora:42` 这个字符串，所以
-> `case "${{ matrix.container }}" in fedora*)` 一个分支都匹配不上 ——
-> 结果是**什么都不装**，随后 `go install`/`npm` 全都 `command not found`，
-> job 在几秒内就挂掉。用另一个纯字符串字段（本项目是 `in-container`）来标记。
+### 3.1 Linux 构建必须选对 webkit2gtk 的构建标签
+
+wails 的 cgo 指令是按构建标签二选一的：
+
+```
+#cgo !webkit2_41 pkg-config: webkit2gtk-4.0
+#cgo  webkit2_41 pkg-config: webkit2gtk-4.1
+```
+
+**默认（不加标签）找的是 4.0。** 而 4.0 的 API 包在 Ubuntu 24.04 / Debian 13 上已经没有了，
+所以在 24.04 上构建必须加 `-tags webkit2_41`，否则 cgo 阶段直接编译失败。
+22.04 反过来只有 4.0，**不能**加这个标签。
+
+这个标签同时决定了二进制链哪个 `.so`，所以它必须和 `packaging/depends/` 里选的依赖片一致：
+标签选 4.1 就得配 `deb-glibc-2.39.yaml`。
 
 ### 4. macOS 为什么不用 `macos-latest`
 
@@ -99,6 +112,13 @@ Apple 已停止支持 x86_64，GitHub 表示 **macOS 15 镜像退役后（2027 �
 
 之前的做法是 `darwin/universal`：把 amd64 与 arm64 两个二进制 lipo 进同一个 `.app`。
 现在拆开是因为通用包体积翻倍，而任何一台机器只会用到其中一半。
+
+> 踩过的坑：**别把 `matrix.platform` 直接塞进文件名。** 它的值是 `darwin/amd64`，
+> 带斜杠，`zip ... "NekoLauncher-${{ matrix.platform }}.zip"` 会变成往
+> `NekoLauncher-darwin/amd64.zip` 写 —— 那个目录不存在，Info-ZIP 以 `ZE_OPEN(15)`
+> 退出，CI 上显示为 **exit code 15**（不是超时，也不是被杀）。
+> 现在用 `tr '/' '-'` 换成 `NekoLauncher-darwin-amd64.zip`，
+> 正好与 `internal/update` 记录的资产名一致。
 
 ## 打包工具
 

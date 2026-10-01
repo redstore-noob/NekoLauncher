@@ -4,9 +4,11 @@
 - macOS 安装包拆成 `darwin-arm64` 与 `darwin-amd64` 两份（此前是一个体积翻倍的 universal 包）
 - 修复 CI 无法启动：工作流里 AppImage 步骤的 `if:` 与 `shell:` 被写在同一行，导致整个 YAML 解析失败、所有 job 一起挂掉
 - 修复 Linux 打包后的资产改名会重复处理自身改名结果的问题：改用先取文件快照再改名的写法，并跳过已经是目标名的文件
-- 修复 Fedora / Arch 容器构建整段失效：`case "${{ matrix.container }}"` 对不上（`container: fedora:42` 在 YAML 层是对象，不是字符串），导致包管理器一个分支都不进、工具链完全没装，job 6 秒即失败
+- 修复 Fedora / Arch 构建整段失效：矩阵里写了 `container: fedora:42`，但 job 定义上没有 `container:` 键，字段根本没生效，两个 job 实际跑在 ubuntu 上，`pacman` / `dnf` 全部 command not found（0 秒 exit 127）。改为去掉容器，rpm 与 pkg.tar.zst 统一用 nfpm（纯 Go）在 ubuntu-24.04 上产出
+- 修复 Ubuntu 24.04 上编译失败：wails 默认按 webkit2gtk **4.0** 编译，而 4.0 的 API 包在 24.04 已移除，必须加 `-tags webkit2_41`（22.04 反过来不能加）
+- 修复 macOS 打包失败（exit code 15）：zip 文件名里带了 `matrix.platform` 的斜杠（`NekoLauncher-darwin/amd64.zip`），Info-ZIP 以 `ZE_OPEN` 退出；改为把斜杠换成横杠，产物名与自动更新记录的资产名一致
 - 修复构建产物上传失败：artifact 名沿用了带斜杠的 `matrix.name`（如 `windows/amd64`），`upload-artifact@v4` 直接拒绝，改为使用无斜杠的 `matrix.artifact`
-- 构建前先用 `npm ci` 按 lock 文件装好前端依赖：此前依赖 `wails build` 自行执行 `npm install`，在 macOS 与容器环境中会拖长甚至被 runner 掐断
+- 构建前先用 `npm ci` 按 lock 文件装好前端依赖：此前依赖 `wails build` 自行执行 `npm install`，在 macOS runner 上实测要 3 分钟，会把构建步骤拖到被掐断
 - 补齐前端遗留的格式告警（`eslint --max-warnings 0` 下会让前端 job 直接失败）
 
 # 0.3.1

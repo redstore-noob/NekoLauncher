@@ -96,18 +96,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # ⚠️ 矩阵字段只有写进 job 定义才会生效。
+          #    这里曾经在矩阵里写 `container: fedora:42`，但 job 上根本没有
+          #    `container:` 键，于是 fedora/arch 两个 job 实际跑在 ubuntu 上，
+          #    pacman / dnf 直接 command not found（exit 127，0 秒即挂）。
+          #    现在发行包统一交给 nfpm（纯 Go）产出，不需要目标发行版的原生工具链，
+          #    容器整个去掉了。详见 docs/RELEASE_PACKAGING.md。
           - name: windows/amd64
-            # artifact 名不能含斜杠：upload-artifact@v4 会报
-            # "The artifact name is not valid: ... Contains the following character: Forward slash"。
+            # artifact 名不能含斜杠：upload-artifact@v4 会直接拒绝
+            # （The artifact name is not valid ... Forward slash）。
             # name 给人看（带斜杠更清楚），artifact 另用一个无斜杠的字段。
             artifact: NekoLauncher-windows-amd64
             os: windows-latest
             platform: windows/amd64
-            # use-setup-actions 显式标出"用 setup-go/setup-node"的 job。
-            # 不要改用 `matrix.container == ''` 来判断：没写 container 的 job 里
-            # 这个键是 null，而 GitHub 表达式的 null == '' 是 false，
-            # 会让 Windows/macOS/ubuntu 的 setup 步骤被静默跳过。
-            use-setup-actions: 'yes'
           # ---- Linux：一个发行版一个 job，因为 webkit2gtk 的 API 版本绑死在编译器上 ----
           # wails v2.15 的 linux 端是 cgo，pkg-config 要么认 webkit2gtk-4.0、要么认 4.1，
           # 两套 API 包不能共存，所以"哪个环境编出来的"直接决定了能装哪些发行版：
@@ -121,41 +122,34 @@ jobs:
           #      a) 放弃 webkit2gtk 4.0 的老 apt 系（Debian 12 / Ubuntu 22.04 用户）；
           #      b) 用一个 debian:12 容器代替 ubuntu-22.04 来产这份 glibc 2.35 的包。
           #    倾向 (b)：Debian 12 的生命周期比 Ubuntu 22.04 长，且同样提供 4.0。
+          # ⚠️ 24.04 上必须带 -tags webkit2_41（见下面的构建步骤）：
+          #    wails 的 cgo 指令是 `#cgo !webkit2_41 pkg-config: webkit2gtk-4.0`，
+          #    不加标签时它会去找 4.0，而 4.0 的 API 包在 24.04 已经没有了，
+          #    编译直接失败（22.04 那个 job 反而是对的，所以两边表现不一样）。
           - name: linux/amd64 (apt · glibc 2.35)
             artifact: NekoLauncher-linux-amd64-apt-glibc-2.35
             os: ubuntu-22.04
             platform: linux/amd64
             linux-artifacts: deb-glibc-2.35
-            use-setup-actions: 'yes'
           - name: linux/amd64 (apt · glibc 2.39)
             artifact: NekoLauncher-linux-amd64-apt-glibc-2.39
             os: ubuntu-24.04
             platform: linux/amd64
             linux-artifacts: deb-glibc-2.39
-            use-setup-actions: 'yes'
-          # Fedora 只出 rpm：用官方 fedora 镜像跑（GitHub 没有 fedora 的 hosted runner，
-          # `runs-on: fedora-*` 无效，只能 container）。
-          # 它自带 webkit2gtk-4.1，但 glibc 基线比 24.04 还新，
-          # 从它上面编的二进制在 Debian 上跑不起来，所以 deb 交给上面两个 ubuntu job。
+          # rpm 与 pacman 包也在 ubuntu-24.04 上产出，不再用 fedora / arch 容器：
+          #  1. nfpm 是纯 Go，deb/rpm/pkg.tar.zst 三种格式它自己就能写，
+          #     不需要 rpm-build / makepkg 那套原生工具链（本地在 Windows 上实测能产全三种）；
+          #  2. 二进制这边也安全：Fedora 42 / Arch 的 glibc 都比 2.39 新，
+          #     24.04 上编的（链 webkit2gtk-4.1）在它们上面直接能跑。
+          # 顺带省掉拉镜像的时间，7 个 job 的矩阵也更好维护。
           - name: linux/amd64 (rpm)
             artifact: NekoLauncher-linux-amd64-rpm
             os: ubuntu-24.04
-            container: fedora:42
-            # ⚠️ 不要用 `case "${{ matrix.container }}"` 来分支：`container:` 写成
-            # `fedora:42` 时 YAML 层是**对象**（{image: fedora:42}），表达式渲染出来
-            # 不是 "fedora:42"，任何 `fedora*` / `archlinux*` 通配都匹配不上，
-            # 结果是 case 一个分支都不进、什么都不装，job 秒挂。
-            # 所以另用一个纯字符串字段来标记用哪个包管理器。
-            in-container: fedora
             platform: linux/amd64
             linux-artifacts: rpm
-          # Arch 官方镜像自带 webkit2gtk-4.1 与滚动版工具链，直接用它构建最省事
-          # （不必去配 archlinuxcn 的源装 wails 的依赖）。
           - name: linux/amd64 (pacman)
             artifact: NekoLauncher-linux-amd64-pacman
             os: ubuntu-24.04
-            container: archlinux:latest
-            in-container: archlinux
             platform: linux/amd64
             linux-artifacts: pkg.tar.zst
           # ---- macOS：Intel 与 Apple Silicon 分开出包 ----
@@ -169,60 +163,32 @@ jobs:
             artifact: NekoLauncher-darwin-amd64
             os: macos-15-intel
             platform: darwin/amd64
-            use-setup-actions: 'yes'
           # 用 macos-15 而不是 macos-14：14 的支持已于 2026-07-06 进入弃用期，
           # 2026-11-02 就会被摘掉（macos-latest 现在指 15+，14 属于最老那档）。
           - name: darwin/arm64
             artifact: NekoLauncher-darwin-arm64
             os: macos-15
             platform: darwin/arm64
-            use-setup-actions: 'yes'
     steps:
       - uses: actions/checkout@v4
 
-      # 容器里是滚动版 / 自带工具链：自己挑 Go 版本反而容易踩新语言的坑，
-      # 直接用镜像里 pacman / dnf 装的那份。
       - name: Set up Go
-        if: matrix.use-setup-actions == 'yes'
         uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Set up Node.js
-        if: matrix.use-setup-actions == 'yes'
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install toolchain in container
-        # 容器里没有 setup-go / setup-node 这类 action，工具链全靠发行版仓库。
-        # 以 root 跑，不加 sudo。
-        # ⚠️ 必须排在 "Install frontend dependencies" 之前：那个步骤要用到 npm。
-        if: matrix.use-setup-actions != 'yes'
-        shell: bash
-        run: |
-          case "${{ matrix.in-container }}" in
-            archlinux)
-              pacman -Sy --noconfirm --needed go nodejs npm base-devel gtk3 \
-                webkit2gtk-4.1 libnss alsa-lib pkgconf zstd
-              ;;
-            fedora)
-              dnf install -y go nodejs npm gcc gcc-c++ make pkgconf-pkg-config \
-                gtk3-devel webkit2gtk4.1-devel libnss3-devel alsa-lib-devel \
-                rpm-build git tar which
-              ;;
-            *)
-              echo "未知的容器类型: '${{ matrix.in-container }}'" >&2
-              exit 1
-              ;;
-          esac
-
       # 先把前端依赖装好：wails build 自己会跑 wails.json 里的 frontend:install
       # （`npm install`）与 frontend:build，而 `npm install` 在 CI 上既慢又会按
-      # package.json 重新解析版本。这里用 `npm ci` 按 lock 文件装一次，
-      # 之后 wails 检测到 node_modules 已是最新就会跳过安装，链路更稳也更快。
+      # package.json 重新解析版本 —— macOS runner 上实测要 3 分钟，还会把构建步骤
+      # 拖到被 runner 掐断。这里用 `npm ci` 按 lock 装一次，之后 wails 检测到
+      # node_modules 已是最新就会跳过安装。
       # 注意别用 `-s` / `-skipbindings` 省这一步：main.go 要 embed frontend/dist，
       # 没有前端产物时 embed 会直接失败。
       - name: Install frontend dependencies
@@ -241,8 +207,7 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Install Linux dependencies
-        # 容器 job 的依赖已经在上一步装好了
-        if: runner.os == 'Linux' && matrix.use-setup-actions == 'yes'
+        if: runner.os == 'Linux'
         shell: bash
         # apt 的 22.04/24.04 之间 webkit 与 libasound 包名也不一样
         # （4.0 的 API 包在 24.04 已被移除，4.1 在 22.04 还没有），必须逐版本分支。
@@ -292,16 +257,26 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Build & Package (Linux 发行包 + AppImage)
-        # 三个 Linux job 都跑这一步，区别只在 matrix.linux-artifacts（见矩阵注释）：
+        # 四个 Linux job 都跑这一步，区别只在 matrix.linux-artifacts（见矩阵注释）：
         #   deb-glibc-2.35 → Ubuntu 22.04 上编的 .deb（webkit2gtk 4.0）
         #   deb-glibc-2.39 → Ubuntu 24.04 上编的 .deb（webkit2gtk 4.1）+ AppImage
-        #   rpm            → Fedora 上编的 .rpm
-        #   pkg.tar.zst    → Arch 容器里编的 pacman 包
-        # 每个发行版在自己家编，二进制才最贴合那边的 glibc 与 webkit 版本。
+        #   rpm            → 同一份 24.04 二进制打的 .rpm
+        #   pkg.tar.zst    → 同一份 24.04 二进制打的 pacman 包
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          wails build -platform linux/amd64 \
+          # webkit2gtk 的 API 版本要靠构建标签选：
+          #   wails 的 cgo 指令是 `#cgo !webkit2_41 pkg-config: webkit2gtk-4.0`，
+          #   即默认找 4.0，只有加上 webkit2_41 才去找 4.1。
+          # 24.04 上没有 4.0 的 API 包（只有 4.1），不加这个标签会直接编译失败；
+          # 22.04 反过来只有 4.0，所以不能加。这个标签决定二进制链哪个 so，
+          # 必须和 linux-artifacts 选的依赖片一致。
+          case "${{ matrix.os }}" in
+            ubuntu-22.04) WAILS_TAGS="" ;;
+            *)            WAILS_TAGS="-tags webkit2_41" ;;
+          esac
+
+          wails build -platform linux/amd64 $WAILS_TAGS \
             -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY"
           chmod +x build/bin/NekoLauncher
 
@@ -408,9 +383,23 @@ jobs:
           # （通用包体积翻倍，且 Intel 机器下 arm64 那半永远用不上）。
           wails build -platform "${{ matrix.platform }}" \
             -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY"
+
+      - name: Package macOS app (zip)
+        # 单开一步：和构建分开，失败时一眼能看出是编译挂了还是打包挂了。
+        if: runner.os == 'MacOS'
+        shell: bash
+        run: |
+          # ⚠️ zip 的文件名里不能出现 platform 的斜杠：`darwin/amd64` 会让 zip
+          #    往 `NekoLauncher-darwin/amd64.zip` 写，而那个目录不存在，
+          #    Info-ZIP 直接以 ZE_OPEN(15) 退出（CI 上就是 "exit code 15"）。
+          #    这里把斜杠换成横杠，产物名与 internal/update 里记录的资产名一致。
+          archive="NekoLauncher-$(echo "${{ matrix.platform }}" | tr '/' '-').zip"
           # 未签名 app 打成 zip；签名/公证需要 Apple 开发者证书，暂不配置
+          # -y 保留符号链接（.app 里的 Framework 版本链接靠它）
           cd build/bin
-          zip -r -y "../../NekoLauncher-${{ matrix.platform }}.zip" NekoLauncher.app
+          zip -r -y "../../$archive" NekoLauncher.app
+          cd ../..
+          ls -l "$archive"
 
       - name: Collect artifacts
         shell: bash
@@ -421,7 +410,9 @@ jobs:
             cp build/bin/NekoLauncher.exe dist/ 2>/dev/null || true
             cp NekoLauncher-windows-amd64-portable.zip dist/ 2>/dev/null || true
           elif [ "$RUNNER_OS" = "MacOS" ]; then
-            cp "NekoLauncher-${{ matrix.platform }}.zip" dist/ 2>/dev/null || true
+            # 同样避开 platform 里的斜杠（见上一步的说明）
+            archive="NekoLauncher-$(echo "${{ matrix.platform }}" | tr '/' '-').zip"
+            cp "$archive" dist/
           fi
 
       - name: Upload build artifacts
