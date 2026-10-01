@@ -405,15 +405,31 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          # 各平台把产物集中到 dist/（Linux 的 nfpm/AppImage 已经在 dist/ 里了）
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cp build/bin/NekoLauncher.exe dist/ 2>/dev/null || true
-            cp NekoLauncher-windows-amd64-portable.zip dist/ 2>/dev/null || true
-          elif [ "$RUNNER_OS" = "MacOS" ]; then
-            # 同样避开 platform 里的斜杠（见上一步的说明）
-            archive="NekoLauncher-$(echo "${{ matrix.platform }}" | tr '/' '-').zip"
-            cp "$archive" dist/
+          # 各平台把产物集中到 dist/（Linux 的 nfpm/AppImage 已经在 dist/ 里了）。
+          #
+          # ⚠️ 用 `${{ runner.os }}` 这个**表达式**，别用环境变量 `$RUNNER_OS` 去比字符串：
+          #    它的值是 `Windows` / `Linux` / **`macOS`**（小写 m、大写 OS），
+          #    写成 `[ "$RUNNER_OS" = "MacOS" ]` 永远为假，macOS 的产物就进不了 dist/，
+          #    而 upload-artifact 对空目录只 warn 不报错 —— 表现为"job 全绿但 Release 里
+          #    少了两个 macOS 包"，非常难查。之前它侥幸能用是因为 macOS 恰好落在 else 分支。
+          case "${{ runner.os }}" in
+            Windows)
+              cp build/bin/NekoLauncher.exe dist/
+              cp NekoLauncher-windows-amd64-portable.zip dist/
+              ;;
+            macOS)
+              # 同样避开 platform 里的斜杠（见上一步的说明）
+              archive="NekoLauncher-$(echo "${{ matrix.platform }}" | tr '/' '-').zip"
+              cp "$archive" dist/
+              ;;
+          esac
+          # 兜底：dist/ 为空就等于这个 job 什么都没产出，直接失败，
+          # 免得再出现"绿着但没东西"的情况。
+          if [ -z "$(ls -A dist)" ]; then
+            echo "dist/ 是空的，没有任何产物可上传" >&2
+            exit 1
           fi
+          ls -l dist
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

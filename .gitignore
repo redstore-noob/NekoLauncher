@@ -36,6 +36,8 @@ frontend-vue-backup/package.json.md5
 /.gocache/
 /.gomodcache/
 
+# 临时脚本 / 验证产物（本地排查 CI 之类时用，不入库）
+/.tmp/
 # 沙箱 ACL 修复产生的本地产物（诊断工具的输出，与仓库内容无关）
 /.acl-recovery/
 

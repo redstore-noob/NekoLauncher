@@ -9,6 +9,7 @@
 - 修复 macOS 打包失败（exit code 15）：zip 文件名里带了 `matrix.platform` 的斜杠（`NekoLauncher-darwin/amd64.zip`），Info-ZIP 以 `ZE_OPEN` 退出；改为把斜杠换成横杠，产物名与自动更新记录的资产名一致
 - 修复构建产物上传失败：artifact 名沿用了带斜杠的 `matrix.name`（如 `windows/amd64`），`upload-artifact@v4` 直接拒绝，改为使用无斜杠的 `matrix.artifact`
 - 构建前先用 `npm ci` 按 lock 文件装好前端依赖：此前依赖 `wails build` 自行执行 `npm install`，在 macOS runner 上实测要 3 分钟，会把构建步骤拖到被掐断
+- 修复 macOS 产物没能进 Release：汇总步骤把 `RUNNER_OS` 和 `"MacOS"` 比字符串，而该变量的值其实是 `macOS`，比较恒为假，`dist/` 为空后上传只 warn 不报错（job 全绿但包里少了两个 macOS 包）。改用 `${{ runner.os }}` 表达式，并加了 dist/ 为空的兜底失败
 - 补齐前端遗留的格式告警（`eslint --max-warnings 0` 下会让前端 job 直接失败）
 
 # 0.3.1
