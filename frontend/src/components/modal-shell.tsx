@@ -68,7 +68,7 @@ export const ModalShell: React.FC<ModalShellProps> = ({
     <>
       <ModalHeader className="flex items-center gap-3 px-6 pt-4 pb-3 border-b border-gray-100 dark:border-gray-800/60">
         {icon ? (
-          <div className="w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-[10px] bg-primary/15 text-primary-600 dark:text-primary-300">
+          <div className="w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-[var(--nya-radius-icon)] bg-primary/15 text-primary-600 dark:text-primary-300">
             {icon}
           </div>
         ) : null}

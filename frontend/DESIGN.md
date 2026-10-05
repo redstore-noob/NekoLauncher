@@ -47,6 +47,11 @@ Wails 透明窗口：`html, body, #root` 背景保持透明，由 `BackgroundLay
 
 - 圆角阶梯：卡片 `rounded-3xl`（1.5rem）；面板/输入框 `radius="lg"`；浮层 `0.875rem`；
   图标磁贴 `rounded-2xl`；小按钮/滑条内元素 `rounded-lg`。不再使用 `< 0.5rem` 的碎圆角。
+- 圆角全部由变量驱动（Tailwind v4 的 `--radius-*`、HeroUI 的 `--heroui-radius-*`、
+  globals.css 里 `--nya-radius-*`），**不要在组件里写死圆角值**。外观设置提供
+  「大圆角 / 小圆角」两种风格（`html[data-radius]`，见 `background.tsx` 与
+  `globals.css`）：小圆角把整个阶梯收紧一档（`--radius-3xl` 24px→12px，
+  HeroUI large 14px→10px，浮层 0.875rem→0.5rem），`rounded-full` 不参与。
 - 字号：数值展示 `text-2xl font-bold tabular-nums`；正文 `text-sm`；辅助/说明 `text-[11px]~text-xs`
   且用 `text-gray-400`（暗色 `dark:text-gray-400` 系）；卡片小标题 `text-[11px] font-semibold uppercase tracking-wider`。
 - 卡片内距 `p-5`，内部纵向间距 `gap-3`。

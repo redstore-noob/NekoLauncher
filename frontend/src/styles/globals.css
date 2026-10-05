@@ -54,6 +54,18 @@ body {
   --nya-glass-alpha: 0.8;
 }
 
+/* 自有圆角（globals.css 里写死的少数几处，Tailwind 类覆盖不到的）。
+ * 默认值即历史观感；"小圆角"风格在下方 html[data-radius="small"] 块里收紧。 */
+:root {
+  --nya-radius-float: 0.875rem; /* 浮层（Select/Dropdown content） */
+  --nya-radius-card: 1.5rem; /* .nya-neon-card 卡片 */
+  --nya-radius-home-tile: 1.75rem; /* 主页大磁贴 */
+  --nya-radius-icon: 0.625rem; /* 弹窗和下载项图标 */
+  --nya-radius-code: 0.25rem; /* Markdown 行内代码 */
+  --nya-radius-code-block: 0.5rem; /* Markdown 代码块 */
+  --nya-radius-media: 0.375rem; /* Markdown 图片 */
+}
+
 /* HeroUI 默认给 :root 画了不透明底色，会让 WebView 页面本身不透明、导致窗口
  * 透明/亚克力透不出来；这里改成透明，背景完全由 Shell/背景层负责。 */
 html,
@@ -296,7 +308,7 @@ body,
  * （Select 的 popoverContent 槽默认类只有 "w-full p-1 overflow-hidden"），
  * 这里统一补圆角，否则下拉列表出现生硬的直角边。 */
 [data-slot="content"]:not([data-disabled]) {
-  border-radius: 0.875rem;
+  border-radius: var(--nya-radius-float, 0.875rem);
   overflow: hidden;
 }
 
@@ -339,6 +351,41 @@ html[data-panel-blur="off"] .nya-neon-card {
 }
 html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]) {
   background-color: hsl(var(--nya-surface-1) / 0.98);
+}
+
+/* ---------------- 圆角风格（外观设置 → 圆角风格） ----------------
+ * background.tsx 把选择写到 <html data-radius="large|small">。
+ *
+ * 机制：Tailwind v4 的 rounded-* 工具类全部编译为 var(--radius-*) 引用，
+ * HeroUI 组件的语义圆角全部走 --heroui-radius-*，这里只需在属性选择器里
+ * 重定义这两组变量，全站所有页面（含插件页）的圆角即整体切换，
+ * 无需逐组件改类名。属性选择器（0,1,1）特异度高于 :root（0,1,0），
+ * 且本文件在 @plugin 输出之后，同特异度时靠后规则也占优。
+ *
+ * 语义：小圆角把整个阶梯往下压一级（3xl 24px→12px），但保留层级关系；
+ * rounded-full（头像 / 胶囊 / 圆形图标）不参与，圆形元素不该变成方形。 */
+html[data-radius="small"] {
+  /* Tailwind v4 --radius-*（rounded-sm/md/lg/xl/2xl/3xl） */
+  --radius-sm: 0.125rem;
+  --radius-md: 0.25rem;
+  --radius-lg: 0.375rem;
+  --radius-xl: 0.5rem;
+  --radius-2xl: 0.625rem;
+  --radius-3xl: 0.75rem;
+
+  /* HeroUI 组件语义圆角（Button / Input / Card / Modal / Select…） */
+  --heroui-radius-small: 0.3125rem;
+  --heroui-radius-medium: 0.5rem;
+  --heroui-radius-large: 0.625rem;
+
+  /* globals.css 里写死的自有圆角 */
+  --nya-radius-float: 0.5rem;
+  --nya-radius-card: 0.75rem;
+  --nya-radius-home-tile: 1rem;
+  --nya-radius-icon: 0.5rem;
+  --nya-radius-code: 0.125rem;
+  --nya-radius-code-block: 0.375rem;
+  --nya-radius-media: 0.25rem;
 }
 
 /* ---------------- 音乐播放器 ---------------- */
@@ -540,7 +587,7 @@ html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]) {
 /* 卡片：主题色描边 + 主题派生表面毛玻璃（不再使用彩色渐变） */
 .nya-neon-card {
   position: relative;
-  border-radius: 1.5rem;
+  border-radius: var(--nya-radius-card, 1.5rem);
   background-color: hsl(
     var(--nya-surface-2) / max(0.45, calc(var(--nya-glass-alpha, 0.8) - 0.08))
   );
@@ -828,13 +875,13 @@ html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]) {
 .nya-markdown code {
   background: rgba(125, 125, 125, 0.15);
   padding: 0.15em 0.4em;
-  border-radius: 4px;
+  border-radius: var(--nya-radius-code, 0.25rem);
   font-size: 0.88em;
   font-family: ui-monospace, monospace;
 }
 .nya-markdown pre {
   background: rgba(0, 0, 0, 0.06);
-  border-radius: 8px;
+  border-radius: var(--nya-radius-code-block, 0.5rem);
   padding: 0.8em 1em;
   overflow-x: auto;
   margin: 0.6em 0;
@@ -881,7 +928,7 @@ html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]) {
 }
 .nya-markdown img {
   max-width: 100%;
-  border-radius: 6px;
+  border-radius: var(--nya-radius-media, 0.375rem);
 }
 
 /* AI 聊天 Markdown 代码块：横向滚动使用与 .nya-scroll 一致的细滚动条 */

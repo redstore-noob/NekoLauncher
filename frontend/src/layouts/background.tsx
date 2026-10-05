@@ -44,6 +44,11 @@ export const PANEL_BLUR_KEY = "launcherPanelBlurEnabled";
 export const PANEL_BLUR_STRENGTH_KEY = "launcherPanelBlurStrength";
 /** 网页类壁纸是否允许接收鼠标交互（默认关闭，避免壁纸吃掉界面点击） */
 export const WEB_WALLPAPER_INTERACTIVE_KEY = "launcherWebWallpaperInteractive";
+/** 圆角风格：large=默认大圆角 / small=小圆角（全站 UI 圆角整体收紧） */
+export const CORNER_RADIUS_KEY = "launcherCornerRadiusStyle";
+
+/** 圆角风格取值（写入 launcher.yaml 的 launcherCornerRadiusStyle） */
+export type CornerRadiusStyle = "large" | "small";
 
 /** 毛玻璃强度默认值：blur 系数 = 强度 / 它，因此 70 时系数为 1（观感不变） */
 export const DEFAULT_PANEL_BLUR_STRENGTH = 70;
@@ -126,6 +131,8 @@ interface BackgroundState {
   panelBlur: boolean;
   /** 面板毛玻璃强度（0-100）：乘到各表面的 blur 半径上 */
   panelBlurStrength: number;
+  /** 圆角风格（大圆角 / 小圆角）：由 html[data-radius] 驱动全站圆角变量 */
+  cornerRadius: CornerRadiusStyle;
   /** 桌面壁纸路径（仅 wallpaper 模式下同步；空串表示尚未读取到） */
   wallpaperPath: string;
   /** WE 当前壁纸标题（仅 wallpaper-engine 模式下同步，供设置页展示） */
@@ -158,6 +165,7 @@ const BackgroundContext = createContext<BackgroundState>({
   acrylic: false,
   panelBlur: true,
   panelBlurStrength: DEFAULT_PANEL_BLUR_STRENGTH,
+  cornerRadius: "large",
   wallpaperPath: "",
   wallpaperEngineTitle: "",
   wallpaperEngineType: "",
@@ -222,6 +230,11 @@ function parseBoolFlag(raw: string): boolean {
   return raw === "true";
 }
 
+/** 圆角风格解析：只有明确写 "small" 才算小圆角，其余（含未设置/损坏）默认大圆角 */
+function parseCornerRadius(raw: string): CornerRadiusStyle {
+  return raw === "small" ? "small" : "large";
+}
+
 /**
  * 网页壁纸入口（项目内相对路径）→ 应用内资源 URL。
  *
@@ -266,6 +279,7 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
   const [panelBlurStrength, setPanelBlurStrength] = useState(
     DEFAULT_PANEL_BLUR_STRENGTH,
   );
+  const [cornerRadius, setCornerRadius] = useState<CornerRadiusStyle>("large");
   const [webInteractive, setWebInteractive] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
@@ -303,6 +317,9 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
       GetValue(WEB_WALLPAPER_INTERACTIVE_KEY)
         .then((value) => setWebInteractive(parseBoolFlag(value)))
         .catch(() => setWebInteractive(false)),
+      GetValue(CORNER_RADIUS_KEY)
+        .then((value) => setCornerRadius(parseCornerRadius(value)))
+        .catch(() => setCornerRadius("large")),
     ]).then(() => undefined);
   }, []);
 
@@ -324,6 +341,14 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
       String(panelGlassAlpha(strength)),
     );
   }, [panelBlur, panelBlurStrength]);
+
+  // 圆角风格写到 <html data-radius="large|small">：globals.css 的属性选择器
+  // 统一重定义 --radius-*（Tailwind v4 的 rounded-* 工具类全部引用这组变量）
+  // 与 --heroui-radius-*（HeroUI 组件语义圆角），因此一次切换全站所有页面
+  // 的圆角即时生效，无需逐组件改类名。
+  useEffect(() => {
+    document.documentElement.dataset.radius = cornerRadius;
+  }, [cornerRadius]);
 
   useEffect(() => {
     void refresh().then(() => setHydrated(true));
@@ -480,6 +505,7 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
         acrylic,
         panelBlur,
         panelBlurStrength,
+        cornerRadius,
         wallpaperPath,
         wallpaperEngineTitle: weTitle,
         wallpaperEngineType: weType,

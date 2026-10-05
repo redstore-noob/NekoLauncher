@@ -749,7 +749,7 @@ const HomePage: React.FC = () => {
             {/* 主视觉：实例图标 + 版本名 + 账号，居中填充整块高度（避免上下留白）。
                 min-h-32 保证高度不足时先压缩此处，而不是把底部状态条挤掉。 */}
             <div className="relative flex min-h-32 flex-1 flex-col items-center justify-center gap-3.5 p-4">
-              <div className="flex size-24 min-h-14 min-w-14 flex-none items-center justify-center rounded-[28px] border nya-border bg-gradient-to-br from-white/10 to-white/[0.03] shadow-lg">
+              <div className="flex size-24 min-h-14 min-w-14 flex-none items-center justify-center rounded-[var(--nya-radius-home-tile)] border nya-border bg-gradient-to-br from-white/10 to-white/[0.03] shadow-lg">
                 <LaunchVersionIcon versionId={selectedVersion} />
               </div>
 

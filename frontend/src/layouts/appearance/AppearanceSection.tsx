@@ -8,7 +8,9 @@
  * 自定义图存 launcherBackgroundPath，壁纸不透明度存 launcherBackgroundOpacity（0-100），
  * 模糊半径存 launcherBackgroundBlur（0 = 不模糊），面板毛玻璃存
  * launcherPanelBlurEnabled + launcherPanelBlurStrength（0-100），网页壁纸交互存
- * launcherWebWallpaperInteractive。本地图片均经 /localfile 路由中转，
+ * launcherWebWallpaperInteractive，圆角风格存 launcherCornerRadiusStyle
+ * （large=默认大圆角 / small=小圆角，由 html[data-radius] 驱动全站圆角变量）。
+ * 本地图片均经 /localfile 路由中转，
  * 网页壁纸资源经 /wwwallpaper 路由中转。
  * 主题模式（浅色/深色/跟随系统）只影响外观，存前端 localStorage，见 src/theme.tsx；
  * 主题色支持手选与"跟随背景自动取色"，见 src/theme-color.tsx 与 src/lib/monet.ts。
@@ -47,11 +49,13 @@ import {
   BACKGROUND_OPACITY_KEY,
   BACKGROUND_SCRIM_KEY,
   BACKGROUND_WINDOW_OPACITY_KEY,
+  CORNER_RADIUS_KEY,
   PANEL_BLUR_KEY,
   PANEL_BLUR_STRENGTH_KEY,
   WEB_WALLPAPER_INTERACTIVE_KEY,
   useBackground,
   BackgroundMode,
+  CornerRadiusStyle,
 } from "../background";
 import { useThemeMode } from "../../theme";
 import { LOCALE_OPTIONS, useI18n, type Locale } from "../../i18n";
@@ -89,6 +93,7 @@ const AppearanceSection: React.FC = () => {
     acrylic,
     panelBlur,
     panelBlurStrength,
+    cornerRadius,
     webInteractive,
     wallpaperEngineTitle,
     wallpaperEngineType,
@@ -198,6 +203,14 @@ const AppearanceSection: React.FC = () => {
     refresh();
   };
 
+  // 圆角风格：写入 launcherCornerRadiusStyle 后由 BackgroundProvider 落到
+  // <html data-radius>，globals.css 重定义 --radius-* / --heroui-radius-*，
+  // 全站页面即时切换
+  const saveCornerRadius = async (style: CornerRadiusStyle) => {
+    await SetValue(CORNER_RADIUS_KEY, style);
+    refresh();
+  };
+
   const saveMode = async (next: BackgroundMode) => {
     if (next === mode) return;
     await SetValue(BACKGROUND_MODE_KEY, next);
@@ -302,6 +315,8 @@ const AppearanceSection: React.FC = () => {
         t("模糊"),
         t("亚克力"),
         t("面板"),
+        t("圆角"),
+        t("圆角风格"),
         t("必应"),
         t("图源"),
         t("桌面"),
@@ -550,6 +565,27 @@ const AppearanceSection: React.FC = () => {
           <span className="text-xs text-gray-400 w-12 text-right">
             {panelBlurStrengthValue}%
           </span>
+        </div>
+      </SettingRow>
+
+      <SettingRow label={t("圆角风格")}>
+        <div className="flex flex-wrap gap-1 justify-end">
+          <Button
+            color={cornerRadius === "large" ? "primary" : "default"}
+            size="sm"
+            variant={cornerRadius === "large" ? "solid" : "flat"}
+            onPress={() => void saveCornerRadius("large")}
+          >
+            {t("大圆角")}
+          </Button>
+          <Button
+            color={cornerRadius === "small" ? "primary" : "default"}
+            size="sm"
+            variant={cornerRadius === "small" ? "solid" : "flat"}
+            onPress={() => void saveCornerRadius("small")}
+          >
+            {t("小圆角")}
+          </Button>
         </div>
       </SettingRow>
 

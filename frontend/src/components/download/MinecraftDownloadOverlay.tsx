@@ -332,7 +332,7 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
             version ? (
               <img
                 alt=""
-                className="size-10 rounded-[10px] object-contain"
+                className="size-10 rounded-[var(--nya-radius-icon)] object-contain"
                 src={`/instance-icons/${versionIconKey}.png`}
                 onError={(ev) => {
                   // 头像加载失败时退回默认立方体图标

@@ -6,6 +6,10 @@ const dict: Record<string, string> = {
   "越强越透；背景压暗度越低越明显":
     "Higher is more transparent; lower background dimming makes it clearer",
   毛玻璃强度: "Frosted glass strength",
+  // ---- 圆角风格 ----
+  圆角风格: "Corner style",
+  大圆角: "Large corners",
+  小圆角: "Small corners",
   取色方式: "Color source",
   手动选色: "Pick manually",
   跟随背景: "Follow background",
