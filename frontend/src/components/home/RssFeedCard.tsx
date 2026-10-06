@@ -41,6 +41,8 @@ const RssFeedCard: React.FC = () => {
   const [loading, setLoading] = useState(false);
   // 换源后旧请求迟到的结果不要覆盖新源
   const loadSeqRef = useRef(0);
+  // 编辑输入框：进入编辑态时手动聚焦（避免 autoFocus 的 a11y 问题）
+  const editInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async (url: string) => {
     const seq = ++loadSeqRef.current;
@@ -76,6 +78,10 @@ const RssFeedCard: React.FC = () => {
 
     return () => window.clearInterval(timer);
   }, [feedUrl, load]);
+
+  useEffect(() => {
+    if (editing) editInputRef.current?.focus();
+  }, [editing]);
 
   const startEditing = () => {
     setDraft(feedUrl);
@@ -137,7 +143,7 @@ const RssFeedCard: React.FC = () => {
       value={
         editing ? (
           <Input
-            autoFocus
+            ref={editInputRef}
             aria-label={t("订阅地址")}
             className="w-full"
             placeholder="https://example.com/feed.xml"
