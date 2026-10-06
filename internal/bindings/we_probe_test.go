@@ -9,7 +9,9 @@ import (
 func TestProbeWEScene(t *testing.T) {
 	dir, file, err := wallpaperEngineSelectedProject()
 	if err != nil || dir == "" {
-		t.Fatal("no project", err)
+		// 该测试探测的是真实安装的 Wallpaper Engine，属环境依赖，
+		// 没装 WE（如 Linux CI 容器）时跳过而非失败。
+		t.Skip("未找到 Wallpaper Engine 安装，跳过：", err)
 	}
 	scene := weBuildScenePayload(dir, dir, file)
 	if scene == nil {
