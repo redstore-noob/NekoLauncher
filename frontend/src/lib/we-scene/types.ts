@@ -76,6 +76,12 @@ export interface WEObjectEffect {
 export interface WEModelFile {
   material?: string;
   autosize?: boolean;
+  /** 裁剪偏移 "x y"(设计坐标,像素):作者在编辑器里裁出局部做图层时,
+   * 原图画心与裁剪区中心的差。渲染时图层中心 = 对象 origin − cropoffset,
+   * 不应用它的话每个裁剪图层都以 origin 为中心画,整张壁纸错位撕裂 */
+  cropoffset?: string;
+  /** 骨胳/puppet 网格变形定义(.mdl);本渲染器不做网格变形,仅记录 */
+  puppet?: string;
 }
 
 /** materials/xxx.json(材质 → 着色器与贴图) */

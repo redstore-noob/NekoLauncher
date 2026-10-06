@@ -23,7 +23,7 @@ import {
   Person20Regular,
   Warning20Regular,
 } from "@fluentui/react-icons";
-import { Button, Tooltip } from "@heroui/react";
+import { Button, Chip, Tooltip } from "@heroui/react";
 
 import {
   GetSkinTexture,
@@ -278,11 +278,40 @@ const SkinPreviewPanel: React.FC<{
         </div>
       ) : null}
       <div className="flex w-full items-center justify-between gap-2 pt-1">
-        <span className="truncate text-[11px] text-gray-400">
-          {texture
-            ? `${texture.model === "slim" ? "纤细模型" : "经典模型"}${texture.capeUri ? " · 已装备披风" : ""}${texture.cached ? " · 缓存" : ""}`
-            : " "}
-        </span>
+        <div className="flex min-w-0 items-center gap-1">
+          {texture ? (
+            <>
+              <Chip
+                className="h-5 px-2 text-[11px]"
+                radius="full"
+                size="sm"
+                variant="flat"
+              >
+                {texture.model === "slim" ? t("纤细模型") : t("经典模型")}
+              </Chip>
+              {texture.capeUri ? (
+                <Chip
+                  className="h-5 px-2 text-[11px]"
+                  radius="full"
+                  size="sm"
+                  variant="flat"
+                >
+                  {t("已装备披风")}
+                </Chip>
+              ) : null}
+              {texture.cached ? (
+                <Chip
+                  className="h-5 px-2 text-[11px]"
+                  radius="full"
+                  size="sm"
+                  variant="flat"
+                >
+                  {t("缓存")}
+                </Chip>
+              ) : null}
+            </>
+          ) : null}
+        </div>
         <div className="flex flex-none items-center gap-1.5">
           <Tooltip
             content={t("刷新皮肤")}

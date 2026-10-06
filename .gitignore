@@ -63,3 +63,6 @@ NekoSolo/NekoSolo.Installer/obj/
 .aider*
 .copilot*
 .zcode/
+
+# WE 场景渲染 harness（scene_harness_main 的构建产物）
+harness/

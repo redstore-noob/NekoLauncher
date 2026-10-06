@@ -86,7 +86,7 @@ go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.0
 wails build -platform linux/amd64
 chmod +x build/bin/NekoLauncher
 
-# nfpm 只吃一个 config，依赖片要自己拼进主配置（见 docs/RELEASE_PACKAGING.md）
+# nfpm 只吃一个 config，依赖片要自己拼进主配置（见 docs/guide/RELEASE_PACKAGING.md）
 cat packaging/nfpm.yaml packaging/depends/deb-glibc-2.39.yaml > /tmp/nfpm-merged.yaml
 NPFPM_VERSION=0.3.2 nfpm package --config /tmp/nfpm-merged.yaml --packager deb --target dist/
 ```

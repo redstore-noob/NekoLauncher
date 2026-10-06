@@ -319,10 +319,11 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
       isOpen={version !== null}
       onClose={onClose}
       {...modalBehaviorProps}
-      // 弹层固定为窗口的三分之二（留出呼吸空间又不至于看不清列表）
+      // 弹层尽量占满窗口（66.6vw 在 macOS 小窗口下双栏挤成一团没法点）；
+      // 上限 1280px 防止大屏上过度拉伸
       classNames={{
         ...modalBehaviorProps.classNames,
-        base: `${modalBehaviorProps.classNames?.base ?? ""} h-[66.6vh]! w-[66.6vw]! max-w-none`,
+        base: `${modalBehaviorProps.classNames?.base ?? ""} h-[85vh]! w-[min(1280px,92vw)]! max-w-none`,
       }}
       scrollBehavior="inside"
     >
@@ -356,7 +357,7 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
           }
           onClose={onClose}
         >
-          <div className="grid grid-cols-[190px_1fr] gap-4">
+          <div className="grid grid-cols-[clamp(150px,20%,200px)_1fr] gap-4">
             {/* 左栏：加载器选择 */}
             <div className="nya-panel-inner flex flex-col gap-1 rounded-medium p-2">
               {LOADER_TYPES.filter((lt) => lt.value !== 0).map((lt) => (

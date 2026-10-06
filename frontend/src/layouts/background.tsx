@@ -32,6 +32,20 @@ import {
   GetWallpaperEngineWallpaper,
 } from "../../wailsjs/go/bindings/SystemAPI";
 import { isLinuxPlatform } from "../lib/platform";
+import {
+  DEFAULT_UI_THEME_ID,
+  applyUiTheme,
+  getUiTheme,
+} from "../plugin/ui-themes";
+
+/** 配置里的主题 id 洗成合法值：空/未注册的 id 一律回落默认主题 */
+function normalizeUiThemeId(raw: string): string {
+  const id = (raw ?? "").trim();
+
+  if (!id || id === DEFAULT_UI_THEME_ID) return DEFAULT_UI_THEME_ID;
+
+  return getUiTheme(id) ? id : DEFAULT_UI_THEME_ID;
+}
 
 // launcher.yaml 中的键（经 ConfigAPI.SetValue/GetValue 读写）
 export const BACKGROUND_PATH_KEY = "launcherBackgroundPath";
@@ -63,6 +77,17 @@ export const LINUX_GPU_KEY = "launcherLinuxGpuAcceleration";
  * 改动需重启启动器；键名与 launcherconfig.go 的 WindowsGpuAccelerationEnabled 对应。
  */
 export const WINDOWS_GPU_KEY = "launcherWindowsGpuAcceleration";
+/**
+ * 直角模式（TNO 式全方角界面）：为 "true" 时把 --nya-radius-* 全部清零，
+ * 见 globals.css 的 html[data-square-corners] 块。纯前端外观开关。
+ */
+export const SQUARE_CORNERS_KEY = "launcherSquareCorners";
+/**
+ * 界面主题选择（见 plugin/ui-themes.ts 注册表）：存选中主题 id，"default" =
+ * 本体默认观感（全部主题关闭）。背景层经 applyUiTheme 统一开/关各主题的
+ * 属性门控，主题本体（如 vendored 的 tno-ui）只注册不直接读配置。
+ */
+export const UI_THEME_KEY = "launcherUiTheme";
 
 /** 毛玻璃强度默认值：blur 系数 = 强度 / 它，因此 70 时系数为 1（观感不变） */
 export const DEFAULT_PANEL_BLUR_STRENGTH = 70;
@@ -151,6 +176,10 @@ interface BackgroundState {
   panelBlur: boolean;
   /** 面板毛玻璃强度（0-100）：乘到各表面的 blur 半径上 */
   panelBlurStrength: number;
+  /** 直角模式：全 UI 方角（清零 --nya-radius-*），TNO 式公文风观感 */
+  squareCorners: boolean;
+  /** 界面主题 id（plugin/ui-themes 注册表；"default" = 本体默认观感） */
+  uiTheme: string;
   /** 桌面壁纸路径（仅 wallpaper 模式下同步；空串表示尚未读取到） */
   wallpaperPath: string;
   /** WE 当前壁纸标题（仅 wallpaper-engine 模式下同步，供设置页展示） */
@@ -195,6 +224,8 @@ const BackgroundContext = createContext<BackgroundState>({
   acrylic: false,
   panelBlur: !isLinuxPlatform(),
   panelBlurStrength: DEFAULT_PANEL_BLUR_STRENGTH,
+  squareCorners: false,
+  uiTheme: DEFAULT_UI_THEME_ID,
   wallpaperPath: "",
   wallpaperEngineTitle: "",
   wallpaperEngineType: "",
@@ -339,6 +370,8 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
   const [panelBlurStrength, setPanelBlurStrength] = useState(
     DEFAULT_PANEL_BLUR_STRENGTH,
   );
+  const [squareCorners, setSquareCorners] = useState(false);
+  const [uiTheme, setUiTheme] = useState(DEFAULT_UI_THEME_ID);
   const [webInteractive, setWebInteractive] = useState(false);
   const [sceneResolution, setSceneResolution] = useState(1);
   const [sceneFps, setSceneFps] = useState(0);
@@ -375,6 +408,12 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
       GetValue(PANEL_BLUR_STRENGTH_KEY)
         .then((value) => setPanelBlurStrength(parsePanelBlurStrength(value)))
         .catch(() => setPanelBlurStrength(DEFAULT_PANEL_BLUR_STRENGTH)),
+      GetValue(SQUARE_CORNERS_KEY)
+        .then((value) => setSquareCorners(parseBoolFlag(value)))
+        .catch(() => setSquareCorners(false)),
+      GetValue(UI_THEME_KEY)
+        .then((value) => setUiTheme(normalizeUiThemeId(value)))
+        .catch(() => setUiTheme(DEFAULT_UI_THEME_ID)),
       GetValue(WEB_WALLPAPER_INTERACTIVE_KEY)
         .then((value) => setWebInteractive(parseBoolFlag(value)))
         .catch(() => setWebInteractive(false)),
@@ -408,6 +447,20 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
       String(panelGlassAlpha(strength)),
     );
   }, [panelBlur, panelBlurStrength]);
+
+  // 直角模式写到 <html data-square-corners>：globals.css 的属性选择器据此把
+  // --nya-radius-* 全部清零（Tailwind/HeroUI 的圆角档都转发到这组变量上）
+  useEffect(() => {
+    document.documentElement.dataset.squareCorners = squareCorners
+      ? "true"
+      : "false";
+  }, [squareCorners]);
+
+  // 界面主题：按注册表统一应用（先全关再点亮选中的）。注册表在 builtins
+  // 静态导入 vendored 插件时就已填充，这里按 id 切属性门控即可。
+  useEffect(() => {
+    applyUiTheme(uiTheme);
+  }, [uiTheme]);
 
   useEffect(() => {
     void refresh().then(() => setHydrated(true));
@@ -586,6 +639,8 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
         acrylic,
         panelBlur,
         panelBlurStrength,
+        squareCorners,
+        uiTheme,
         wallpaperPath,
         wallpaperEngineTitle: weTitle,
         wallpaperEngineType: weType,

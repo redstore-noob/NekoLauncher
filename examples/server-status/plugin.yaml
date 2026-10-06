@@ -6,7 +6,7 @@ description: 主页小组件：查询 Minecraft 服务器在线状态，支持�
 dev: true
 author: NekoLauncher
 
-# 权限声明：调用未声明的权限会直接报错（见 docs/Extensions_Guide.md §5）
+# 权限声明：调用未声明的权限会直接报错（见 docs/guide/PERMISSIONS.md）
 # 声明之外还有用户授权：插件页每个权限一个开关，关掉的相关 API 返回 null；
 # 联网（network）、运行日志、账号、音乐库默认关闭，本示例要联网所以声明它。
 capabilities:

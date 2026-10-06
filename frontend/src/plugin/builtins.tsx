@@ -69,6 +69,9 @@ import HomePage from "../layouts/home";
 import { t } from "../i18n";
 import { lazyPage } from "../lib/lazy";
 
+// vendored 插件（路一收编）：CSS 随主包静态分发，import 即接线
+import "../plugins-vendored/tno-ui";
+
 import { registerPage, registerWidget } from "./registry";
 
 /*

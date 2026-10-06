@@ -1385,11 +1385,20 @@ const AiPage: React.FC = () => {
   };
 
   return (
-    <section className="flex h-full w-full min-h-0 overflow-hidden">
-      {/* 左侧边栏：与其它顶层面板同源的毛玻璃（背景透出 + blur，随外观设置的毛玻璃强度变化） */}
+    <section className="relative flex h-full w-full min-h-0 overflow-hidden">
+      {/* 左侧会话栏：悬浮式毛玻璃面板——聊天区占满整行，背景图从栏后一路透出；
+          浮在消息之上用 nya-panel-strong（更实的底色，防止下层文字透上来发花）。
+          折叠 = 宽度 + 透明度一起收（绝对定位后宽度为 0 仍会残留边框线），
+          折叠态顺带 pointer-events:none 防止透明面板挡住下面的点击。
+          z-10：低于全局侧栏的 z-20（Sidebar.tsx），自动隐藏侧栏滑出时盖在
+          本面板之上，而不是反过来挡住导航。 */}
       <motion.div
-        animate={{ width: sidebarCollapsed ? 0 : 280 }}
-        className="relative flex-shrink-0 overflow-hidden border-r nya-border nya-panel min-w-0"
+        animate={{
+          width: sidebarCollapsed ? 0 : 280,
+          opacity: sidebarCollapsed ? 0 : 1,
+        }}
+        className="absolute inset-y-3 left-3 z-10 overflow-hidden rounded-large border nya-border nya-panel-strong shadow-lg"
+        style={{ pointerEvents: sidebarCollapsed ? "none" : "auto" }}
         transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
       >
         <div className="flex h-full w-[280px] flex-col">
@@ -1599,9 +1608,14 @@ const AiPage: React.FC = () => {
         </div>
       </motion.div>
 
-      {/* 右侧聊天区 */}
+      {/* 右侧聊天区：占满整行，标题栏让出悬浮面板的宽度（280 面板 + 12 左距 + 12 缝），
+          与面板折叠动画同曲线，折叠按钮不跳位 */}
       <div className="flex min-h-0 flex-1 flex-col">
-        <header className="flex flex-shrink-0 items-center gap-2.5 border-b nya-border px-3 py-2.5">
+        <motion.header
+          animate={{ paddingLeft: sidebarCollapsed ? 12 : 304 }}
+          className="flex flex-shrink-0 items-center gap-2.5 border-b nya-border py-2.5 pr-3"
+          transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+        >
           {/* 侧边栏折叠按钮：整合到标题栏，位置固定不随侧边栏跳动 */}
           <Tooltip
             content={sidebarCollapsed ? t("展开会话列表") : t("收起会话列表")}
@@ -1701,7 +1715,7 @@ const AiPage: React.FC = () => {
               }
             </span>
           )}
-        </header>
+        </motion.header>
 
         {/* 消息区：外层定位容器让"回到底部"按钮悬浮在列表右下角 */}
         <div className="relative min-h-0 flex-1">

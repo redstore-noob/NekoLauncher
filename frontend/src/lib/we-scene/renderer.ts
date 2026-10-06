@@ -296,8 +296,14 @@ export class SceneRenderer {
 
       groups.set(object.id, group);
       const [x, y] = parseVec2(object.origin, [0, 0]);
+      const designHeight = payload.DesignHeight || 1080;
 
-      group.position.set(x, y, 0);
+      // WE 的 origin 是**自底向上**(y-up)的设计坐标:origin.y=0 在画面底边。
+      // 本渲染器相机是 y 向下的屏幕坐标系,必须翻转 Y,否则每个图层都垂直
+      // 镜像错位(桌子飞到天花板、光环掉到地板,角色被撕成散落碎片)。
+      // 实证:29 层样本里桌子 y=244(应贴底)、光环 y=1829(应贴顶)、
+      // 睫毛 y=1328(视线高度),翻转后全部落回解剖学正确位置
+      group.position.set(x, designHeight - y, 0);
       const scale = parseVec2(object.scale ?? "1 1", [1, 1]);
 
       if (scale[0] !== 1 || scale[1] !== 1)

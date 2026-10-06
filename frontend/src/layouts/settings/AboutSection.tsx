@@ -18,6 +18,7 @@ import type { update } from "../../../wailsjs/go/models";
 
 import React, { useEffect, useState } from "react";
 import { Button, Chip, Switch } from "@heroui/react";
+import { Heart20Regular } from "@fluentui/react-icons";
 
 import {
   GetFormattedVersion,
@@ -362,6 +363,17 @@ const AboutSection: React.FC = () => {
           <Contributors />
         </SettingRow>
 
+        <SettingRow label={t("爱发电")}>
+          <Button
+            size="sm"
+            startContent={<Heart20Regular />}
+            variant="flat"
+            onPress={() => void OpenPage(SPONSOR_URL).catch(() => undefined)}
+          >
+            {t("赞助支持喵～")}
+          </Button>
+        </SettingRow>
+
         <SettingRow label={t("模组中文名")}>
           <div className="max-w-md text-right text-[11px] text-gray-400">
             <p>
@@ -380,16 +392,6 @@ const AboutSection: React.FC = () => {
           </div>
         </SettingRow>
       </Section>
-
-      <div className="flex justify-center pt-1">
-        <button
-          className="cursor-pointer text-[11px] text-gray-400 underline decoration-dotted transition-colors hover:text-primary"
-          type="button"
-          onClick={() => void OpenPage(SPONSOR_URL).catch(() => undefined)}
-        >
-          {t("爱发电赞助喵～")}
-        </button>
-      </div>
 
       <LicenseDialog
         isOpen={licensesOpen}

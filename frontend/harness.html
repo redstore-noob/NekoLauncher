@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>WE Scene Harness</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #202030;
+        color: #ddd;
+        font: 13px system-ui;
+      }
+      #canvas {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+      #log {
+        position: fixed;
+        left: 8px;
+        top: 8px;
+        max-height: 45%;
+        overflow: auto;
+        white-space: pre-wrap;
+        background: rgba(0, 0, 0, 0.6);
+        padding: 8px 10px;
+        border-radius: 6px;
+        z-index: 10;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="log">loading payload…</div>
+    <script type="module" src="/harness-main.ts"></script>
+  </body>
+</html>

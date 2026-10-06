@@ -1929,7 +1929,7 @@ const ServersPage: React.FC = () => {
                     <button
                       className={`flex w-full cursor-pointer flex-col gap-1 rounded-lg px-2.5 py-2 text-left transition-colors ${
                         server.ID === selectedId
-                          ? "bg-primary/10 font-semibold text-blue-600 dark:text-blue-300"
+                          ? "bg-primary-100/70 dark:bg-primary-900/30 font-semibold text-primary-600 dark:text-primary-300"
                           : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
                       }`}
                       onClick={() => setSelectedId(server.ID)}
@@ -2085,7 +2085,7 @@ const ServersPage: React.FC = () => {
                     key={key}
                     className={`cursor-pointer border-b-2 px-0.5 pt-1 pb-2 text-[13px] transition-colors ${
                       tab === key
-                        ? "border-blue-500 font-semibold text-blue-600 dark:text-blue-300"
+                        ? "border-primary font-semibold text-primary"
                         : "border-transparent text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
                     }`}
                     onClick={() => setTab(key)}

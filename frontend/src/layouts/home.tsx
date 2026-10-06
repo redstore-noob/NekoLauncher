@@ -45,15 +45,10 @@ import {
 } from "@fluentui/react-icons";
 
 import {
-  GetInstalledVersionIds,
-  EnsureDefaultMinecraftDirectory,
+  RefreshInstances,
   SelectInstance,
 } from "../../wailsjs/go/bindings/InstanceAPI";
-import {
-  GetGameDirectory,
-  GetValue,
-  SetValue,
-} from "../../wailsjs/go/bindings/ConfigAPI";
+import { GetValue, SetValue } from "../../wailsjs/go/bindings/ConfigAPI";
 import { OpenPath } from "../../wailsjs/go/bindings/SystemAPI";
 import {
   GetAccounts,
@@ -216,24 +211,22 @@ const HomePage: React.FC = () => {
     setIsLoading(true);
     setLoadError("");
     try {
-      let directory = await GetGameDirectory();
+      // 走后端实例快照而不是自己扫 versions/ 目录：快照的选中版本带完整
+      // 恢复优先级（上次会话选中 > launcher.yaml 持久化的选中 > 目录推荐 >
+      // 第一个版本）。旧实现永远取 versionList[0]，启动卡每次打开都回到
+      // 第一个实例，把后端恢复的持久化选中顶掉。
+      const snapshot = await RefreshInstances("");
+      const versionList = snapshot.VersionIds ?? [];
 
-      if (!directory) {
-        directory = await EnsureDefaultMinecraftDirectory();
+      setMinecraftDirectory(snapshot.MinecraftDirectory ?? "");
+      if (snapshot.ErrorMessage) {
+        setLoadError(snapshot.ErrorMessage);
       }
-      if (!directory) {
-        setVersions([]);
-        setLoadError(t("无法确定Minecraft目录"));
-
-        return;
-      }
-      setMinecraftDirectory(directory);
-      const list = await GetInstalledVersionIds(directory);
-      const versionList = list ?? [];
-
       setVersions(versionList);
       setSelectedVersion((prev) =>
-        prev && versionList.includes(prev) ? prev : (versionList[0] ?? ""),
+        prev && versionList.includes(prev)
+          ? prev
+          : snapshot.SelectedVersionId || (versionList[0] ?? ""),
       );
     } catch (err) {
       console.error(err);
@@ -1246,7 +1239,7 @@ const HomePage: React.FC = () => {
                 min-h-32 保证高度不足时先压缩此处，而不是把底部状态条挤掉。
                 自定义背景图的更换 / 清除入口在外观设置。 */}
             <div className="relative z-10 flex min-h-32 flex-1 flex-col items-center justify-center gap-3.5 p-4">
-              <div className="flex size-24 min-h-14 min-w-14 flex-none items-center justify-center rounded-[28px] border nya-border bg-gradient-to-br from-white/10 to-white/[0.03] shadow-lg">
+              <div className="flex size-24 min-h-14 min-w-14 flex-none items-center justify-center rounded-[var(--nya-radius-3xl,28px)] border nya-border bg-gradient-to-br from-white/10 to-white/[0.03] shadow-lg">
                 <LaunchVersionIcon versionId={selectedVersion} />
               </div>
 

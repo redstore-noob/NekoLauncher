@@ -1,7 +1,7 @@
 /*
  * 插件间消息总线：宿主代为投递的插件 ↔ 插件通信通道。
  *
- * 信任模型与权限系统一致（见 docs/Extensions_Guide.md §1/§5）：这不是沙箱——
+ * 信任模型与权限系统一致（见 docs/guide/TRUST_MODEL.md 与 docs/guide/PERMISSIONS.md）：这不是沙箱——
  * 插件在同一 WebView 里本来就能摸到彼此，总线给的是**可预期的契约**：
  *  · 发送方身份由宿主注入（from 里的 id/name/version 来自清单，插件伪造不了）；
  *  · 负载必须 JSON 可序列化且 ≤ MAX_PAYLOAD_BYTES——每个接收者拿到的是深拷贝，

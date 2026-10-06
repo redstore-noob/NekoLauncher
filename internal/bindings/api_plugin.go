@@ -398,7 +398,7 @@ func parsePluginManifest(raw []byte) (*pluginManifest, error) {
 }
 
 // writePluginManifestYAML 把清单序列化为 YAML 文本（带末尾换行）。
-// 版本字段等必须带引号的约束由调用方校验错误兜底（见 docs/Extensions_Guide.md §4）。
+// 版本字段等必须带引号的约束由调用方校验错误兜底（见 docs/guide/QUICKSTART.md）。
 func writePluginManifestYAML(manifest pluginManifest) ([]byte, error) {
 	raw, err := yaml.Marshal(manifest)
 	if err != nil {

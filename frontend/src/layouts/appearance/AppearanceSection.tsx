@@ -13,7 +13,7 @@
  * 主题模式（浅色/深色/跟随系统）只影响外观，存前端 localStorage，见 src/theme.tsx；
  * 主题色支持手选与"跟随背景自动取色"，见 src/theme-color.tsx 与 src/lib/monet.ts。
  */
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useSyncExternalStore } from "react";
 import {
   Button,
   Checkbox,
@@ -60,9 +60,16 @@ import {
   WE_SCENE_FPS_KEY,
   LINUX_GPU_KEY,
   WINDOWS_GPU_KEY,
+  SQUARE_CORNERS_KEY,
+  UI_THEME_KEY,
   useBackground,
   BackgroundMode,
 } from "../background";
+import {
+  DEFAULT_UI_THEME_ID,
+  getUiThemes,
+  subscribeUiThemes,
+} from "../../plugin/ui-themes";
 import { useThemeMode } from "../../theme";
 import { LOCALE_OPTIONS, useI18n, type Locale } from "../../i18n";
 import { useThemeColor, THEME_COLOR_PRESETS } from "../../theme-color";
@@ -103,6 +110,8 @@ const AppearanceSection: React.FC = () => {
     acrylic,
     panelBlur,
     panelBlurStrength,
+    squareCorners,
+    uiTheme,
     webInteractive,
     sceneResolution,
     sceneFps,
@@ -129,6 +138,13 @@ const AppearanceSection: React.FC = () => {
     refreshExtraction,
   } = useThemeColor();
   const customColor = colorKey.startsWith("#") ? colorKey : "#006FEE";
+  // 主题列表订阅注册表：插件注册/注销主题时列表实时增删（getUiThemes 返回
+  // 稳定快照引用，useSyncExternalStore 不会空转）
+  const uiThemeList = useSyncExternalStore(
+    subscribeUiThemes,
+    getUiThemes,
+    getUiThemes,
+  );
   const [blurValue, setBlurValue] = useState<number>(blur);
   const [opacityValue, setOpacityValue] = useState<number>(opacity);
   const [scrimValue, setScrimValue] = useState<number>(scrim);
@@ -246,6 +262,22 @@ const AppearanceSection: React.FC = () => {
   // 全部面板即时切换
   const togglePanelBlur = async (enabled: boolean) => {
     await SetValue(PANEL_BLUR_KEY, enabled ? "true" : "false");
+    refresh();
+  };
+
+  // 直角模式：写配置后由 BackgroundProvider 落到 <html data-square-corners>，
+  // 全 UI 圆角即时清零/恢复
+  const toggleSquareCorners = async (enabled: boolean) => {
+    await SetValue(SQUARE_CORNERS_KEY, enabled ? "true" : "false");
+    refresh();
+  };
+
+  // 界面主题：写配置后由 BackgroundProvider 经主题注册表统一应用。
+  // 皮肤主题多为暗色底（如 TNO 把亮色表面也压暗），选非默认主题时顺手把
+  // 主题模式拉到深色，避免"深底深字"的亮色残留；回默认不回切，尊重用户选择
+  const saveUiTheme = async (id: string) => {
+    if (id !== DEFAULT_UI_THEME_ID) setThemeMode("dark");
+    await SetValue(UI_THEME_KEY, id);
     refresh();
   };
 
@@ -705,6 +737,37 @@ const AppearanceSection: React.FC = () => {
           size="sm"
           onValueChange={(v) => void togglePanelBlur(v)}
         />
+      </SettingRow>
+
+      <SettingRow
+        hint={t("全部界面改为直角方框，无圆角（公文风格）；即时生效")}
+        label={t("直角模式")}
+      >
+        <Switch
+          aria-label={t("直角模式")}
+          color="primary"
+          isSelected={squareCorners}
+          size="sm"
+          onValueChange={(v) => void toggleSquareCorners(v)}
+        />
+      </SettingRow>
+
+      <SettingRow
+        hint={t("插件制作的主题皮肤；选非默认主题时会切到深色模式，即时生效")}
+        label={t("界面主题")}
+      >
+        <Tabs
+          aria-label={t("界面主题")}
+          destroyInactiveTabPanel={false}
+          selectedKey={uiTheme}
+          size="sm"
+          onSelectionChange={(key) => void saveUiTheme(String(key))}
+        >
+          <Tab key={DEFAULT_UI_THEME_ID} title={t("默认")} />
+          {uiThemeList.map((theme) => (
+            <Tab key={theme.id} title={t(theme.name)} />
+          ))}
+        </Tabs>
       </SettingRow>
 
       <SettingRow

@@ -2316,7 +2316,7 @@ const InstancesPage: React.FC = () => {
 
     return (
       <div
-        className={`${size} flex-shrink-0 flex items-center justify-center rounded-md bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-300 text-sm`}
+        className={`${size} flex-shrink-0 flex items-center justify-center rounded-md bg-primary-100 dark:bg-primary-900/50 text-primary-600 dark:text-primary-300 text-sm`}
       >
         {instanceIconGlyph(visual, versionId)}
       </div>
@@ -2476,7 +2476,7 @@ const InstancesPage: React.FC = () => {
                       <button
                         className={`relative flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left cursor-pointer ${
                           v === selected
-                            ? "bg-blue-100/70 dark:bg-blue-900/30 font-semibold text-blue-600 dark:text-blue-300"
+                            ? "bg-primary-100/70 dark:bg-primary-900/30 font-semibold text-primary-600 dark:text-primary-300"
                             : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
                         }`}
                         onClick={() => {
@@ -2488,7 +2488,7 @@ const InstancesPage: React.FC = () => {
                       >
                         {v === selected ? (
                           // 无卡列表的选中态：一条左侧强调线，不靠阴影抬升
-                          <span className="absolute inset-y-0 left-0 w-[3px] rounded-l-lg bg-blue-500" />
+                          <span className="absolute inset-y-0 left-0 w-[3px] rounded-l-lg bg-primary" />
                         ) : null}
                         <span className="flex flex-shrink-0">
                           {renderInstanceIcon(v, "w-7 h-7")}
@@ -2608,7 +2608,7 @@ const InstancesPage: React.FC = () => {
                         key={key}
                         className={`cursor-pointer border-b-2 px-0.5 pt-1 pb-2 text-[13px] transition-colors ${
                           tab === key
-                            ? "border-blue-500 font-semibold text-blue-600 dark:text-blue-300"
+                            ? "border-primary font-semibold text-primary"
                             : "border-transparent text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
                         }`}
                         onClick={() => setTab(key)}
@@ -3854,7 +3854,7 @@ const InstancesPage: React.FC = () => {
               <span>
                 {t("还没有已安装的实例，")}
                 <button
-                  className="ml-1 text-blue-500 hover:underline cursor-pointer"
+                  className="ml-1 text-primary hover:underline cursor-pointer"
                   onClick={() => navigateToPage("download")}
                 >
                   {t("去下载页安装一个")}

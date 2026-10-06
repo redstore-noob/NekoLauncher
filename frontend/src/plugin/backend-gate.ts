@@ -1,7 +1,7 @@
 /*
  * 后端闸门：让插件碰不到 window.go 上的宿主绑定。
  *
- * 背景与威胁模型（见 docs/Extensions_Guide.md §1 的历史版本）：Wails 把全部
+ * 背景与威胁模型（见 docs/guide/TRUST_MODEL.md 的历史版本）：Wails 把全部
  * Go 绑定挂在 window.go 上，插件又与宿主跑在同一个 JS realm，过去插件技术上
  * 可以直呼任意绑定（读写任意文件、删实例、卸载别的插件）。本模块在启动最早
  * 时刻（main.tsx，先于任何插件加载）做三件事：

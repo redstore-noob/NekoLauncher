@@ -187,6 +187,20 @@ export interface LaunchCardDefinition {
 }
 
 /**
+ * 界面主题定义（registerUiTheme）。样式本体由插件经清单 styles /
+ * styles.inject 分发，apply 只操作 <html> 的 data-* 属性门控；注册后出现在
+ * 外观设置的「界面主题」列表，卸载/停用时宿主自动摘除并回落默认主题。
+ */
+export interface UiThemeDefinition {
+  /** 主题 id（可省略，缺省用插件 id；宿主自动加 "<插件id>:" 前缀） */
+  id?: string;
+  /** 展示名（zh-CN 原文，宿主展示时经 t() 走 i18n） */
+  name: string;
+  /** 开/关主题。关时必须清干净自己的属性门控（宿主切换主题前会先全关） */
+  apply(on: boolean): void;
+}
+
+/**
  * 一次启动的终态（onGameExit 回调载荷）。
  *
  * 游戏进程退出（exited）与"还没跑起来就失败"（failed）都会触发；两者语义不同，
@@ -308,7 +322,7 @@ export interface PluginManifest {
   /**
    * 权限声明。这不是沙箱——插件在 WebView 内全权限运行；它是安装时可见的
    * 用途清单，并决定对应 API 能否调用：未声明就调用会直接抛错。
-   * 权限键见 docs/Extensions_Guide.md 的权限表：storage / launch / instances /
+   * 权限键见 docs/guide/PERMISSIONS.md 的权限表：storage / launch / instances /
    * instances-write / downloads / downloads-write / accounts / launcher-config /
    * launcher-config-write / notifications / clipboard / open-url / open-path /
    * server-status / system-status / music / logs / styles / ipc。
@@ -316,7 +330,7 @@ export interface PluginManifest {
    * 另外：声明了权限也只是"能调"，**会拉起进程 / 写磁盘 / 改写启动参数的调用还会
    * 弹 NekoPrompt 让用户当场确认**（拒绝即以错误结束），撤销得掉的动作则只在左下角
    * 公示一条 NekoAlert；节流与决定记录都由宿主掌握，插件关不掉——
-   * 见 docs/Extensions_Guide.md §5「高危动作：确认与公示」。
+   * 见 docs/guide/PERMISSIONS.md「高危动作：确认与公示」。
    */
   capabilities?: Record<string, boolean>;
   /**
@@ -337,7 +351,7 @@ export interface PluginManifest {
  * 插件不应自带 react/@heroui 等库——运行时 ESM 无法解析裸模块名，而且重复的
  * React 实例会让 hooks 直接失效。宿主把 React 与常用组件、图标通过这里注入。
  *
- * **权限有三层闸**（见 docs/Extensions_Guide.md §5）：
+ * **权限有三层闸**（见 docs/guide/PERMISSIONS.md）：
  *  ① `plugin.yaml` 的 `capabilities` 声明 —— 未声明就调用**直接抛错**，用户在安装页
  *     先看到用途清单；
  *  ② **插件管理页每个权限一个 Switch**（用户授权）——关掉的权限**返回 null**：不执行
@@ -391,6 +405,17 @@ export interface PluginApi {
    * 注入 CSS（宿主给内置卡根节点挂了 data-nya="launch-card" 选择锚点）。
    */
   registerLaunchCard: (definition: LaunchCardDefinition) => void;
+  /**
+   * 注册界面主题：出现在外观设置的「界面主题」列表（"默认"之外的皮肤项）。
+   * id 自动加 "<插件id>:" 前缀；返回宿主分配的完整主题 id。样式本体走清单
+   * styles / styles.inject，apply 只操作 <html> 的 data-* 属性门控（约定见
+   * docs/guide/UI_THEMES.md）。插件卸载/重载/停用时宿主自动摘除主题，若被摘的是
+   * 用户当前选中项则整体回落默认主题。
+   * 需要权限：styles——未声明时调用直接抛错。
+   */
+  registerUiTheme: (definition: UiThemeDefinition) => string | undefined;
+  /** 注销自己的界面主题（参数是 registerUiTheme 返回的完整 id 或本插件内的短 id） */
+  unregisterUiTheme: (themeId: string) => void;
   /**
    * 插件私有配置（落在启动器 launcher.yaml，键自动加前缀隔离）。
    * 需要权限：storage——未声明时调用直接抛错。

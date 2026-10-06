@@ -17,6 +17,7 @@ import type {
   PluginManifest,
   PluginMessage,
   WidgetDefinition,
+  UiThemeDefinition,
 } from "./types";
 import type {
   config as configModels,
@@ -187,6 +188,7 @@ import {
   watchDownloadTasks,
 } from "./download-tasks";
 import { isPermissionGranted, NETWORK_PERMISSION } from "./grants";
+import { registerUiTheme, unregisterUiTheme } from "./ui-themes";
 import { gameExitInfo, gameExitRevision } from "./game-exit";
 import { subscribeLogLines } from "./log-stream";
 import {
@@ -618,6 +620,45 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
       }
 
       return setLaunchCardOverride(manifest.id, definition.render);
+    },
+    // 界面主题：注册进外观设置的「界面主题」列表（见 plugin/ui-themes.ts 与
+    // docs/guide/UI_THEMES.md）。id 自动加 "<插件id>:" 前缀防撞名；样式本体由插件
+    // 经清单 styles / styles.inject 分发（故挂 styles 权限），apply 只翻
+    // 属性门控。卸载/重载/停用时经清理登记自动摘除，若被摘的是选中主题则
+    // 整体回落默认；apply 抛错被隔离，不影响宿主与其它主题。
+    registerUiTheme: (definition: UiThemeDefinition) => {
+      if (!requireActive("registerUiTheme")) return;
+      if (!allowed("styles", "registerUiTheme")) return;
+      if (
+        !definition ||
+        typeof definition.name !== "string" ||
+        typeof definition.apply !== "function"
+      ) {
+        throw new Error(t("registerUiTheme 需要 { name, apply } 定义对象"));
+      }
+
+      const themeId = scopedKey(definition.id ?? manifest.id);
+      const apply = (on: boolean) => {
+        try {
+          definition.apply(on);
+        } catch (error) {
+          console.warn(
+            `[plugin:${manifest.id}] 主题 ${themeId} apply(${on}) 抛错:`,
+            error,
+          );
+        }
+      };
+
+      registerUiTheme({ id: themeId, name: definition.name, apply });
+      registerCleanup(() => unregisterUiTheme(themeId));
+
+      return themeId;
+    },
+    unregisterUiTheme: (themeId: string) => {
+      if (!requireActive("unregisterUiTheme")) return;
+      if (!allowed("styles", "unregisterUiTheme")) return;
+
+      unregisterUiTheme(scopedKey(themeId));
     },
     config: {
       get: async (key: string) => {

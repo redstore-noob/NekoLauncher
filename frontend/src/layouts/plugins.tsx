@@ -151,7 +151,7 @@ function pluginIconUrl(info: bindings.PluginInfo): string {
   return `/plugins/${encodeURIComponent(info.ID)}/${relative}?v=${info.ModifiedAt}`;
 }
 
-/** 权限键 → 展示名（与 docs/Extensions_Guide.md §5 的权限表对应）。 */
+/** 权限键 → 展示名（与 docs/guide/PERMISSIONS.md 的权限表对应）。 */
 const PERMISSION_LABELS: Record<string, string> = {
   storage: "存储",
   launch: "启动游戏",
@@ -641,7 +641,7 @@ const PluginsPage: React.FC = () => {
             />
             {activeFilter !== "all" || searchQuery.trim() ? (
               <button
-                className="text-[11px] text-blue-500 hover:underline cursor-pointer"
+                className="text-[11px] text-primary hover:underline cursor-pointer"
                 onClick={() => {
                   setActiveFilter("all");
                   setSearchQuery("");
@@ -678,7 +678,7 @@ const PluginsPage: React.FC = () => {
                     <div
                       className={`flex w-full items-center gap-3 rounded-lg px-2.5 py-2 transition-colors cursor-pointer ${
                         isExpanded
-                          ? "bg-blue-50/70 dark:bg-blue-900/25"
+                          ? "bg-primary-100/70 dark:bg-primary-900/30"
                           : "hover:bg-gray-100 dark:hover:bg-gray-800"
                       }`}
                       role="button"
@@ -754,7 +754,7 @@ const PluginsPage: React.FC = () => {
                           initial={{ height: 0, opacity: 0 }}
                           transition={{ duration: 0.18, ease: "easeOut" }}
                         >
-                          <div className="px-3 pb-3 pt-1 ml-9 border-l-2 border-blue-200/60 dark:border-blue-800/40">
+                          <div className="px-3 pb-3 pt-1 ml-9 border-l-2 border-primary/30">
                             {itemStatus.detail ? (
                               <div className="mb-3 rounded-lg border border-red-200/70 bg-red-50/70 px-3 py-2 text-[11px] leading-relaxed text-red-600 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
                                 {itemStatus.detail}

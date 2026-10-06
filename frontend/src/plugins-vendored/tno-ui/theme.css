@@ -1,0 +1,180 @@
+/*
+ * TNO 主题（The New Order 式复古控制台情报室）。
+ *
+ * 全部规则挂在 html[data-tno-theme="on"] 属性门控下（见 background.tsx 的
+ * TNO_THEME_KEY），CSS 随主包静态分发，切换零延迟、首帧无闪。
+ *
+ * 设计要点（对照需求）：
+ *   1. 色彩：深黑 / 午夜蓝低饱和暗底，冷青-荧光蓝做高亮；面板近乎不透明。
+ *   2. 排版：全局等宽终端字体，标题加宽字距；信息密度不动布局，只换皮。
+ *   3. CRT：body::before 噪点、body::after 扫描线 + 暗角，盖在全 UI 之上
+ *      （pointer-events: none，不挡交互）。
+ *   4. 面板：细硬边框、无柔和阴影、全直角（正圆保留，理由同直角模式：
+ *      开关旋钮压平不可用，且 TNO 原版徽记/头像亦为圆形）。
+ */
+
+html[data-tno-theme="on"] {
+  /* 冷青/荧光蓝主色阶梯（低饱和，色相 195）。!important 用于压过
+   * theme-color.tsx 写在 <html> 内联样式上的主题色（内联优先级高于任何选择器） */
+  --heroui-primary-50: 195 60% 95% !important;
+  --heroui-primary-100: 195 55% 88% !important;
+  --heroui-primary-200: 195 55% 78% !important;
+  --heroui-primary-300: 194 60% 66% !important;
+  --heroui-primary-400: 194 65% 56% !important;
+  --heroui-primary-500: 194 78% 48% !important;
+  --heroui-primary-600: 196 72% 40% !important;
+  --heroui-primary-700: 198 66% 32% !important;
+  --heroui-primary-800: 200 60% 24% !important;
+  --heroui-primary-900: 202 55% 17% !important;
+  --heroui-primary-foreground: 195 40% 92% !important;
+
+  /* 表面：深黑-午夜蓝，亮色模式的那套表面同样压成暗色（TNO 只有一种夜） */
+  --nya-surface-1: 220 26% 7% !important;
+  --nya-surface-2: 220 22% 10% !important;
+  --nya-surface-1-light: 220 26% 7% !important;
+  --nya-surface-2-light: 220 22% 10% !important;
+  --nya-border-light: 200 28% 30% !important;
+  --nya-border-dark: 200 28% 30% !important;
+
+  /* 面板近实心：复古终端不玩透视 */
+  --nya-glass-alpha: 0.96;
+
+  /* 全直角：与「直角模式」同一组 token（正圆 rounded-full 不走 token，保持圆形） */
+  --nya-radius-sm: 0px;
+  --nya-radius-md: 0px;
+  --nya-radius-lg: 0px;
+  --nya-radius-xl: 0px;
+  --nya-radius-2xl: 0px;
+  --nya-radius-3xl: 0px;
+  --nya-radius-medium: 0px;
+  --nya-radius-large: 0px;
+}
+
+/* 等宽终端字体：老式控制台打印观感（含中文回退；数字/拉丁吃 mono，中文回落黑体） */
+html[data-tno-theme="on"] body {
+  font-family:
+    ui-monospace,
+    "Cascadia Mono",
+    Consolas,
+    "Courier New",
+    "Noto Sans Mono CJK SC",
+    "Microsoft YaHei",
+    monospace;
+}
+
+/* 标题宽字距：公文/电报头的排印感 */
+html[data-tno-theme="on"] h1,
+html[data-tno-theme="on"] h2,
+html[data-tno-theme="on"] h3 {
+  letter-spacing: 0.08em;
+}
+
+/* CRT 覆盖层：噪点颗粒（feTurbulence 程序噪声，平铺 data-URI，无网络请求） */
+html[data-tno-theme="on"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  opacity: 0.05;
+}
+
+/* CRT 覆盖层：扫描线 + 暗角（球面畸变做不了纯 CSS，暗角近似管壁边缘失光） */
+html[data-tno-theme="on"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      rgba(0, 0, 0, 0.16) 0px,
+      rgba(0, 0, 0, 0.16) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    radial-gradient(
+      ellipse at center,
+      transparent 55%,
+      rgba(0, 0, 0, 0.42) 100%
+    );
+}
+
+/* 图标染蓝：全部图标走 currentColor，默认继承文字的灰色；TNO 下统一染成
+ * 冷青（primary-400 档），轮廓线稿即"浅蓝发光镂空"的底子（辉光滤镜留给
+ * 用户后续加，这里只管色相）。例外：主色/强调色容器内的图标保持继承——
+ * primary 按钮是蓝底浅字，再染蓝就看不见了；danger 红图标同理保色。 */
+html[data-tno-theme="on"] svg {
+  color: hsl(194 65% 56%);
+}
+html[data-tno-theme="on"] :is(
+    [class*="bg-primary"],
+    [class*="text-primary-foreground"],
+    [class*="text-danger"],
+    [class*="text-success"],
+    [class*="text-warning"]
+  )
+  svg {
+  color: inherit;
+}
+
+/* 文字染蓝：正文灰阶（text-gray-*）分档映射到蓝调灰青，全 UI 文字带上
+ * 终端荧光的冷色感。语义色（text-danger/success/warning）与主色文字不在
+ * gray 系里，天然不受影响；主色按钮内的浅色文字同理保持原样。 */
+html[data-tno-theme="on"] [class*="text-gray-2"],
+html[data-tno-theme="on"] [class*="text-gray-3"] {
+  color: hsl(200 28% 80%);
+}
+html[data-tno-theme="on"] [class*="text-gray-4"],
+html[data-tno-theme="on"] [class*="text-gray-5"] {
+  color: hsl(202 26% 68%);
+}
+html[data-tno-theme="on"] [class*="text-gray-6"],
+html[data-tno-theme="on"] [class*="text-gray-7"],
+html[data-tno-theme="on"] [class*="text-gray-8"],
+html[data-tno-theme="on"] [class*="text-gray-9"] {
+  color: hsl(200 26% 76%);
+}
+/* 未挂工具类的裸文本与标题：冷白蓝（页面大标题的"荧光屏字"观感） */
+html[data-tno-theme="on"] body {
+  color: hsl(198 30% 84%);
+}
+html[data-tno-theme="on"] h1,
+html[data-tno-theme="on"] h2,
+html[data-tno-theme="on"] h3 {
+  color: hsl(195 40% 90%);
+}
+
+/* 面板：细硬边框，去柔和阴影与霓虹辉光（复古印刷不做光泽） */
+html[data-tno-theme="on"] .nya-panel,
+html[data-tno-theme="on"] .nya-panel-strong,
+html[data-tno-theme="on"] .nya-panel-inner,
+html[data-tno-theme="on"] .nya-sidebar,
+html[data-tno-theme="on"] .nya-modal-surface,
+html[data-tno-theme="on"] .nya-neon-card {
+  box-shadow: none !important;
+  border-color: hsl(200 28% 30% / 0.9) !important;
+}
+
+/* 弹窗 = 机密档案：双线框 + 硬角，替代圆角浮层的"柔和卡片"语义 */
+html[data-tno-theme="on"] .nya-modal-surface {
+  outline: 1px solid hsl(200 28% 30% / 0.55);
+  outline-offset: 3px;
+}
+
+/* 关掉装饰性动画（霓虹流光/错峰入场）：情报室是静止的 */
+html[data-tno-theme="on"] .nya-neon-live,
+html[data-tno-theme="on"] .nya-card-in,
+html[data-tno-theme="on"] .nya-eq-bar,
+html[data-tno-theme="on"] .nya-vinyl,
+html[data-tno-theme="on"] .nya-cover-glow {
+  animation: none !important;
+}
+
+/* 滚动条压成方角硬条，与终端一致 */
+html[data-tno-theme="on"] .nya-scroll::-webkit-scrollbar-thumb,
+html[data-tno-theme="on"] .nya-markdown pre::-webkit-scrollbar-thumb {
+  border-radius: 0;
+}

@@ -944,10 +944,11 @@ const ContentDownloadOverlay: React.FC<Props> = ({
       isOpen={open}
       onClose={onClose}
       {...modalBehaviorProps}
-      // 弹层固定为窗口的三分之二（双栏版本选择需要更多空间）
+      // 弹层尽量占满窗口（此前 66.6vw/66.6vh 在 macOS 小窗口下双栏挤成一团，
+      // 版本列表根本没法点）；上限 1280px 防止大屏上过度拉伸
       classNames={{
         ...modalBehaviorProps.classNames,
-        base: `${modalBehaviorProps.classNames?.base ?? ""} h-[66.6vh]! w-[66.6vw]! max-w-none`,
+        base: `${modalBehaviorProps.classNames?.base ?? ""} h-[85vh]! w-[min(1280px,92vw)]! max-w-none`,
       }}
       scrollBehavior="inside"
     >
@@ -976,7 +977,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
           ) : (
             /* 双栏布局：左栏 MC 版本列表（类型筛选 + 关键词筛选 + 计数徽章），
              * 右栏版本搜索 + 加载器折叠分组 + 下载到 + 状态面板 + 下载按钮 */
-            <div className="grid h-full min-h-0 grid-cols-[215px_1fr] grid-rows-[minmax(0,1fr)] gap-4">
+            <div className="grid h-full min-h-0 grid-cols-[clamp(160px,22%,220px)_1fr] grid-rows-[minmax(0,1fr)] gap-4">
               <div className="flex min-h-0 flex-col gap-2">
                 <span className="text-[13px] font-semibold text-gray-600 dark:text-gray-300">
                   {t("Minecraft 版本")}

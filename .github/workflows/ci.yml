@@ -101,7 +101,7 @@ jobs:
           #    `container:` 键，于是 fedora/arch 两个 job 实际跑在 ubuntu 上，
           #    pacman / dnf 直接 command not found（exit 127，0 秒即挂）。
           #    现在发行包统一交给 nfpm（纯 Go）产出，不需要目标发行版的原生工具链，
-          #    容器整个去掉了。详见 docs/RELEASE_PACKAGING.md。
+          #    容器整个去掉了。详见 docs/guide/RELEASE_PACKAGING.md。
           - name: windows/amd64
             # artifact 名不能含斜杠：upload-artifact@v4 会直接拒绝
             # （The artifact name is not valid ... Forward slash）。

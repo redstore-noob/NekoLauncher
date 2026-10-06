@@ -6,7 +6,7 @@ package bindings
 // launch 包不依赖插件系统（bindings 反过来依赖 launch），所以由 bindings
 // 在启动前把已启用插件的声明解析成变换，经 launch.LaunchTransformProvider 注入。
 //
-// 安全取向（与 docs/Extensions_Guide.md 的信任模型一致）：
+// 安全取向（与 docs/guide/TRUST_MODEL.md一致）：
 //   - 这里**只**实现"追加参数"这两种最无害的贡献。Transform 里那些
 //     MainClassOverride / JavaExecutableOverride / ReplaceClasspath 能力
 //     不从这里开放——插件能做到"把启动的进程换成任意程序"，而 YAML 里

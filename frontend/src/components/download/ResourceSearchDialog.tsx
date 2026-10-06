@@ -512,10 +512,11 @@ const ResourceSearchDialog: React.FC<Props> = ({
       isOpen={open}
       onClose={onClose}
       {...modalBehaviorProps}
-      // 弹层固定为窗口宽高的二分之一
+      // 弹层尽量占满窗口（50vw 在 macOS 小窗口下搜索列表挤成一团）；
+      // 上限 1000px 防止大屏上过度拉伸
       classNames={{
         ...modalBehaviorProps.classNames,
-        base: `${modalBehaviorProps.classNames?.base ?? ""} h-[50vh]! w-[50vw]! max-w-none`,
+        base: `${modalBehaviorProps.classNames?.base ?? ""} h-[80vh]! w-[min(1000px,90vw)]! max-w-none`,
       }}
       scrollBehavior="inside"
     >

@@ -20,6 +20,40 @@
 @source '../../node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}';
 @custom-variant dark (&:is(.dark *));
 
+/* 圆角 token 化：Tailwind 的 rounded-sm..3xl 全部接到运行时变量 --nya-radius-*
+ * 上（@theme 只是把档位定义改为转发，默认值与 Tailwind 原刻度一致，观感不变）。
+ * 「直角模式」只需把 --nya-radius-* 清零，即可一次覆盖全部 rounded-* 调用点，
+ * 不必逐个改组件里的类名。rounded-full 是写死的超大半径（头像/开关旋钮等正圆），
+ * 不走这套 token，直角模式下保持圆形。 */
+@theme {
+  --radius-sm: var(--nya-radius-sm, 0.25rem);
+  --radius-md: var(--nya-radius-md, 0.375rem);
+  --radius-lg: var(--nya-radius-lg, 0.5rem);
+  --radius-xl: var(--nya-radius-xl, 0.75rem);
+  --radius-2xl: var(--nya-radius-2xl, 1rem);
+  --radius-3xl: var(--nya-radius-3xl, 1.5rem);
+}
+
+/* HeroUI 的 rounded-medium/large 档由插件定义在 @layer theme 的 :root 上，
+ * 未分层规则的优先级高于任何 layer，这里转发到同一组 --nya-radius-* 运行时变量 */
+:root {
+  --heroui-radius-small: var(--nya-radius-sm, 8px);
+  --heroui-radius-medium: var(--nya-radius-medium, 12px);
+  --heroui-radius-large: var(--nya-radius-large, 14px);
+}
+
+/* 直角模式：变量清零即全 UI 方角（上面的 fallback 只在变量未定义时生效） */
+html[data-square-corners="true"] {
+  --nya-radius-sm: 0px;
+  --nya-radius-md: 0px;
+  --nya-radius-lg: 0px;
+  --nya-radius-xl: 0px;
+  --nya-radius-2xl: 0px;
+  --nya-radius-3xl: 0px;
+  --nya-radius-medium: 0px;
+  --nya-radius-large: 0px;
+}
+
 /* 全局字体：走系统 UI 字体族并按平台挂上中文回退，
  * 避免 WebView 把中文落到衬线/默认字形上（此前挂的是一个没有 src 的空 @font-face）。 */
 body {
@@ -285,8 +319,8 @@ body,
   border: 1px solid hsl(var(--nya-border-c) / 0.7);
   /* 面板圆角统一走 HeroUI 刻度：rounded-large = 14px（Modal/Card 的默认档）。
    * 未分层规则优先于 utilities，这里与 HeroUI 的 rounded-large 同值，
-   * 只是覆盖它自带的不透明底色时必须连圆角一起声明。 */
-  border-radius: 0.875rem;
+   * 只是覆盖它自带的不透明底色时必须连圆角一起声明。直角模式随 token 清零。 */
+  border-radius: var(--nya-radius-large, 0.875rem);
 }
 
 /* 弹窗面板入场：上浮 + 轻缩放（替代 framer 的 initial opacity:0 弹簧） */
@@ -637,8 +671,8 @@ html[data-panel-blur="off"] .nya-nowplaying {
 /* 卡片：主题色描边 + 主题派生表面毛玻璃（不再使用彩色渐变） */
 .nya-neon-card {
   position: relative;
-  /* HeroUI rounded-large = 14px，卡片档 */
-  border-radius: 0.875rem;
+  /* HeroUI rounded-large = 14px，卡片档（直角模式随 token 清零） */
+  border-radius: var(--nya-radius-large, 0.875rem);
   background-color: hsl(
     var(--nya-surface-2) / max(0.45, calc(var(--nya-glass-alpha, 0.8) - 0.08))
   );
@@ -918,13 +952,13 @@ html[data-panel-blur="off"] .nya-nowplaying {
 .nya-markdown code {
   background: rgba(125, 125, 125, 0.15);
   padding: 0.15em 0.4em;
-  border-radius: 4px;
+  border-radius: var(--nya-radius-sm, 4px);
   font-size: 0.88em;
   font-family: ui-monospace, monospace;
 }
 .nya-markdown pre {
   background: rgba(0, 0, 0, 0.06);
-  border-radius: 8px;
+  border-radius: var(--nya-radius-lg, 8px);
   padding: 0.8em 1em;
   overflow-x: auto;
   margin: 0.6em 0;
@@ -971,7 +1005,7 @@ html[data-panel-blur="off"] .nya-nowplaying {
 }
 .nya-markdown img {
   max-width: 100%;
-  border-radius: 6px;
+  border-radius: var(--nya-radius-md, 6px);
 }
 
 /* AI 聊天 Markdown 代码块：横向滚动使用与 .nya-scroll 一致的细滚动条 */

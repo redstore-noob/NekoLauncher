@@ -1,7 +1,7 @@
 /*
  * 官方示例插件：服务器状态小组件。
  *
- * 本示例演示的 API 能力（对应 docs/Extensions_Guide.md）：
+ * 本示例演示的 API 能力（对应 docs/guide/Extensions_Guide.md）：
  *   - dev 模式：本文件是 index.jsx 源码，宿主现场编译后加载，无工具链；
  *   - settings 种子：plugin.yaml 的默认设置在激活前已种入 api.config；
  *   - 权限：server-status / clipboard / storage / network 在 plugin.yaml 声明，

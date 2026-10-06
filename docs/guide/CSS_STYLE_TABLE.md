@@ -1,9 +1,12 @@
 # 可定制样式速查（插件 CSS 契约）
 
-插件可以通过清单 `styles` 字段（见 [Extensions_Guide.md §4](Extensions_Guide.md)）或
+插件可以通过清单 `styles` 字段（见 [QUICKSTART.md](QUICKSTART.md)）或
 `api.styles.inject`（§6，需 `styles` 权限）注入全局 CSS，自定义启动器任意控件的样式。
 本文档列出**宿主承诺支持的定制锚点**——除此之外的类名（Tailwind 工具类、HeroUI 内部
 结构）能改但不构成契约，升级可能悄悄失效。
+
+想做可在外观设置里被选中的**界面主题**（整体换肤、随选择持久化），见
+[UI_THEMES.md](UI_THEMES.md)。
 
 > **兼容承诺**：下文「第一档（CSS 变量）」与「第二档（`nya-*` 语义类）」中的每一项
 > 都是宿主公共接口。改名/删除/语义变更会在更新日志中明确标注；新增只增不改。
@@ -50,9 +53,8 @@ api.styles.remove("glass");
 | `--nya-shell` | 最外层底壳色（RGB 通道，如 `3 7 18`） | 自动切换 |
 | `--nya-blur-scale` | 毛玻璃模糊半径倍率（缺省 `1`，调小降模糊省性能） | 无关 |
 | `--nya-glass-alpha` | 表面不透明度（缺省 `0.8`，配合 blur 做玻璃质感） | 无关 |
-| `--nya-radius-scale` | **全局圆角缩放系数**（缺省 `1`；`0.5` 直角化、`1.5` 更圆润） | 无关 |
-| `--nya-radius-xs` ~ `--nya-radius-3xl` | 各档圆角基础值（缺省 `0.125`~`1.5rem`，与 Tailwind `rounded-*` 一一对应） | 无关 |
-| `--nya-radius-panel` | 弹出面板（popover）圆角（缺省 `0.875rem`） | 无关 |
+| `--nya-radius-sm` ~ `--nya-radius-3xl` | Tailwind 档圆角基础值（`rounded-sm`~`rounded-3xl` 一一对应；缺省与 Tailwind 原刻度一致，`0.25rem`~`1.5rem`） | 无关 |
+| `--nya-radius-medium` / `--nya-radius-large` | HeroUI 档圆角（`rounded-medium`=12px / `rounded-large`=14px；HeroUI 组件插槽样式也消费这两档） | 无关 |
 
 **示例——全局换成绿色主题 + 更实的毛玻璃：**
 
@@ -68,28 +70,40 @@ api.styles.remove("glass");
 主题色计算写入）——想成套换色请把主色阶梯和 `nya` 表面变量一起覆盖，或直接改用
 设置页的预设主题色。
 
-**示例——全局圆角调整：** 所有控件的 `rounded-*` 圆角都走 `--nya-radius-*` 变量
-（组件约 400+ 处、含 HeroUI 插槽样式），因此改一个变量即可全局生效：
+**示例——全局圆角调整：** 全部控件的 `rounded-*` 圆角都转发到 `--nya-radius-*`
+变量（Tailwind 档经 `@theme` 转发、HeroUI 档在未分层 `:root` 转发，组件约 488 处
+调用点、含 HeroUI 插槽样式），因此改一组变量即可全局生效：
 
 ```css
 :root {
-  --nya-radius-scale: 0.5; /* 整体圆角减半，观感更硬朗 */
+  --nya-radius-lg: 0.375rem; /* 只调某一档：rounded-lg 单独变小 */
 }
+/* 整体直角化：全部档位清零（宿主内置的「直角模式」开关即此写法，
+ * 见 <html data-square-corners="true"> 门控；vendored 的 TNO 主题同样
+ * 在自己的属性门控里清零这套变量） */
 :root {
-  --nya-radius-xl: 0.375rem; /* 或只调某一档：rounded-xl 单独变小 */
+  --nya-radius-sm: 0px;
+  --nya-radius-md: 0px;
+  --nya-radius-lg: 0px;
+  --nya-radius-xl: 0px;
+  --nya-radius-2xl: 0px;
+  --nya-radius-3xl: 0px;
+  --nya-radius-medium: 0px;
+  --nya-radius-large: 0px;
 }
 ```
 
 注意两点：
 
-- 胶囊形（`rounded-full`、进度条/滚动条等的 `9999px`）不参与缩放，保持正圆语义；
-  如确需改动请按选择器覆盖（见第 4 档说明）。
-- 极小档位（`--nya-radius-xs` ~ `sm`）多用于小控件（代码片段、图片、小按钮），
-  全局调太小时它们会先变成直角，属预期行为。
+- **正圆不在这套 token 里**：`rounded-full` 是写死的超大半径（头像、开关旋钮、
+  进度条等），保持正圆语义；如确需改方请按选择器覆盖（见第 4 档说明）——
+  但开关旋钮压平会不可用，三思。
+- 主题插件做"整主题直角"时请把上面 8 个变量一起清零，只清 Tailwind 档会漏掉
+  HeroUI 组件（弹窗、按钮、卡片壳）。
 
 ## 3. 第二档：`nya-*` 语义类
 
-宿主自己命名的语义类名，定义集中在 [frontend/src/styles/globals.css](../frontend/src/styles/globals.css)。
+宿主自己命名的语义类名，定义集中在 [frontend/src/styles/globals.css](../../frontend/src/styles/globals.css)。
 
 ### 容器与面板
 
@@ -131,7 +145,7 @@ api.styles.remove("glass");
 | `.nya-bar` / `.nya-hold-bar` | 进度条 / 长按进度条 |
 | `.nya-markdown` | Markdown 渲染容器（`p`/`h1`~`h6`/`code`/`pre`/`table` 等子选择器） |
 | `.nya-eq-bar` / `.nya-vinyl` / `.nya-cover-glow` | 音乐播放器均衡条 / 黑胶 / 封面光晕 |
-| `.nya-instance-pill` / `.nya-instance-stagger` | 实例列表胶囊项与逐级进场 |
+| `.nya-instance-stagger` | 实例列表逐级进场（选中高亮直接画在选中按钮上，无独立类） |
 | `.nya-drag-ghost` / `.nya-drop-line` | 小组件拖动的幽灵条与落点指示线 |
 | `.nya-mc-obfuscated` | MC 风格乱码字符效果 |
 
