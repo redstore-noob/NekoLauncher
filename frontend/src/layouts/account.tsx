@@ -1270,9 +1270,10 @@ const AccountPage: React.FC = () => {
                       </div>
                       {deviceCode ? (
                         <>
-                          <div
-                            className="group relative cursor-pointer rounded-lg bg-primary py-5 text-center text-primary-foreground shadow-md shadow-primary/25 transition-transform hover:scale-[1.01] active:scale-[0.99]"
+                          <button
+                            className="group relative block w-full cursor-pointer rounded-lg bg-primary py-5 text-center text-primary-foreground shadow-md shadow-primary/25 transition-transform hover:scale-[1.01] active:scale-[0.99]"
                             title={t("点击复制设备码")}
+                            type="button"
                             onClick={async () => {
                               try {
                                 await ClipboardSetText(deviceCode);
@@ -1283,15 +1284,15 @@ const AccountPage: React.FC = () => {
                               }
                             }}
                           >
-                            <div className="text-2xl font-bold tracking-[0.3em] text-white">
+                            <span className="block text-2xl font-bold tracking-[0.3em] text-white">
                               {deviceCode}
-                            </div>
+                            </span>
                             <span className="text-[11px] text-white/80 transition-opacity">
                               {codeCopied
                                 ? t("✓ 已复制到剪贴板！")
                                 : t("点击此处快速复制")}
                             </span>
-                          </div>
+                          </button>
                           <div className="flex justify-center gap-2">
                             <Button
                               radius="full"

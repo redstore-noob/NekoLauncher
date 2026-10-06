@@ -59,16 +59,9 @@ function deepWrap(node: unknown, cache: WeakMap<object, unknown>): unknown {
         return (target as Record<string | symbol, unknown>)[key];
       }
 
-      return deepWrap(
-        (target as Record<string | symbol, unknown>)[key],
-        cache,
-      );
+      return deepWrap((target as Record<string | symbol, unknown>)[key], cache);
     },
-    apply(
-      target: object,
-      thisArg: unknown,
-      args: unknown[],
-    ): unknown {
+    apply(target: object, thisArg: unknown, args: unknown[]): unknown {
       hostDepth += 1;
       try {
         return (target as (...a: unknown[]) => unknown).apply(thisArg, args);

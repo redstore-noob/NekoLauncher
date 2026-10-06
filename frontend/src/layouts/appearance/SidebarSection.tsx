@@ -278,7 +278,10 @@ const SidebarSection: React.FC = () => {
 
       {/* 岛式 = 悬浮面板（圆角 + 边距 + 投影）；陆式 = 贴着停靠边与窗口连成
           一体（无圆角投影，只留朝内容区的一条边线） */}
-      <SettingRow hint={t("岛式悬浮于窗口内，陆式贴边连成一体")} label={t("形态")}>
+      <SettingRow
+        hint={t("岛式悬浮于窗口内，陆式贴边连成一体")}
+        label={t("形态")}
+      >
         <SegmentedTabs
           items={[
             { key: "island", label: t("岛式") },

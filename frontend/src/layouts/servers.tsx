@@ -9,10 +9,6 @@
 import type { ReactNode } from "react";
 import type { mcserver, models } from "../../wailsjs/go/models";
 
-type ServerFileEntry = mcserver.FileEntry;
-type ServerProperty = mcserver.Property;
-type ServerSummary = mcserver.ServerInfo;
-
 import React, {
   memo,
   useCallback,
@@ -54,22 +50,7 @@ import { confirm, notify } from "../components/overlay/dialog";
 import SwitchTransition, {
   useSwitchDirection,
 } from "../components/screen-transition";
-import { selectPopoverProps } from "../lib/motion";
-import { TRANSITION_EASINGS } from "../lib/motion";
-
-/* 左列列表项专用进出场：只做透明度，不动 height（与实例页同款） */
-const LIST_FADE: Variants = {
-  enter: { opacity: 0 },
-  center: {
-    opacity: 1,
-    transition: { duration: 0.25, ease: TRANSITION_EASINGS.easeOut },
-  },
-  exit: {
-    opacity: 0,
-    transition: { duration: 0.2, ease: TRANSITION_EASINGS.easeIn },
-  },
-};
-
+import { selectPopoverProps, TRANSITION_EASINGS } from "../lib/motion";
 import { startVisiblePoll } from "../lib/visibility";
 import { t } from "../i18n";
 import { GetJavaPaths } from "../../wailsjs/go/bindings/ConfigAPI";
@@ -124,6 +105,23 @@ import {
   WriteServerTextFile,
 } from "../../wailsjs/go/bindings/ServerHostAPI";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
+
+type ServerFileEntry = mcserver.FileEntry;
+type ServerProperty = mcserver.Property;
+type ServerSummary = mcserver.ServerInfo;
+
+/* 左列列表项专用进出场：只做透明度，不动 height（与实例页同款） */
+const LIST_FADE: Variants = {
+  enter: { opacity: 0 },
+  center: {
+    opacity: 1,
+    transition: { duration: 0.25, ease: TRANSITION_EASINGS.easeOut },
+  },
+  exit: {
+    opacity: 0,
+    transition: { duration: 0.2, ease: TRANSITION_EASINGS.easeIn },
+  },
+};
 
 type TabKey =
   | "console"

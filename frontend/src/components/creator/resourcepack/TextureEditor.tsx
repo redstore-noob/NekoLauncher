@@ -256,9 +256,10 @@ const TextureEditor: React.FC<TextureEditorProps> = ({
 
   // 缓存 selectedKeys 数组，避免每次渲染都创建新数组导致 Select 闪烁
   const brushKeys = useMemo(() => [String(brush)], [brush]);
+  const texWidth = tex?.width;
   const textureSizeKeys = useMemo(
-    () => (tex ? [String(tex.width)] : []),
-    [tex?.width],
+    () => (texWidth ? [String(texWidth)] : []),
+    [texWidth],
   );
 
   const paintTexel = useCallback(

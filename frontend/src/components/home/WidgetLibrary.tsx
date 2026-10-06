@@ -157,9 +157,7 @@ const WidgetLibrary: React.FC<WidgetLibraryProps> = ({
               <Apps20Regular className="h-6 w-6" />
             </div>
             <span className="text-xs leading-relaxed">
-              {searching
-                ? t("没有匹配的组件")
-                : t("没有可用组件")}
+              {searching ? t("没有匹配的组件") : t("没有可用组件")}
             </span>
           </div>
         ) : (

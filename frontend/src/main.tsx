@@ -22,11 +22,6 @@ import { BrowserRouter } from "react-router-dom";
 import "./wails-mock.ts";
 
 import { installBackendGate } from "./plugin/backend-gate";
-
-// 后端闸门必须先于一切插件加载：收走 window.go、封堵 WailsInvoke 等原始出口，
-// 让插件只能通过注入的 api 对象触达宿主能力（见 plugin/backend-gate.ts）
-installBackendGate();
-
 import App from "./App.tsx";
 import { Provider } from "./provider.tsx";
 import { ThemeProvider, initTheme } from "./theme.tsx";
@@ -36,6 +31,11 @@ import { LogViewerProvider } from "./components/LogViewer";
 import { LaunchProvenanceProvider } from "./components/launch/LaunchProvenancePanel";
 import { registerBuiltins } from "./plugin";
 import "@/styles/globals.css";
+
+// 后端闸门必须先于一切插件加载：收走 window.go、封堵 WailsInvoke 等原始出口，
+// 让插件只能通过注入的 api 对象触达宿主能力（见 plugin/backend-gate.ts）。
+// ESM 中所有 import 先于本文件语句求值，故这里在模块加载完、首帧渲染前执行。
+installBackendGate();
 
 // 注意：不使用 React.StrictMode —— dev 模式下 double-mount 会破坏 framer-motion
 // 的 AnimatePresence 退出动画，导致 HeroUI Modal 关闭后隐形遮罩残留、整窗无法点击。
