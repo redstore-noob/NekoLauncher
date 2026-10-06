@@ -300,7 +300,16 @@ func (MinecraftArgumentBuilder) buildWithProvenance(
 	}
 
 	// 通用 JVM 性能优化参数（针对 Minecraft 工作负载特性优化）
+	//
+	// 第一条是整段参数的安全网：IgnoreUnrecognizedVMOptions 让"虚拟机不认识的
+	// 参数"退化成一条警告而不是致命错误。没有它时，命令行里只要有任意一条
+	// 当前 Java 不支持的选项（下面的调优项、实例/全局的「自定义 JVM 参数」、
+	// 版本 JSON 的 arguments.jvm、插件追加的参数都算），JVM 会在初始化阶段
+	// 直接退出：玩家看到的就是"点了启动，窗口一闪就关"，而且完全不知道为什么。
+	// 带上它之后这些参数会被忽略，游戏照常起来，日志里留一条警告可查。
+	// （顺序无关：JVM 会先收齐全部 -XX 参数再判定，实测前后放都一样。）
 	tuningArguments := []string{
+		"-XX:+IgnoreUnrecognizedVMOptions",
 		"-XX:+UnlockExperimentalVMOptions",
 		"-XX:+UseG1GC",
 		

@@ -23,6 +23,7 @@ import {
   GetValue,
   SetValue,
 } from "../../../wailsjs/go/bindings/ConfigAPI";
+import { TraySupported } from "../../../wailsjs/go/bindings/SystemAPI";
 import { OOBE_COMPLETED_KEY } from "../../components/oobe/OobeProvider";
 import { t } from "../../i18n";
 
@@ -38,12 +39,25 @@ const CLOSE_ACTIONS = [
 const BehaviorSection: React.FC = () => {
   const [closeAction, setCloseAction] = useState<string>("ask");
   const [hint, setHint] = useState("");
+  // 平台有没有系统托盘（macOS 等为 false）。窗口一旦隐藏，托盘菜单是唯一
+  // 能把它显示回来的入口；没有托盘的平台提供"最小化到托盘"等于把窗口藏死，
+  // 所以这些平台干脆不出这一项。
+  const [traySupported, setTraySupported] = useState(false);
 
   useEffect(() => {
     void GetValue("closeAction").then((saved) => {
       if (saved === "tray" || saved === "exit") setCloseAction(saved);
     });
+    // 能力一律由后端回答（lib/platform.ts 明确禁止用 userAgent 做能力检测）；
+    // 查询失败按"没有托盘"处理，宁可少给一个选项也不给一个把窗口藏死的选项。
+    void TraySupported()
+      .then((supported) => setTraySupported(supported === true))
+      .catch(() => setTraySupported(false));
   }, []);
+
+  const closeActions = CLOSE_ACTIONS.filter(
+    (action) => action.key !== "tray" || traySupported,
+  );
 
   const change = async (key: string) => {
     setCloseAction(key);
@@ -86,7 +100,7 @@ const BehaviorSection: React.FC = () => {
           <Select
             aria-label={t("关闭按钮行为")}
             className="w-44"
-            items={CLOSE_ACTIONS.map((action) => ({
+            items={closeActions.map((action) => ({
               key: action.key,
               label: t(action.label),
             }))}

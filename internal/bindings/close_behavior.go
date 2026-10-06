@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 
 	"nekolauncher/internal/config"
+	"nekolauncher/internal/logs"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -28,6 +29,15 @@ func HandleBeforeClose(ctx context.Context) bool {
 
 		return false
 	case "tray":
+		// 没有托盘的平台（macOS 等）不能隐藏窗口：托盘菜单是唯一能把窗口显示
+		// 回来的入口，缺了它应用就再也找不回来了（只剩杀进程一条路）。
+		// 这类平台按"每次询问"处理，让用户自己选退出。
+		if !TraySupported() {
+			logs.Write("WARN", "当前平台没有系统托盘，关闭行为已按\"询问\"处理")
+			wailsruntime.EventsEmit(ctx, "launcher:close-requested")
+
+			return true
+		}
 		wailsruntime.WindowHide(ctx)
 
 		return true
@@ -47,8 +57,19 @@ func (a *SystemAPI) ExitLauncher() {
 }
 
 // HideLauncher 最小化到托盘（隐藏主窗口）。
+//
+// 没有托盘的平台（macOS 等）上没有"显示回来"的入口，隐藏等于把应用变成
+// 只能杀进程的幽灵进程。此时按用户的"收起来"意图直接退出——前端的
+// 最小化选项已在这些平台隐藏（见 TraySupported），这里只是兜底。
 func (a *SystemAPI) HideLauncher() {
-	if a.ctx != nil {
-		wailsruntime.WindowHide(a.ctx)
+	if a.ctx == nil {
+		return
 	}
+	if !TraySupported() {
+		logs.Write("WARN", "当前平台没有系统托盘，\"最小化到托盘\"按退出处理")
+		a.ExitLauncher()
+
+		return
+	}
+	wailsruntime.WindowHide(a.ctx)
 }

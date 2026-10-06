@@ -78,6 +78,31 @@ var crashRules = []crashRule{
 		},
 	},
 	{
+		reason:     "JVM 启动参数与当前 Java 不兼容",
+		suggestion: "当前 Java 不认识命令行里的某个 JVM 参数，于是虚拟机在进入游戏前就退出了（表现为「点了启动，窗口一闪就没了」）。参数可能来自「实例 → Java 参数」、全局「设置 → Java」的附加参数，或版本自带的 arguments.jvm；日志末尾的 Unrecognized option 会指出具体是哪一条。删掉那一条，或到「设置 → Java」换用与版本要求一致的 Java（版本要求的 Java 主版本见「启动参数溯源」）。",
+		patterns: []*regexp.Regexp{
+			mustPattern(`Unrecognized VM option`),
+			mustPattern(`Unrecognized option:`),
+			mustPattern(`Could not create the Java Virtual Machine`),
+			mustPattern(`Error occurred during initialization of VM`),
+			// 同时选中两个 GC（例如版本自带的 UseZGC 与启动器的 UseG1GC）
+			mustPattern(`Multiple garbage collectors selected`),
+			// 实验性参数没有 UnlockExperimentalVMOptions 就传进来
+			mustPattern(`is experimental and must be enabled via -XX:\+UnlockExperimentalVMOptions`),
+			mustPattern(`Improperly specified VM option`),
+		},
+	},
+	{
+		reason:     "内存设置超出系统可用范围（JVM 无法保留堆）",
+		suggestion: "启动参数里的 -Xmx/-Xms 比这台机器能提供的内存还大，虚拟机会在初始化阶段直接退出。到「实例 → 内存」把最大内存调小（32 位 Java 尤其不能超过 1.5G），并确认没有在「自定义 JVM 参数」里手写过更大的 -Xmx。",
+		patterns: []*regexp.Regexp{
+			mustPattern(`Could not reserve enough space for .* object heap`),
+			mustPattern(`Invalid maximum heap size`),
+			mustPattern(`Invalid initial heap size`),
+			mustPattern(`The specified size exceeds the maximum representable size`),
+		},
+	},
+	{
 		reason:     "Java 版本不匹配",
 		suggestion: "该版本要求更高的 Java（或不能高于某个大版本）：到「设置 → Java」换一个 JDK 后重试。",
 		patterns: []*regexp.Regexp{
@@ -240,6 +265,12 @@ var crashDetailPatterns = []*regexp.Regexp{
 	mustPattern(`Missing (?:or unsupported )?mandatory dependencies`),
 	// 不兼容/重复模组的清单头
 	mustPattern(`(?:Duplicate|Incompatible) mods? (?:found|set)`),
+	// JVM 引导失败：这里就是"窗口一闪就没了"的全部证据——JVM 明确点名了
+	// 哪条参数不认识（打日志时每行前面带 [GAME][stderr] 前缀，异常行规则
+	// 匹配不到行首，所以必须单独列出来）
+	mustPattern(`Unrecognized (?:VM )?option`),
+	mustPattern(`is experimental and must be enabled`),
+	mustPattern(`Could not reserve enough space`),
 }
 
 // collectCrashDetails 逐行扫描崩溃现场，去重后取前 5 条具体报错行。

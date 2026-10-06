@@ -151,12 +151,34 @@ func scanWithCancel(ctx context.Context, sourcePath string, previous GameInstanc
 // Select 选中指定版本并写回配置；版本不存在时返回 false。
 // 首次扫描尚未完成时先等待其就绪（旧版在加载态直接拒绝，导致前端
 // "界面已列出版本、实际选中被静默丢弃"的不一致）。
+//
+// 直接拒绝仍会留一个坑：前端列版本走的是"直接扫 versions/ 目录"
+// （GetInstalledVersionIds），而这里校验的是**快照**里的版本。两者不同步时
+// （在启动器外装了新版本、改了游戏目录、恰有一次刷新在跑）用户点选就会"没反应"
+// ——而前端是乐观更新，界面已经显示新版本、实际选中还是旧的，接着点启动就跑
+// 了另一个实例。所以第一遍失败时先重扫一次快照再试，只有确实不存在才拒绝。
 func Select(versionID string) bool {
 	if strings.TrimSpace(versionID) == "" {
 		return false
 	}
 	WaitForReady(readyWaitTimeout)
 
+	if selectOnce(versionID) {
+		return true
+	}
+
+	previous := CurrentSnapshot()
+	rescanSource := strings.TrimSpace(previous.SourcePath)
+	if rescanSource == "" {
+		rescanSource = ResolveConfiguredSourcePath()
+	}
+	Refresh(context.Background(), rescanSource)
+
+	return selectOnce(versionID)
+}
+
+// selectOnce 按当前快照尝试选中一次；返回是否成功（含"已经就是选中项"）。
+func selectOnce(versionID string) bool {
 	gate.Lock()
 	outcome, published := applySelect(versionID)
 	gate.Unlock()

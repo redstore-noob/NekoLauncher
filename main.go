@@ -13,6 +13,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -29,6 +30,16 @@ func main() {
 		backdrop = windows.Acrylic // 该功能(亚克力背景)仅Windows有效。
 	}
 	bgR, bgG, bgB := startupBackgroundColour()
+	// Linux 合成策略必须在 wails.Run 之前定好（WebKit 设置只在创建 webview 时生效）。
+	// 不填 options.Linux 时 wails 会强制 Never —— 全部帧走软件合成，毛玻璃、
+	// 滚动和场景壁纸一起掉帧，这就是 Linux 端"卡顿"的根因。
+	linuxGpuPolicy := linux.WebviewGpuPolicyOnDemand
+	if !config.LinuxGpuAccelerationEnabled() {
+		linuxGpuPolicy = linux.WebviewGpuPolicyNever
+	}
+	// WebView2 的 GPU 开关同样只在创建时生效，关掉后界面走软件渲染（明显变卡），
+	// 只留给 GPU 驱动有问题、开着就花屏/闪退的用户（设置页可切，需重启生效）。
+	windowsGpuDisabled := !config.WindowsGpuAccelerationEnabled()
 
 	err := wails.Run(&options.App{
 		Title:     "NekoLauncher",
@@ -87,9 +98,13 @@ func main() {
 			api.Music, api.Monitor, api.Server, api.ServerHost,
 			api.Online, api.System, api.Plugin, api.Update,
 		},
+		Linux: &linux.Options{
+			WebviewGpuPolicy: linuxGpuPolicy,
+		},
 		Windows: &windows.Options{
 			WindowIsTranslucent:  true,
 			WebviewIsTransparent: true,
+			WebviewGpuIsDisabled: windowsGpuDisabled,
 			BackdropType:         backdrop,
 			// 关闭 Wails 的默认窗口框架装饰：不关的话它会在每次 WM_ACTIVATE
 			// （窗口获得/失去焦点的每次点击、Alt-Tab）调 DwmExtendFrameIntoClientArea

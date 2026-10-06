@@ -38,6 +38,11 @@ func (a *ServerAPI) ParseServerAddress(input string) (network.ServerAddress, err
 
 // ---- SystemAPI ----
 
+// TraySupported 当前平台是否有系统托盘（Windows / Linux 为真，macOS 等为假）。
+// 前端据此决定要不要提供「最小化到托盘」：没有托盘的平台上隐藏窗口就再也
+// 显示不回来了。平台能力一律由后端回答，前端不拿 userAgent 猜（见 lib/platform.ts）。
+func (a *SystemAPI) TraySupported() bool { return TraySupported() }
+
 // GetFormattedVersion 格式化版本号，如 "NekoLauncher版本号:1.0.0-preview4"。
 func (a *SystemAPI) GetFormattedVersion() string { return info.FormatVersionString() }
 

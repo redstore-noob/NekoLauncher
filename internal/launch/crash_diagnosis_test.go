@@ -161,6 +161,65 @@ func TestDiagnoseCrashNewRules(t *testing.T) {
 	}
 }
 
+// TestDiagnoseCrashJVMStartupFailure "点了启动，窗口一闪就关"这一类：JVM 在
+// 初始化阶段就退出，不进游戏、不生成 crash-report，只有 stderr 几行。
+// 这里用真机抓到的原始输出做用例（Java 21 收到 Java 25 才有的长选项）。
+func TestDiagnoseCrashJVMStartupFailure(t *testing.T) {
+	// 日志行前面带 [GAME][stderr] 前缀，异常行规则匹配不到行首，必须靠专门的规则
+	unknownOption := strings.Join([]string{
+		"[12:00:00][LAUNCH]Java 进程已启动，进程 ID：40180。",
+		"[12:00:01][GAME][stderr] Unrecognized option: --sun-misc-unsafe-memory-access=allow",
+		"[12:00:01][GAME][stderr] Error: Could not create the Java Virtual Machine.",
+		"[12:00:01][GAME][stderr] Error: A fatal exception has occurred. Program will exit.",
+		"[12:00:01][LAUNCH]游戏进程已退出，退出代码：1。",
+	}, "\n")
+	diagnosis := DiagnoseCrash(CrashDiagnosisInput{LogText: unknownOption})
+	suspected := strings.Join(diagnosis.Suspected, " | ")
+
+	if !strings.Contains(suspected, "JVM 启动参数") {
+		t.Fatalf("应命中 JVM 启动参数不兼容，实际：%+v", diagnosis.Suspected)
+	}
+	// 具体是哪条参数必须原样出现在 Details 里——用户要据此删掉它
+	if !hasDetail(diagnosis, "Unrecognized option: --sun-misc-unsafe-memory-access=allow") {
+		t.Fatalf("Details 应含被拒的参数行，实际：%+v", diagnosis.Details)
+	}
+
+	// 老版本启动器残留的 Java 9 已移除参数（真机日志里出现过的那条）
+	removedFlag := "[12:00:01][GAME][stderr] Unrecognized VM option 'UseFastAccessorMethods'"
+	if got := DiagnoseCrash(CrashDiagnosisInput{LogText: removedFlag}); !strings.Contains(
+		strings.Join(got.Suspected, " | "), "JVM 启动参数") {
+		t.Fatalf("Unrecognized VM option 应命中 JVM 启动参数，实际：%+v", got.Suspected)
+	}
+
+	// 堆要不到内存（-Xmx 比机器能给的大）属于同一类"初始化就退出"，但处置不同
+	heap := strings.Join([]string{
+		"Error occurred during initialization of VM",
+		"Could not reserve enough space for 8388608KB object heap",
+	}, "\n")
+	heapDiagnosis := DiagnoseCrash(CrashDiagnosisInput{LogText: heap})
+	if got := strings.Join(heapDiagnosis.Suspected, " | "); !strings.Contains(got, "内存设置超出系统可用范围") {
+		t.Fatalf("堆保留失败应命中内存设置规则，实际：%+v", heapDiagnosis.Suspected)
+	}
+
+	// 精度：泛化的收尾行单独出现时不该被当成 JVM 参数问题（它伴随所有 VM 初始化失败）
+	if got := DiagnoseCrash(CrashDiagnosisInput{
+		LogText: "Error: A fatal exception has occurred. Program will exit.",
+	}); len(got.Suspected) != 0 {
+		t.Fatalf("只有通用收尾行时不应给出结论，实际：%+v", got.Suspected)
+	}
+}
+
+// hasDetail 判断 Details 里是否出现了某条证据（去空白后比较，允许截断标记）。
+func hasDetail(diagnosis CrashDiagnosis, want string) bool {
+	for _, detail := range diagnosis.Details {
+		if strings.Contains(detail, want) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // TestLoadNewestCrashReport 多份报告时取最新的一份，且忽略非 .txt。
 func TestLoadNewestCrashReport(t *testing.T) {
 	directory := t.TempDir()

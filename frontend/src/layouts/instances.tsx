@@ -1010,13 +1010,9 @@ const InstancesPage: React.FC = () => {
   const instanceDirection = useSwitchDirection(
     versions.findIndex((v) => v === selected),
   );
-  // 选中高亮块的几何信息：像 HeroUI 的 cursor 一样在列表项之间平移
-  const listRef = useRef<HTMLDivElement | null>(null);
-  const itemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const [highlight, setHighlight] = useState<{
-    top: number;
-    height: number;
-  } | null>(null);
+  // 选中高亮直接画在选中按钮上（背景 + 左侧强调线），随内容一起布局，
+  // 不再悬浮测量定位——旧版 pill 靠 getBoundingClientRect 量位置，
+  // 与行折叠/过滤动画不同步时会"飘走"。
   // 左列折叠状态：首屏的行展开（0fr→1fr）推迟到展示名解析就绪之后再播。
   // 展示名（加载器实例第二行）是逐实例异步返回的：此前 rAF 后立即展开，
   // 名字随后一个个到货、行一个个变高，整列反复下移——"进页面列表莫名动一下"。
@@ -1070,55 +1066,6 @@ const InstancesPage: React.FC = () => {
     };
   }, [versions]);
 
-  // 选中项 / 列表变化后测量高亮块几何，供下方位移动画使用（下一帧再量一次，
-  // 覆盖列表布局动画尚未落定的情况）。用 rect 差值测量，不依赖 offsetParent。
-  useLayoutEffect(() => {
-    const container = listRef.current;
-    const node = itemRefs.current[selected];
-
-    if (!container || !node) {
-      setHighlight(null);
-
-      return;
-    }
-
-    const measure = () => {
-      const containerRect = container.getBoundingClientRect();
-      const nodeRect = node.getBoundingClientRect();
-
-      // 列表用 gap-0.5(0.125rem=2px)，选中项之前的每个 gap 都会累积偏移。
-      // 计算选中项在可见列表中的序号，补偿之前所有 gap 的总高度。
-      const selectedIndex = filteredVersions.indexOf(selected);
-      const gapOffset = selectedIndex > 0 ? selectedIndex * 2 : 0; // gap-0.5 = 2px
-
-      setHighlight({
-        top: nodeRect.top - containerRect.top + container.scrollTop - gapOffset,
-        height: nodeRect.height,
-      });
-    };
-
-    // 首次进入页面时 rowsReady 会从 false→true 触发折叠动画(0fr→1fr, 250ms)，
-    // 必须等动画完成后再测量，否则拿到的是压缩状态的错误高度/位置。
-    // 后续切换实例时 rowsReady 恒为 true，动画已结束，可以立即测量。
-    if (!rowsReady) {
-      return; // 动画尚未开始，等下一轮
-    }
-
-    const initialDelay = setTimeout(measure, 260); // 等折叠动画(250ms)结束
-
-    // 跟随真实尺寸变化：自定义名是异步返回的，行内容变高后 pill 也必须跟着变。
-    // 之前只依赖 [selected, versions.length, loading]，异步到货时不会重测，
-    // pill 会停留在旧高度。
-    const observer = new ResizeObserver(measure);
-
-    observer.observe(node);
-    if (node.firstElementChild) observer.observe(node.firstElementChild);
-
-    return () => {
-      clearTimeout(initialDelay);
-      observer.disconnect();
-    };
-  }, [selected, versions.length, loading, rowsReady, filteredVersions]);
   const [contentSearch, setContentSearch] = useState("");
   const [contentBusy, setContentBusy] = useState("");
   const [newName, setNewName] = useState("");
@@ -2495,7 +2442,6 @@ const InstancesPage: React.FC = () => {
             />
           </div>
           <div
-            ref={listRef}
             className="relative flex-1 overflow-y-auto flex flex-col gap-0.5 outline-none"
             // 显式 listbox 角色：这个列表支持 ↑/↓ 键切换与双击（a11y 要求）
             role="listbox"
@@ -2506,30 +2452,6 @@ const InstancesPage: React.FC = () => {
             }}
             onKeyDown={handleListKeyDown}
           >
-            {highlight ? (
-              <motion.div
-                key={`highlight-${selected}`}
-                aria-hidden
-                animate={{
-                  opacity: 1,
-                  x: 0,
-                  transition: {
-                    opacity: { duration: 0.2, delay: rowsReady ? 0.26 : 0 },
-                    x: {
-                      duration: 0.3,
-                      delay: rowsReady ? 0.26 : 0,
-                      ease: [0.22, 1, 0.36, 1],
-                    },
-                  },
-                }}
-                className="nya-instance-pill pointer-events-none absolute left-0 right-0 z-0 overflow-hidden rounded-lg bg-blue-100/70 dark:bg-blue-900/30"
-                initial={{ opacity: 0, x: -20 }}
-                style={{ height: highlight.height, top: highlight.top }}
-              >
-                {/* 无卡列表的选中态：一条左侧强调线，不靠阴影抬升 */}
-                <span className="absolute inset-y-0 left-0 w-[3px] bg-blue-500" />
-              </motion.div>
-            ) : null}
             <AnimatePresence initial={false}>
               {filteredVersions.map((v) => (
                 <motion.div
@@ -2552,12 +2474,9 @@ const InstancesPage: React.FC = () => {
                   >
                     <div className="min-h-0 overflow-hidden">
                       <button
-                        ref={(el) => {
-                          itemRefs.current[v] = el;
-                        }}
                         className={`relative flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left cursor-pointer ${
                           v === selected
-                            ? "font-semibold text-blue-600 dark:text-blue-300"
+                            ? "bg-blue-100/70 dark:bg-blue-900/30 font-semibold text-blue-600 dark:text-blue-300"
                             : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
                         }`}
                         onClick={() => {
@@ -2567,11 +2486,15 @@ const InstancesPage: React.FC = () => {
                         }}
                         onContextMenu={(e) => openInstanceMenu(v, e)}
                       >
-                        <span className="relative z-10 flex flex-shrink-0">
+                        {v === selected ? (
+                          // 无卡列表的选中态：一条左侧强调线，不靠阴影抬升
+                          <span className="absolute inset-y-0 left-0 w-[3px] rounded-l-lg bg-blue-500" />
+                        ) : null}
+                        <span className="flex flex-shrink-0">
                           {renderInstanceIcon(v, "w-7 h-7")}
                         </span>
                         {/* 主显示实例自己的名称；版本号降级为次行小字 */}
-                        <span className="relative z-10 min-w-0 flex-1">
+                        <span className="min-w-0 flex-1">
                           <span className="block truncate text-[13px] leading-tight">
                             {v}
                           </span>

@@ -30,7 +30,6 @@
 
 ## 项目未来将会更新的内容&未完成的内容
 
-- CurseForge资源相关:API KEY相关内容正在商讨中，后端功能已完毕，我们将会尽快上线相关内容。
 - 插件在线商店:没钱买服务器这个真不一定😭
 
 ## ❓关于新仓库的问题Q&A
@@ -127,9 +126,14 @@ _下列名单没有排名，没有先后，我发自内心的感谢每一位为�
 - [Vite](https://vite.dev) — 前端构建工具。
 - [TypeScript](https://www.typescriptlang.org) — 类型化的 JavaScript。
 
+## 贡献相关
+
+Issue：目前受理关于启动器的Bug反馈以及建议，请不要在Issue中抒发个人情绪。  
+⏫PR:**请在添加/修改任何功能前仔细阅读贡献指南，如果未阅读贡献指南就提交PR的一律打回。**  
+[贡献指南](CONTRIBUTING.md)
+
 ## 📄关于其他文档
 
 [隐私政策](docs/TERMS.md)
-[贡献指南](CONTRIBUTING.md)
 [许可证(Apache 2.0)](LICENSE)
 [更新日志](docs/UPDATE_LOG.md)

@@ -809,13 +809,6 @@ html[data-panel-blur="off"] .nya-nowplaying {
   animation-delay: 0.22s;
 }
 
-/* 实例选中高亮块：像 HeroUI cursor 一样在列表项之间平移（top/height 过渡） */
-.nya-instance-pill {
-  transition:
-    top 0.32s cubic-bezier(0.22, 1, 0.36, 1),
-    height 0.32s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
 /* 创作中心入口卡片错峰入场：fill 只用 backwards（延迟期保持起始帧），
    结束后不锁定 transform，卡片自身的 hover:scale 缩放不受影响 */
 @keyframes nya-card-in {
@@ -848,8 +841,7 @@ html[data-panel-blur="off"] .nya-nowplaying {
   .nya-switch-in-back,
   .nya-instance-in-fwd,
   .nya-instance-in-back,
-  .nya-instance-stagger > *,
-  .nya-instance-pill {
+  .nya-instance-stagger > * {
     animation: none;
     transition: none;
   }

@@ -58,6 +58,8 @@ import {
   WEB_WALLPAPER_INTERACTIVE_KEY,
   WE_SCENE_RESOLUTION_KEY,
   WE_SCENE_FPS_KEY,
+  LINUX_GPU_KEY,
+  WINDOWS_GPU_KEY,
   useBackground,
   BackgroundMode,
 } from "../background";
@@ -65,7 +67,7 @@ import { useThemeMode } from "../../theme";
 import { LOCALE_OPTIONS, useI18n, type Locale } from "../../i18n";
 import { useThemeColor, THEME_COLOR_PRESETS } from "../../theme-color";
 import { useSimpleMode } from "../simple-mode";
-import { isLinuxPlatform } from "../../lib/platform";
+import { isLinuxPlatform, isWindowsPlatform } from "../../lib/platform";
 import {
   HOME_WIDGET_COLUMNS_KEY,
   LAUNCH_CARD_BG_KEY,
@@ -149,6 +151,32 @@ const AppearanceSection: React.FC = () => {
   } | null>(null);
   // 最近一次"设为桌面壁纸"的结果反馈（成功 / 失败原因），显示在行提示里
   const [desktopApplyMessage, setDesktopApplyMessage] = useState("");
+  // Linux 下的 WebKitGTK 硬件加速开关。该配置由 Go 侧在 wails.Run 之前读取
+  // （webview 的合成策略只在创建时生效），前端只负责写值，故需提示重启。
+  const [linuxGpu, setLinuxGpu] = useState(true);
+  // Windows 下的 WebView2 硬件加速开关，生效时机与 Linux 一致（下次启动）。
+  const [windowsGpu, setWindowsGpu] = useState(true);
+
+  useEffect(() => {
+    if (isLinuxPlatform()) {
+      GetValue(LINUX_GPU_KEY)
+        .then((raw) =>
+          setLinuxGpu((raw ?? "").trim().toLowerCase() !== "false"),
+        )
+        .catch(() => {
+          /* 读配置失败按默认开启显示 */
+        });
+    }
+    if (isWindowsPlatform()) {
+      GetValue(WINDOWS_GPU_KEY)
+        .then((raw) =>
+          setWindowsGpu((raw ?? "").trim().toLowerCase() !== "false"),
+        )
+        .catch(() => {
+          /* 读配置失败按默认开启显示 */
+        });
+    }
+  }, []);
 
   useEffect(() => {
     if (!isLinuxPlatform()) return;
@@ -231,6 +259,18 @@ const AppearanceSection: React.FC = () => {
   const toggleWebWallpaperInteractive = async (enabled: boolean) => {
     await SetValue(WEB_WALLPAPER_INTERACTIVE_KEY, enabled ? "true" : "false");
     refresh();
+  };
+
+  // Linux GPU 合成：写配置即可，生效时机在下次启动（wails.Run 之前读取）
+  const toggleLinuxGpu = async (enabled: boolean) => {
+    setLinuxGpu(enabled);
+    await SetValue(LINUX_GPU_KEY, enabled ? "true" : "false");
+  };
+
+  // Windows WebView2 GPU 加速：同样只写配置，下次启动生效
+  const toggleWindowsGpu = async (enabled: boolean) => {
+    setWindowsGpu(enabled);
+    await SetValue(WINDOWS_GPU_KEY, enabled ? "true" : "false");
   };
 
   // 场景壁纸渲染分辨率(相对窗口 CSS 像素的倍数)与刷新率上限;
@@ -616,6 +656,36 @@ const AppearanceSection: React.FC = () => {
           </span>
         </div>
       </SettingRow>
+
+      {/* 关硬件加速*/}
+      {isWindowsPlatform() ? (
+        <SettingRow
+          hint={t("改动需重启启动器生效，当没有出现问题时请不要关闭。")}
+          label={t("硬件加速")}
+        >
+          <Switch
+            aria-label={t("硬件加速")}
+            color="primary"
+            isSelected={windowsGpu}
+            size="sm"
+            onValueChange={(v) => void toggleWindowsGpu(v)}
+          />
+        </SettingRow>
+      ) : null}
+      {isLinuxPlatform() ? (
+        <SettingRow
+          hint={t("改动需重启启动器生效，当没有出现问题时请不要关闭。")}
+          label={t("Linux 硬件加速")}
+        >
+          <Switch
+            aria-label={t("Linux 硬件加速")}
+            color="primary"
+            isSelected={linuxGpu}
+            size="sm"
+            onValueChange={(v) => void toggleLinuxGpu(v)}
+          />
+        </SettingRow>
+      ) : null}
 
       <SettingRow label={t("亚克力模糊")}>
         <Switch

@@ -8,7 +8,7 @@ import "fmt"
 const (
 	MainVersion = 0
 	SubVersion  = 4
-	FixVersion  = 0
+	FixVersion  = 1
 	Suffix      = ""
 )
 

@@ -65,6 +65,7 @@ import {
 import {
   GetLaunchSnapshot,
   Launch,
+  LaunchVersion,
   StopGame,
   GetPlaytimeStats,
 } from "../../wailsjs/go/bindings/LauncherAPI";
@@ -189,6 +190,14 @@ const HomePage: React.FC = () => {
   const [selectedAccountKey, setSelectedAccountKey] = useState("");
   const [avatarMap, setAvatarMap] = useState<Record<string, string>>({});
 
+  // runLaunch 的依赖数组必须保持空（它经 context 传给小组件与插件，身份一变
+  // 就会牵动一片重渲染），但启动时要读到**最新**的选中版本，所以用 ref 传递：
+  // 渲染期同步赋值是 React 官方认可的 ref 用法（见 components/download/
+  // ContentDownloadOverlay 的 stateRef）。
+  const selectedVersionRef = useRef(selectedVersion);
+
+  selectedVersionRef.current = selectedVersion;
+
   // 启动管线状态（launch:changed 快照驱动）
   const [snap, setSnap] = useState<launch.GameLaunchSnapshot | null>(null);
   const [launchError, setLaunchError] = useState("");
@@ -302,9 +311,28 @@ const HomePage: React.FC = () => {
   // 版本切换 → 同步到后端实例存储（启动管线以选中的实例为准）
   useEffect(() => {
     if (!selectedVersion) return;
-    SelectInstance(selectedVersion).catch((err) =>
-      console.error(t("切换版本失败"), err),
-    );
+    let alive = true;
+
+    SelectInstance(selectedVersion)
+      .then((accepted) => {
+        if (!alive || accepted !== false) return;
+        // 后端拒绝了这次选中（版本不在它的实例快照里）。界面是乐观更新的，
+        // 继续显示这个版本会让"点启动"跑到别的实例上——正是用户报的
+        // "版本选不了、一点就在那个实例立马开、然后立马关"。这里回读真实
+        // 状态：重扫实例列表 + 覆盖选中项，并把原因说出来。
+        console.error(t("切换版本失败"), selectedVersion);
+        setLaunchError(
+          t("无法切换到版本 {0}：实例列表里没有它，已重新扫描。", {
+            "0": selectedVersion,
+          }),
+        );
+        void loadVersions();
+      })
+      .catch((err) => console.error(t("切换版本失败"), err));
+
+    return () => {
+      alive = false;
+    };
   }, [selectedVersion]);
 
   // 启动快照：初始拉取一次 + 订阅 launch:changed。
@@ -352,8 +380,23 @@ const HomePage: React.FC = () => {
     ): Promise<string | null> => {
       setLaunchError("");
       try {
+        // 显式按"界面上显示的那个版本"启动：选中态同步到后端是异步的
+        // （上面的 SelectInstance），用户选完立刻点启动时它可能还没落地；
+        // 而 Launch 走的是后端记录的选中项，于是会启动上一个实例——现象就是
+        // "版本选不了、一点就在那个实例立马开"。这里把版本号直接传下去，
+        // 界面显示什么就启动什么，不再依赖那次异步同步的时序。
+        const target = selectedVersionRef.current;
+
+        if (target) {
+          // 顺手把选中态也同步一次（插件的"当前实例"读的是它）；失败不阻断，
+          // 下面仍然按显式版本启动。
+          await SelectInstance(target).catch(() => false);
+        }
+
         // 阻塞至启动流程结束（进程创建成功，或失败返回原因）；期间状态由快照事件驱动
-        const result = await Launch(serverHost, serverPort, worldName);
+        const result = target
+          ? await LaunchVersion(target, serverHost, serverPort, worldName)
+          : await Launch(serverHost, serverPort, worldName);
 
         if (!result?.Success) {
           const message = result?.Message || t("启动失败");
@@ -394,6 +437,9 @@ const HomePage: React.FC = () => {
         return errorMessage(ex);
       }
       setSelectedVersion(versionId);
+      // runLaunch 在同一 tick 里紧随其后就要读这个值，而 setState 要到下次渲染才
+      // 落地：ref 必须在这里直接写，否则"最近存档"会拿上一个版本去启动。
+      selectedVersionRef.current = versionId;
 
       // 使用快速进存档功能（Minecraft 1.20+ 支持）
       return runLaunch("", null, worldName);
@@ -1176,6 +1222,7 @@ const HomePage: React.FC = () => {
           ) : null}
           <aside
             ref={launchPanelRef}
+            data-neko-launch-panel
             className={`
               group absolute inset-0 flex flex-col overflow-hidden rounded-large
               border nya-border backdrop-blur-md shadow-lg

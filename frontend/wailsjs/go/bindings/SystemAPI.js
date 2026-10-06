@@ -138,6 +138,10 @@ export function StoreSecret(arg1, arg2) {
   return window['go']['bindings']['SystemAPI']['StoreSecret'](arg1, arg2);
 }
 
+export function TraySupported() {
+  return window['go']['bindings']['SystemAPI']['TraySupported']();
+}
+
 export function WriteLog(arg1, arg2) {
   return window['go']['bindings']['SystemAPI']['WriteLog'](arg1, arg2);
 }

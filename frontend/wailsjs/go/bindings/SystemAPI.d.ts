@@ -72,6 +72,8 @@ export function Startup(arg1:context.Context):Promise<void>;
 
 export function StoreSecret(arg1:string,arg2:string):Promise<boolean>;
 
+export function TraySupported():Promise<boolean>;
+
 export function WriteLog(arg1:string,arg2:string):Promise<boolean>;
 
 export function WritePngFile(arg1:string,arg2:string):Promise<void>;

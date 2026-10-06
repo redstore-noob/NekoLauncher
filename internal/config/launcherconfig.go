@@ -293,6 +293,46 @@ func SaveAcrylicBackdropEnabled(enabled bool) {
 	setValue("launcherAcrylicEnabled", formatBool(enabled))
 }
 
+// LinuxGpuAccelerationEnabled Linux 下是否允许 WebKitGTK 走 GPU 合成。
+//
+// 未设置或值损坏时默认开启。wails v2 在 options.Linux 为 nil 时会把
+// WebviewGpuPolicy 强制成 Never（见 wails 内部 window.go 对 issue #2977 的
+// 兜底），于是 Linux 上所有帧都走软件合成——毛玻璃、滚动与场景壁纸全部变慢，
+// 这正是"Linux 卡顿"的根因。默认值因此取 WebKit 自己的 OnDemand 策略：
+// 有可用 GPU 就用，驱动有问题时 WebKit 自行回落，不需要用户改配置。
+//
+// 只在 wails.Run 之前读取一次，改动需重启启动器生效（设置页开关经
+// ConfigAPI.SetValue 写 launcherLinuxGpuAcceleration，故这里没有 Save* 包装，
+// 与 closeAction 同一写法）。
+func LinuxGpuAccelerationEnabled() bool {
+	value := GetValue("launcherLinuxGpuAcceleration")
+	if value == "" {
+		return true
+	}
+	result, err := parseBool(value)
+	if err != nil {
+		return true
+	}
+	return result
+}
+
+// WindowsGpuAccelerationEnabled Windows 下 WebView2 是否启用 GPU 硬件加速。
+//
+// 未设置或值损坏时默认开启。wails v2 的 windows.WebviewGpuIsDisabled 只在
+// wails.Run 之前读一次，改动需重启启动器生效（设置页开关经 ConfigAPI.SetValue
+// 写 launcherWindowsGpuAcceleration，与 LinuxGpuAccelerationEnabled 同一写法）。
+func WindowsGpuAccelerationEnabled() bool {
+	value := GetValue("launcherWindowsGpuAcceleration")
+	if value == "" {
+		return true
+	}
+	result, err := parseBool(value)
+	if err != nil {
+		return true
+	}
+	return result
+}
+
 // AutoUpdateEnabled 启动时自动检查更新开关。未设置或值损坏时默认开启：
 // 只检查并提示，不会不经确认就替换启动器（替换动作始终由用户在弹窗里确认）。
 func AutoUpdateEnabled() bool {

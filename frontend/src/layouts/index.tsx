@@ -27,6 +27,7 @@ import FileDropOverlay from "../components/FileDropOverlay";
 import ErrorBoundary from "../components/ErrorBoundary";
 import SceneWallpaperRenderer from "../components/SceneWallpaperRenderer";
 import MicrosoftLoginProgress from "../components/microsoft-login-progress";
+import LaunchFXOverlay from "../components/launch/LaunchFXOverlay";
 import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
 import SwitchTransition, {
   useSwitchDirection,
@@ -35,6 +36,7 @@ import { SetValue } from "../../wailsjs/go/bindings/ConfigAPI";
 import {
   ExitLauncher,
   HideLauncher,
+  TraySupported,
 } from "../../wailsjs/go/bindings/SystemAPI";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { onNavigate } from "../lib/navigation";
@@ -284,6 +286,15 @@ const Shell: React.FC = () => {
   // ---- 点 X 的关闭询问（后端 OnBeforeClose 分发为 launcher:close-requested） ----
   const [closeAskOpen, setCloseAskOpen] = useState(false);
   const [rememberClose, setRememberClose] = useState(false);
+  // 平台有没有系统托盘（macOS 等为 false）：没有托盘时"最小化到托盘"会把
+  // 窗口藏进死路（托盘菜单是唯一唤回入口），所以不提供这个按钮。
+  const [traySupported, setTraySupported] = useState(false);
+
+  useEffect(() => {
+    void TraySupported()
+      .then((supported) => setTraySupported(supported === true))
+      .catch(() => setTraySupported(false));
+  }, []);
 
   useEffect(
     () => EventsOn("launcher:close-requested", () => setCloseAskOpen(true)),
@@ -421,6 +432,9 @@ const Shell: React.FC = () => {
       {/*全局下载中心（跨页面常驻：游戏安装 + 内容下载统一展示，类 KDE 通知样式）*/}
       <DownloadCenter onOpenDownloads={() => setActiveKey("download")} />
 
+      {/*启动特效：游戏进程拉起瞬间全窗口庆祝动画（pointer-events-none，纯观看）*/}
+      <LaunchFXOverlay />
+
       {/*全局文件拖放安装：拖 .jar / .zip / .mrpack 进窗口即可装进实例*/}
       <FileDropOverlay />
 
@@ -455,13 +469,15 @@ const Shell: React.FC = () => {
                 {t("记住我的选择")}
               </Checkbox>
               <div className="flex flex-wrap justify-end gap-2">
-                <Button
-                  startContent={<ArrowMinimize20Regular />}
-                  variant="flat"
-                  onPress={() => void answerClose("tray")}
-                >
-                  {t("最小化到托盘")}
-                </Button>
+                {traySupported ? (
+                  <Button
+                    startContent={<ArrowMinimize20Regular />}
+                    variant="flat"
+                    onPress={() => void answerClose("tray")}
+                  >
+                    {t("最小化到托盘")}
+                  </Button>
+                ) : null}
                 <Button
                   color="danger"
                   startContent={<Power20Regular />}

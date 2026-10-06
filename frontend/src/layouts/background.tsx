@@ -51,6 +51,18 @@ export const WEB_WALLPAPER_INTERACTIVE_KEY = "launcherWebWallpaperInteractive";
 export const WE_SCENE_RESOLUTION_KEY = "launcherWeSceneResolution";
 /** WE 场景壁纸刷新率上限（"auto"=自适应，重壁纸自动锁 30；或数字 fps） */
 export const WE_SCENE_FPS_KEY = "launcherWeSceneFps";
+/**
+ * Linux 下 WebKitGTK 是否走 GPU 合成（默认开启）。由 Go 侧在 wails.Run 之前
+ * 读取——webview 的合成策略只在创建时生效，故改动需重启启动器；键名与
+ * internal/config/launcherconfig.go 的 LinuxGpuAccelerationEnabled 一一对应。
+ */
+export const LINUX_GPU_KEY = "launcherLinuxGpuAcceleration";
+/**
+ * Windows 下 WebView2 是否启用 GPU 硬件加速（默认开启）。同样由 Go 侧在
+ * wails.Run 之前读取（WebviewGpuIsDisabled 只在创建 webview 时生效），
+ * 改动需重启启动器；键名与 launcherconfig.go 的 WindowsGpuAccelerationEnabled 对应。
+ */
+export const WINDOWS_GPU_KEY = "launcherWindowsGpuAcceleration";
 
 /** 毛玻璃强度默认值：blur 系数 = 强度 / 它，因此 70 时系数为 1（观感不变） */
 export const DEFAULT_PANEL_BLUR_STRENGTH = 70;
