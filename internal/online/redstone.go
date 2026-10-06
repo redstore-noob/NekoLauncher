@@ -17,6 +17,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"nekolauncher/internal/logs"
 )
 
 // 红石联机（RedstoneOnline）对接要点 —— 来自其公开实现：
@@ -464,9 +466,32 @@ func (p *redstoneProvider) apiRequest(
 	return payload, response.StatusCode, nil
 }
 
+// validateAPIKey 检查用户填写的红石联机密钥形态：中继按原样比较密钥字符串，
+// 这里只挡明显不可能通过的情况（含空格/换行、控制字符、超长粘贴），
+// 不限制字符集——自己搭的节点用什么约定都能配。
+func validateAPIKey(key string) error {
+	if key == "" {
+		return nil
+	}
+	if len(key) > 128 {
+		return errors.New("联机密钥过长（超过 128 个字符），请检查是否复制了多余内容")
+	}
+	for _, char := range key {
+		if char <= ' ' || char > '~' {
+			return errors.New("联机密钥含有空格或不可见字符，请检查后重新填写")
+		}
+	}
+
+	return nil
+}
+
 // ensureAPIKey 复用已保存的密钥，没有就现生成一个（20 位字母数字，与模组一致）。
 func (p *redstoneProvider) ensureAPIKey(existing string) (string, error) {
 	if key := strings.TrimSpace(existing); key != "" {
+		if err := validateAPIKey(key); err != nil {
+			return "", err
+		}
+
 		return key, nil
 	}
 	if p.store != nil {
@@ -479,7 +504,11 @@ func (p *redstoneProvider) ensureAPIKey(existing string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("生成联机密钥失败：%v", err)
 	}
-	saveSetting(p.store, keyRedstoneKey, key)
+	// 持久化失败不能吞：本次会话用新 Key、重启后又生成另一个，
+	// 旧 Key 名下的隧道在中继上永远删不掉（僵尸隧道占配额）。
+	if !saveSetting(p.store, keyRedstoneKey, key) {
+		logs.Write("ERROR", "红石联机密钥写入配置失败，重启后可能生成新密钥、遗留旧隧道")
+	}
 
 	return key, nil
 }
@@ -662,8 +691,15 @@ func (p *redstoneProvider) abortSession() {
 	}
 }
 
+// redstoneTunnelFailureLimit 单条转发协程连续失败的容忍次数：超过即判定
+// 数据面已死（中继端口被防火墙拦 / Key 被拒 / 本地服务端连不上），
+// 把会话置为 Error 并给出可操作提示——此前错误被无限静默重试吞掉，
+// UI 恒显示"隧道已就绪"，朋友连不上但没人知道为什么。
+const redstoneTunnelFailureLimit = 6
+
 // tunnelLoop 单条转发协程：连中继 → 等玩家 → 对接本地服务端 → 循环。
 func (p *redstoneProvider) tunnelLoop(ctx context.Context) {
+	consecutiveFailures := 0
 	for {
 		if ctx.Err() != nil {
 			return
@@ -676,6 +712,13 @@ func (p *redstoneProvider) tunnelLoop(ctx context.Context) {
 		if err != nil {
 			// 只有"确实服务过玩家"才立刻接下一个，否则退避一下避免空转打爆中继
 			if !served {
+				consecutiveFailures++
+				if consecutiveFailures >= redstoneTunnelFailureLimit {
+					p.fail(fmt.Errorf(
+						"中继数据面连接持续失败（已重试 %d 次）：%v。请检查本地防火墙对中继端口的放行、本地服务端是否在运行，或更换中继节点后重试。",
+						consecutiveFailures, err))
+					return
+				}
 				select {
 				case <-ctx.Done():
 					return
@@ -685,6 +728,7 @@ func (p *redstoneProvider) tunnelLoop(ctx context.Context) {
 
 			continue
 		}
+		consecutiveFailures = 0
 	}
 }
 

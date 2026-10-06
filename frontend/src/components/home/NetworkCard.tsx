@@ -161,7 +161,7 @@ const NetworkCard: React.FC = () => {
           );
         })}
         {rows.length === 0 ? (
-          <li className="rounded-2xl bg-black/5 px-4 py-3 text-center text-xs leading-relaxed text-gray-400 dark:bg-white/5">
+          <li className="rounded-lg bg-black/5 px-4 py-3 text-center text-xs leading-relaxed text-gray-400 dark:bg-white/5">
             {isLoading ? t("正在测量下载源延迟…") : t("没有可探测的下载源")}
           </li>
         ) : null}

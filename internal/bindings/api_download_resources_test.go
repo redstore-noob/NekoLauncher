@@ -2,9 +2,10 @@ package bindings
 
 // 资源搜索绑定（api_download_resources.go）的用例。
 //
-// 这里只覆盖"绑定层自己负责的事"：CurseForge API Key 的读写、资源站清单的
-// 可用性判定、以及未配置 Key 时的降级提示。真正的搜索/下载逻辑在
-// internal/download 里已被 httptest 用例覆盖——绑定层不该重复打网络。
+// 这里只覆盖"绑定层自己负责的事"：CurseForge API Key 的取值（唯一来源是
+// 编译期内置值）、资源站清单的可用性判定、以及未配置 Key 时的降级提示。
+// 真正的搜索/下载逻辑在 internal/download 里已被 httptest 用例覆盖——
+// 绑定层不该重复打网络。
 //
 // 存储目录必须指向 t.TempDir()：本包其余用例会读写 launcher.yaml，
 // 不隔离就会动到用户真实的 %USERPROFILE%\NekoLauncher。
@@ -27,31 +28,21 @@ func useTempConfigStorage(t *testing.T) {
 	t.Cleanup(func() { _ = config.SetStorageDirectory(original) })
 }
 
-// TestCurseForgeAPIKeyRoundTrip 防的回归：
-// Key 存不进去（用户填了却每次都要重填）、读出来带首尾空格（请求头非法），
-// 或者清空后旧值还在（关闭配置却仍在用 Key）。
-func TestCurseForgeAPIKeyRoundTrip(t *testing.T) {
+// TestEffectiveCurseForgeAPIKeyIsBuiltinOnly 防的回归：
+// 生效 Key 偏离了编译期内置值（注入模式下被别的来源盖过、或自带首尾空格）。
+// 用户自行配置 Key 的功能已移除，内置值是唯一来源。
+func TestEffectiveCurseForgeAPIKeyIsBuiltinOnly(t *testing.T) {
 	useTempConfigStorage(t)
 
-	api := &DownloadAPI{}
-	// 注入模式（-ldflags -X）下初始值是内置 Key，否则为空串。
 	if got := effectiveCurseForgeAPIKey(); got != strings.TrimSpace(builtinCurseForgeAPIKey) {
-		t.Fatalf("初始应等于内置值（未注入时为空串），实际 %q", got)
+		t.Fatalf("生效 Key 应等于内置值（未注入时为空串），实际 %q", got)
 	}
-
-	if !api.SaveCurseForgeAPIKey("  $2a$10$abcdef  ") {
-		t.Fatal("保存 Key 应返回成功")
+	// 历史遗留的用户自配 Key（功能移除前写入的）必须不影响生效值。
+	if !config.SetValue("curseforgeApiKey", "stale-user-key") {
+		t.Fatal("写入遗留 Key 的配置应成功")
 	}
-	if got := effectiveCurseForgeAPIKey(); got != "$2a$10$abcdef" {
-		t.Fatalf("读出的 Key = %q，期望去掉首尾空格", got)
-	}
-	if got := config.GetValue("curseforgeApiKey"); got != "$2a$10$abcdef" {
-		t.Fatalf("配置键 curseforgeApiKey 的值 = %q", got)
-	}
-
-	api.SaveCurseForgeAPIKey("")
 	if got := effectiveCurseForgeAPIKey(); got != strings.TrimSpace(builtinCurseForgeAPIKey) {
-		t.Fatalf("清空用户 Key 后应回到内置值，实际 %q", got)
+		t.Fatalf("遗留的用户 Key 不应参与生效判定，实际 %q", got)
 	}
 }
 
@@ -64,10 +55,10 @@ func skipWhenBuiltinKeyInjected(t *testing.T) {
 	}
 }
 
-// TestGetResourceSourcesReflectsConfiguredKey 防的回归：
-// 资源站清单不看用户是否配了 Key（未配置也标"可用"，点了才报错；
-// 或者配置好了仍提示去设置里填 Key）。
-func TestGetResourceSourcesReflectsConfiguredKey(t *testing.T) {
+// TestGetResourceSourcesWithoutKeyMarksCurseForgeUnavailable 防的回归：
+// 资源站清单在 Key 未配置时也把 Modrinth 标"可用"（点了才能搜），
+// 而 CurseForge 必须标"不可用"（不满足就点进去报错），并带上提示文案。
+func TestGetResourceSourcesWithoutKeyMarksCurseForgeUnavailable(t *testing.T) {
 	skipWhenBuiltinKeyInjected(t)
 	useTempConfigStorage(t)
 
@@ -82,16 +73,7 @@ func TestGetResourceSourcesReflectsConfiguredKey(t *testing.T) {
 	if sources[1].ID != models.ResourceSourceCurseForge || sources[1].Available {
 		t.Fatalf("未配置 Key 时 CurseForge 应标为不可用：%+v", sources[1])
 	}
-	if sources[1].APIKeyApplyURL == "" {
-		t.Fatal("清单里必须带上 Key 申请地址（前端不再硬编码域名）")
-	}
-
-	api.SaveCurseForgeAPIKey("key-123")
-	configured := api.GetResourceSources()[1]
-	if !configured.Available || !configured.APIKeyConfigured {
-		t.Fatalf("配置 Key 后 CurseForge 应标为可用：%+v", configured)
-	}
-	if configured.Hint == "" {
+	if sources[1].Hint == "" {
 		t.Fatal("Hint 不应为空（界面直接展示）")
 	}
 }
@@ -115,8 +97,8 @@ func TestSearchResourcesWithoutKeyReturnsGuidance(t *testing.T) {
 	if !result.NeedsAPIKey {
 		t.Fatal("应标记 NeedsAPIKey")
 	}
-	if !strings.Contains(result.Message, "CurseForge API Key") {
-		t.Fatalf("提示应说明要填 Key：%q", result.Message)
+	if !strings.Contains(result.Message, "内置 API Key") {
+		t.Fatalf("提示应说明内置 Key 未生效：%q", result.Message)
 	}
 	if result.Hits == nil {
 		t.Fatal("Hits 不能为 nil（前端会直接 .map）")
@@ -160,32 +142,7 @@ func TestDownloadResourceVersionWithoutKeyExplainsWhy(t *testing.T) {
 	if err == nil {
 		t.Fatal("未配置 Key 时下载必须报错")
 	}
-	if !strings.Contains(err.Error(), "CurseForge API Key") {
-		t.Fatalf("错误信息应指向 Key 配置：%v", err)
-	}
-}
-
-// TestCurseForgeAPIKeyBuiltinFallback 防的回归：
-// 编译期注入的内置 Key（-ldflags -X）没有生效（发布版用户不填 Key 就用不了
-// CurseForge），或者生效后盖过了用户自己配置的 Key（用户填的 Key 应优先）。
-// 两种运行模式都要成立：普通 go test（builtin 为空）与注入模式（builtin 非空）。
-func TestCurseForgeAPIKeyBuiltinFallback(t *testing.T) {
-	useTempConfigStorage(t)
-
-	api := &DownloadAPI{}
-	if got := effectiveCurseForgeAPIKey(); got != strings.TrimSpace(builtinCurseForgeAPIKey) {
-		t.Fatalf("未配置用户 Key 时应回落到内置值：got %q, builtin %q", got, builtinCurseForgeAPIKey)
-	}
-
-	if !api.SaveCurseForgeAPIKey("user-key") {
-		t.Fatal("保存用户 Key 应返回成功")
-	}
-	if got := effectiveCurseForgeAPIKey(); got != "user-key" {
-		t.Fatalf("用户配置的 Key 应优先于内置值：got %q", got)
-	}
-
-	api.SaveCurseForgeAPIKey("")
-	if got := effectiveCurseForgeAPIKey(); got != strings.TrimSpace(builtinCurseForgeAPIKey) {
-		t.Fatalf("清空用户 Key 后应回到内置值：got %q", got)
+	if !strings.Contains(err.Error(), "内置 API Key") {
+		t.Fatalf("错误信息应指向内置 Key 未生效：%v", err)
 	}
 }

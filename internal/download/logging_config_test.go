@@ -50,7 +50,7 @@ func TestEnsureLoggingConfigFromMetadataURL(t *testing.T) {
 		// 版本描述：logging 指向同一台测试服务器
 		payload := `{"id":"1.21.1","logging":{"client":{"argument":"-Dlog4j.configurationFile=${path}",
 		  "file":{"id":"client-1.12.xml","sha1":"` + checksum + `","size":` + strconv.Itoa(len(content)) +
-			`,"url":"` + "https://"+request.Host+`/client-1.12.xml"}}}}`
+			`,"url":"` + "https://" + request.Host + `/client-1.12.xml"}}}}`
 		_, _ = writer.Write([]byte(payload))
 	}))
 	defer server.Close()

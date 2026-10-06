@@ -299,6 +299,11 @@ jobs:
           # nfpm 的 --target 要求目录已存在，先建好（Windows 那条路径里也建过，互不冲突）
           mkdir -p dist
 
+          # 发行包的图标槽位是标准 256x256：1.4MB 的原图直接映射进
+          # /usr/share/icons/hicolor/256x256 不规范（AppImage 步骤对 linuxdeploy
+          # 的教训同样适用于 deb/rpm）。ImageMagick 在 ubuntu runner 上预装。
+          convert build/appicon.png -resize 256x256 build/appicon-256.png
+
           for format in $formats; do
             case "$format" in
               deb)
@@ -439,7 +444,9 @@ jobs:
 
   release:
     name: Release
-    needs: build
+    # 质量门一起等：checks（vet/test）与 frontend（tsc/eslint/vitest）任一失败
+    # 都不允许发版——tag 推送时跳过质量检查等于把没过检的构建直接发出去
+    needs: [checks, frontend, build]
     # 触发自版本标签（on.push.tags 过滤：v1.2.3 或 0.2.0 风格）即发布
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest

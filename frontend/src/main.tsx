@@ -21,12 +21,19 @@ import { BrowserRouter } from "react-router-dom";
 // 纯浏览器 dev（无 Wails runtime）时兜底 window.go/window.runtime，见该文件注释
 import "./wails-mock.ts";
 
+import { installBackendGate } from "./plugin/backend-gate";
+
+// 后端闸门必须先于一切插件加载：收走 window.go、封堵 WailsInvoke 等原始出口，
+// 让插件只能通过注入的 api 对象触达宿主能力（见 plugin/backend-gate.ts）
+installBackendGate();
+
 import App from "./App.tsx";
 import { Provider } from "./provider.tsx";
 import { ThemeProvider, initTheme } from "./theme.tsx";
 import { ThemeColorProvider, initThemeColor } from "./theme-color.tsx";
 import { I18nProvider, initLocale } from "./i18n.tsx";
 import { LogViewerProvider } from "./components/LogViewer";
+import { LaunchProvenanceProvider } from "./components/launch/LaunchProvenancePanel";
 import { registerBuiltins } from "./plugin";
 import "@/styles/globals.css";
 
@@ -50,7 +57,9 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
         <ThemeColorProvider>
           <Provider>
             <LogViewerProvider>
-              <App />
+              <LaunchProvenanceProvider>
+                <App />
+              </LaunchProvenanceProvider>
             </LogViewerProvider>
           </Provider>
         </ThemeColorProvider>

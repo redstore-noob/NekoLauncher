@@ -72,6 +72,22 @@ namespace NekoSolo.Installer
         }
     }
 
+    /// <summary>modrinth.index.json 的最小解析视图：只取 files[].fileSize
+    /// 供安装器欢迎页概览（mod 数量与下载体积），其余字段忽略。</summary>
+    [DataContract]
+    internal sealed class ModrinthIndex
+    {
+        [DataMember(Name = "files")]
+        public ModrinthIndexFile[] Files { get; set; }
+    }
+
+    [DataContract]
+    internal sealed class ModrinthIndexFile
+    {
+        [DataMember(Name = "fileSize")]
+        public long FileSize { get; set; }
+    }
+
     /// <summary>安装完成写入 NekoLauncher-data/neko-solo.json 的标记；
     /// 启动器首启消费一次（applied 置 true 后不再覆盖用户配置）。</summary>
     [DataContract]
@@ -118,6 +134,11 @@ namespace NekoSolo.Installer
 
         [DataMember(Name = "javaExecutable")]
         public string JavaExecutable { get; set; }
+
+        /// <summary>v3 格式：安装器落盘的待装 mrpack 绝对路径。启动器首启据此
+        /// 联网补全 mod / Minecraft 本体 / Java，成功后清空该字段。</summary>
+        [DataMember(Name = "pendingPayload", EmitDefaultValue = false)]
+        public string PendingPayload { get; set; }
 
         [DataMember(Name = "updateLink")]
         public string UpdateLink { get; set; }

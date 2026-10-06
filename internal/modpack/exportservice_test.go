@@ -232,6 +232,51 @@ func TestExportRejectsEmptySelection(t *testing.T) {
 	}
 }
 
+// TestExportReplacesQuestionMarkInOutputPath 输出路径里的 '?' 换成 '0'：
+// Windows 的文件名不允许 '?'，不换的话作者只会看到"点了保存什么都没生成"。
+func TestExportReplacesQuestionMarkInOutputPath(t *testing.T) {
+	content := newExportFixture(t)
+	items := CollectContent(content)
+	included := make([]string, 0, len(items))
+	for _, item := range items {
+		included = append(included, item.RelativePath)
+	}
+
+	directory := t.TempDir()
+	output := filepath.Join(directory, "究极包?.zip")
+	expected := filepath.Join(directory, "究极包0.zip")
+
+	result, err := Export(
+		context.Background(),
+		ModpackExportOptions{
+			Format:           FormatMultiMc,
+			PackName:         "究极包?",
+			PackVersion:      "1.0.0",
+			MinecraftVersion: "1.21.1",
+			IncludedPaths:    included,
+		},
+		content,
+		output,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("导出失败：%v", err)
+	}
+	if result.OutputPath != expected {
+		t.Errorf("导出结果路径 = %q，期望 %q", result.OutputPath, expected)
+	}
+	if _, err := os.Stat(expected); err != nil {
+		t.Fatalf("产物未落在替换后的路径：%v", err)
+	}
+	if _, err := os.Stat(output); err == nil {
+		t.Errorf("不该留下带 '?' 的产物：%s", output)
+	}
+	// 临时文件同样由输出路径派生，改名后不该有残留
+	if leftovers, _ := filepath.Glob(filepath.Join(directory, "*.nya-pack-tmp*")); len(leftovers) != 0 {
+		t.Errorf("残留临时文件：%v", leftovers)
+	}
+}
+
 // TestExportProfileRoundtrip 档案存取往返（弹窗打开时读、导出成功后写）。
 func TestExportProfileRoundtrip(t *testing.T) {
 	versionDir := t.TempDir()

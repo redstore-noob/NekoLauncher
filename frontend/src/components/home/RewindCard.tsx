@@ -258,7 +258,7 @@ const RewindCard: React.FC = () => {
     >
       <div className="flex min-h-0 gap-2">
         {/* 左列：所有实例的存档聚合列表 */}
-        <div className="nya-scroll flex w-36 flex-none flex-col overflow-y-auto rounded-xl border nya-border bg-default-100/40 p-1.5">
+        <div className="nya-scroll flex w-36 flex-none flex-col overflow-y-auto rounded-lg border nya-border bg-default-100/40 p-1.5">
           <div className="px-1.5 pb-1 text-[10px] font-medium text-gray-400">
             {t("存档")}
           </div>

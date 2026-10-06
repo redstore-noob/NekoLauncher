@@ -17,10 +17,10 @@
 import type { download } from "../../../wailsjs/go/models";
 
 import React, { useEffect, useState } from "react";
-import { Button, Select, SelectItem, Input } from "@heroui/react";
+import { Button, Input, Select, SelectItem } from "@heroui/react";
 
+import { selectPopoverProps } from "../../lib/motion";
 import { asArray } from "../../lib/guards";
-import { popoverMotionProps } from "../../lib/motion";
 import {
   GetAllDownloadSources,
   GetActiveDownloadSourceName,
@@ -106,7 +106,7 @@ const DownloadSection: React.FC = () => {
         <Select
           className="w-56 min-w-0 max-w-full [&_*]:min-w-0"
           items={sources}
-          popoverProps={{ motionProps: popoverMotionProps }}
+          popoverProps={selectPopoverProps}
           selectedKeys={[active]}
           size="sm"
           onSelectionChange={(keys) =>
@@ -126,7 +126,7 @@ const DownloadSection: React.FC = () => {
               { Name: "__none__", __label: t("禁用") } as any,
               ...sources,
             ]}
-            popoverProps={{ motionProps: popoverMotionProps }}
+            popoverProps={selectPopoverProps}
             selectedKeys={[fallback || "__none__"]}
             size="sm"
             onSelectionChange={(keys) =>

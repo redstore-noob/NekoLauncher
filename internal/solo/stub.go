@@ -25,11 +25,13 @@ type StubStatus struct {
 	Path  string
 }
 
-// FindStubTemplate 按以下顺序查找安装器模板：
+// FindStubTemplate 按以下顺序查找安装器模板（每个目录下依次尝试
+// stubCandidateNames 里的两个文件名）：
 //  1. 环境变量 NEKOSOLO_STUB
-//  2. 启动器 exe 同级 tools/NekoSolo/*.exe
+//  2. 启动器 exe 同级 tools/NekoSolo/*.exe（发布启动器时的推荐落点）
 //  3. 启动器 exe 同级 NekoSolo/*.exe
-//  4. 工作目录 NekoSolo/build/*.exe（仓库开发布局的推荐发布位置）
+//  4. 存储目录 tools/NekoSolo/*.exe（DownloadStubTemplate 自动下载的落点）
+//  5. 工作目录 NekoSolo/build/*.exe（仓库开发布局）
 func FindStubTemplate() (string, error) {
 	if env := strings.TrimSpace(os.Getenv(stubEnvKey)); env != "" {
 		if info, err := os.Stat(env); err == nil && !info.IsDir() {

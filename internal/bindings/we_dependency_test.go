@@ -74,9 +74,9 @@ func TestWallpaperEnginePresetFollowsDependency(t *testing.T) {
 		"<!DOCTYPE html><html><body>web wallpaper</body></html>")
 	writeFile(filepath.Join(dependencyDir, "js", "main.js"), "console.log('wallpaper');")
 
-	t.Cleanup(func() { setWebWallpaperTarget("", "") })
+	t.Cleanup(func() { setWebWallpaperTarget("", "", "", "") })
 
-	result, err := wallpaperEngineWallpaperFromProject(presetDir)
+	result, err := wallpaperEngineWallpaperFromProject(presetDir, "")
 	if err != nil {
 		t.Fatalf("解析预设壁纸失败：%v", err)
 	}

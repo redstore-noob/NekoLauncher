@@ -73,21 +73,25 @@ func CreateServerBackup(ctx context.Context, id string) (BackupInfo, error) {
 
 	running := Default().IsRunning(id)
 	if running {
+		// save-off 成功后立刻登记恢复：后面 flush / 压缩任何一步失败都不能把
+		// 世界留在 save-off——此前 defer 在 flush 成功之后才注册，大世界
+		// save-all flush 超过 RCON 超时就会让自动保存被永久关闭（静默丢档）。
 		if err := setWorldSaving(id, false); err != nil {
 			// 拿不到 save-off 也不硬失败：至少 save-all flush 一次再压，
 			// 只是退化成"可能包含半写区块"的备份，日志里说明清楚。
 			logs.Write("WARN", fmt.Sprintf(
 				"服务器 %s 无法暂停世界写入（%v），本次热备份可能包含未完全落盘的区块。", id, err))
+		} else {
+			defer func() {
+				if err := setWorldSaving(id, true); err != nil {
+					logs.Write("WARN", fmt.Sprintf("服务器 %s 恢复世界写入失败：%v", id, err))
+				}
+			}()
 		}
 		if err := flushWorld(id); err != nil {
 			return BackupInfo{}, fmt.Errorf("刷新世界失败：%w", err)
 		}
 		time.Sleep(backupFlushDelay)
-		defer func() {
-			if err := setWorldSaving(id, true); err != nil {
-				logs.Write("WARN", fmt.Sprintf("服务器 %s 恢复世界写入失败：%v", id, err))
-			}
-		}()
 	}
 
 	directory := backupsDirectory(id)
@@ -597,6 +601,7 @@ func runScheduledBackups(ctx context.Context) {
 		}
 		if _, err := CreateServerBackup(ctx, server.ID); err != nil {
 			logs.Write("WARN", fmt.Sprintf("自动备份 %s 失败：%v", server.Name, err))
+			Default().appendConsole(server.ID, fmt.Sprintf("[%s] 自动备份失败：%v", time.Now().Format("15:04:05"), err))
 		}
 	}
 }

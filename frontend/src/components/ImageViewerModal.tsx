@@ -338,7 +338,7 @@ const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
         <div className="flex h-full flex-col overflow-hidden">
           {/* 标题行：文件名 + 缩放读数 + 操作 */}
           <div className="flex flex-none items-center gap-2 px-4 py-3">
-            <span className="flex size-9 flex-none items-center justify-center rounded-xl bg-white/10 text-gray-300">
+            <span className="flex size-9 flex-none items-center justify-center rounded-lg bg-white/10 text-gray-300">
               <Image20Regular />
             </span>
             <span className="min-w-0 flex-1 overflow-hidden text-sm font-semibold text-ellipsis whitespace-nowrap">

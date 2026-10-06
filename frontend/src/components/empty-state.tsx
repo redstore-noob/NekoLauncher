@@ -35,7 +35,7 @@ const EmptyState: React.FC<EmptyStateProps> = ({
   <div
     className={`my-12 flex flex-col items-center gap-3 text-center text-gray-400 ${className}`}
   >
-    <div className="flex size-16 items-center justify-center rounded-3xl bg-gradient-to-br from-default-200 to-default-100 shadow-inner dark:from-gray-800 dark:to-gray-800/50">
+    <div className="flex size-16 items-center justify-center rounded-lg bg-gradient-to-br from-default-200 to-default-100 shadow-inner dark:from-gray-800 dark:to-gray-800/50">
       {icon ?? <Box20Regular className="h-8 w-8" />}
     </div>
     <span className="text-[15px] font-semibold text-gray-500 dark:text-gray-400">

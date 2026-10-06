@@ -310,7 +310,7 @@ const QuickServerCard: React.FC<QuickServerCardProps> = ({
         aria-label={t("服务器地址")}
         classNames={{
           inputWrapper:
-            "rounded-xl bg-default-100/80 data-[hover=true]:bg-default-200",
+            "rounded-lg bg-default-100/80 data-[hover=true]:bg-default-200",
         }}
         endContent={
           <Button
@@ -339,8 +339,8 @@ const QuickServerCard: React.FC<QuickServerCardProps> = ({
       />
 
       {servers.length === 0 ? (
-        <div className="nya-enter flex flex-col items-center gap-1.5 rounded-2xl bg-black/5 px-3 py-5 text-center dark:bg-white/5">
-          <span className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <div className="nya-enter flex flex-col items-center gap-1.5 rounded-lg bg-black/5 px-3 py-5 text-center dark:bg-white/5">
+          <span className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Server20Regular className="h-5 w-5" />
           </span>
           <span className="text-xs leading-relaxed text-gray-400">
@@ -360,7 +360,7 @@ const QuickServerCard: React.FC<QuickServerCardProps> = ({
             return (
               <li
                 key={key}
-                className="nya-enter flex items-start gap-2 rounded-2xl bg-black/5 px-2.5 py-2 dark:bg-white/5"
+                className="nya-enter flex items-start gap-2 rounded-lg bg-black/5 px-2.5 py-2 dark:bg-white/5"
               >
                 {entry.status?.IconPath ? (
                   <img
@@ -410,8 +410,8 @@ const QuickServerCard: React.FC<QuickServerCardProps> = ({
                     ) : null}
                   </div>
 
-                  {/* MOTD（彩色）或状态文本 */}
-                  <span className="line-clamp-1 text-[11px] leading-snug whitespace-pre-line text-gray-600 dark:text-gray-300">
+                  {/* MOTD（彩色）：完整换行显示，长文本自动折行不截断 */}
+                  <span className="text-[11px] leading-snug whitespace-pre-line break-words text-gray-600 dark:text-gray-300">
                     {entry.error ? (
                       <span className="text-danger">{entry.error}</span>
                     ) : entry.isPinging ? (
@@ -465,7 +465,7 @@ const QuickServerCard: React.FC<QuickServerCardProps> = ({
       )}
 
       {addError ? (
-        <div className="nya-enter flex items-start gap-2 rounded-2xl bg-danger/10 px-2.5 py-2 text-[11px] text-danger">
+        <div className="nya-enter flex items-start gap-2 rounded-lg bg-danger/10 px-2.5 py-2 text-[11px] text-danger">
           <span className="mt-px flex-none">
             <Warning20Regular className="h-4 w-4" />
           </span>

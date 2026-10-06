@@ -177,7 +177,7 @@ const OobeOverlay: React.FC = () => {
 
     return (
       <div className="fixed right-4 bottom-4 z-40 w-80">
-        <div className="flex flex-col gap-3 rounded-2xl border border-gray-200/60 bg-white/80 p-5 shadow-xl backdrop-blur-md dark:border-gray-700/60 dark:bg-gray-800/80">
+        <div className="flex flex-col gap-3 rounded-lg border border-gray-200/60 bg-white/80 p-5 shadow-xl backdrop-blur-md dark:border-gray-700/60 dark:bg-gray-800/80">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-primary-500">
               {dockFlowTitle} · {stepIndex + 1}/{dockSteps.length}
@@ -294,7 +294,7 @@ const OobeOverlay: React.FC = () => {
             {WELCOME_CHOICES.map((choice) => (
               <button
                 key={choice.flow}
-                className="group flex flex-col items-center gap-3 rounded-2xl border border-gray-200/60 bg-white/60 p-6 text-center backdrop-blur-md transition-all hover:-translate-y-1 hover:shadow-lg dark:border-gray-700/60 dark:bg-gray-800/60"
+                className="group flex flex-col items-center gap-3 rounded-lg border border-gray-200/60 bg-white/60 p-6 text-center backdrop-blur-md transition-all hover:-translate-y-1 hover:shadow-lg dark:border-gray-700/60 dark:bg-gray-800/60"
                 type="button"
                 onClick={() => {
                   setStepIndex(0);
@@ -313,7 +313,7 @@ const OobeOverlay: React.FC = () => {
 
             {/* 跳过引导：不进流程，直接写完成标记 */}
             <button
-              className="group flex flex-col items-center gap-3 rounded-2xl border border-gray-200/60 bg-white/60 p-6 text-center backdrop-blur-md transition-all hover:-translate-y-1 hover:shadow-lg dark:border-gray-700/60 dark:bg-gray-800/60 sm:col-start-3"
+              className="group flex flex-col items-center gap-3 rounded-lg border border-gray-200/60 bg-white/60 p-6 text-center backdrop-blur-md transition-all hover:-translate-y-1 hover:shadow-lg dark:border-gray-700/60 dark:bg-gray-800/60 sm:col-start-3"
               type="button"
               onClick={completeOobe}
             >
@@ -348,7 +348,7 @@ const OobeOverlay: React.FC = () => {
       className="fixed inset-0 top-10 z-40 flex items-center justify-center overflow-y-auto p-6"
       style={{ backgroundColor: "rgb(var(--nya-shell) / 0.92)" }}
     >
-      <div className="flex w-full max-w-md flex-col gap-6 rounded-2xl border border-gray-200/60 bg-white/70 p-8 backdrop-blur-md dark:border-gray-700/60 dark:bg-gray-800/70">
+      <div className="flex w-full max-w-md flex-col gap-6 rounded-lg border border-gray-200/60 bg-white/70 p-8 backdrop-blur-md dark:border-gray-700/60 dark:bg-gray-800/70">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium text-primary-500">
             {flowTitle} · {stepIndex + 1}/{steps.length}

@@ -8,7 +8,8 @@
  * - 显示串（下载量、类型、版本摘要、文件大小）全部来自 Go 侧已被单测锁定的
  *   展示语义，前端不再自己写一套格式化；
  * - 支持切换 CurseForge：未配置 API Key 时返回的是可读引导（needsApiKey），
- *   界面据此提示去设置里填写，而不是弹一个错误。
+ *   界面据此给出可读提示，而不是弹一个错误。Key 唯一来源是后端编译期内置
+ *   值（用户自配入口已移除）。
  *
  * 下载落点由"目标实例 + 项目类型"决定：mod → mods、光影 → shaderpacks、
  * 材质包 → resourcepacks；整合包要走独立的安装流程，这里只做引导。
@@ -41,8 +42,8 @@ import {
   Warning20Regular,
 } from "@fluentui/react-icons";
 
+import { selectPopoverProps } from "../../lib/motion";
 import { ModalShell, modalBehaviorProps } from "../modal-shell";
-import { popoverMotionProps } from "../../lib/motion";
 import { asArray } from "../../lib/guards";
 import { subDirectoryForProjectType } from "../../lib/resourceSearch";
 import {
@@ -50,10 +51,12 @@ import {
   GetResourceSources,
   ListResourceVersions,
   ResolveContentDirectoryForInstance,
-  SaveCurseForgeAPIKey,
   SearchResources,
 } from "../../../wailsjs/go/bindings/DownloadAPI";
-import { GetCurrentInstanceSnapshot } from "../../../wailsjs/go/bindings/InstanceAPI";
+import {
+  GetCurrentInstanceSnapshot,
+  GetVersionDetails,
+} from "../../../wailsjs/go/bindings/InstanceAPI";
 import {
   OpenInExplorer,
   OpenPath,
@@ -97,6 +100,47 @@ function loaderLabel(loader: string): string {
   return loader.charAt(0).toUpperCase() + loader.slice(1);
 }
 
+/** 实例详情里的加载器展示名（如 "Fabric"、"NeoForge"、"原版"）收敛成过滤用的 id，认不出给空串 */
+function normalizeLoaderName(name: string): string {
+  const lowered = name.trim().toLowerCase();
+
+  if (lowered === "" || lowered === "原版" || lowered === "vanilla")
+    return "vanilla";
+  // 注意 neoforge 包含 forge，必须先判 neoforge
+  for (const candidate of ["neoforge", "fabric", "forge", "quilt"]) {
+    if (lowered.includes(candidate)) return candidate;
+  }
+
+  return "";
+}
+
+/** 实例详情里的"未识别 / 未知 / 未提供"等占位版本不算可用过滤条件 */
+function cleanBaseGameVersion(version: string): string {
+  const trimmed = version.trim();
+
+  return ["", "未识别", "未知", "未提供"].includes(trimmed) ? "" : trimmed;
+}
+
+/** 读取实例的游戏本体版本与加载器，填进过滤器并重查（loader 用 null 表示"维持不变"） */
+async function applyInstanceFilter(
+  versionId: string,
+  onResolved: (gameVersion: string, loader: string) => void,
+) {
+  try {
+    const details = await GetVersionDetails(versionId);
+    const nextGameVersion = cleanBaseGameVersion(
+      details?.BaseGameVersion ?? "",
+    );
+    // 原版没有 mod 加载器可过滤，回落到"全部加载器"避免搜出空结果
+    const normalized = normalizeLoaderName(details?.LoaderName ?? "");
+
+    onResolved(nextGameVersion, normalized === "vanilla" ? "" : normalized);
+  } catch (ex) {
+    console.error(t("读取实例版本信息失败"), ex);
+    onResolved("", "");
+  }
+}
+
 const ResourceSearchDialog: React.FC<Props> = ({
   open,
   onClose,
@@ -110,6 +154,8 @@ const ResourceSearchDialog: React.FC<Props> = ({
   const [query, setQuery] = useState("");
   const [gameVersion, setGameVersion] = useState("");
   const [loader, setLoader] = useState("");
+  // 「按实例筛选」当前选中的实例 id（空串 = 未启用）；手动改版本/加载器会清掉它
+  const [instanceFilterId, setInstanceFilterId] = useState("");
 
   const [hits, setHits] = useState<models.ResourceHit[]>([]);
   const [total, setTotal] = useState(0);
@@ -135,8 +181,6 @@ const ResourceSearchDialog: React.FC<Props> = ({
   const [downloading, setDownloading] = useState(false);
   const [statusText, setStatusText] = useState("");
   const [savedPath, setSavedPath] = useState("");
-  // CurseForge Key 输入框（未配置 Key 时在引导卡片里就地填写）
-  const [apiKeyDraft, setApiKeyDraft] = useState("");
 
   // 防抖与竞态：搜索是"打字即发"，慢的旧请求可能后于新请求返回
   const searchSeq = useRef(0);
@@ -146,14 +190,6 @@ const ResourceSearchDialog: React.FC<Props> = ({
   const activeSource = useMemo(
     () => sources.find((item) => item.id === platform) ?? null,
     [sources, platform],
-  );
-  // 全平台模式下 Key 引导固定指向 CurseForge（只有它会要求 Key）
-  const keyGuideSource = useMemo(
-    () =>
-      needsApiKey
-        ? (sources.find((item) => item.id === "curseforge") ?? activeSource)
-        : activeSource,
-    [needsApiKey, sources, activeSource],
   );
   const supportsModpack = projectType === "modpack";
 
@@ -259,33 +295,6 @@ const ResourceSearchDialog: React.FC<Props> = ({
       setSearchError((ex as Error)?.message ?? String(ex));
     } finally {
       if (seq === searchSeq.current) setSearching(false);
-    }
-  }
-
-  /** 保存 CurseForge Key（就地填写，成功后刷新数据源状态并重查） */
-  async function saveKey() {
-    const key = apiKeyDraft.trim();
-
-    if (!key) {
-      setMessage(t("请先粘贴 CurseForge API Key。"));
-
-      return;
-    }
-    try {
-      const ok = await SaveCurseForgeAPIKey(key);
-
-      if (!ok) {
-        setMessage(t("保存失败：配置文件不可写。"));
-
-        return;
-      }
-      setApiKeyDraft("");
-      setSources(asArray(await GetResourceSources()));
-      setMessage("");
-      setNeedsApiKey(false);
-      void runSearch(platform, projectType, query.trim(), gameVersion, loader);
-    } catch (ex) {
-      setMessage(t("保存失败：{0}", { "0": (ex as Error)?.message ?? ex }));
     }
   }
 
@@ -485,6 +494,10 @@ const ResourceSearchDialog: React.FC<Props> = ({
     label: id,
   }));
 
+  // 「按实例筛选」：选中即读取该实例的游戏本体版本 + mod 加载器填进过滤器。
+  // 没有实例可选时隐藏（快照还没拉到 / 一个实例都没有）。
+  const instanceFilterOptions = targetOptions;
+
   const canDownload =
     !!project &&
     !!downloadVersionId &&
@@ -506,7 +519,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
       }}
       scrollBehavior="inside"
     >
-      <ModalContent className="h-full overflow-y-auto">
+      <ModalContent className="h-full overflow-hidden">
         <ModalShell
           subtitle={t("搜索并以镜像回退下载资源，支持 Modrinth / CurseForge")}
           title={t("资源搜索")}
@@ -538,7 +551,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
                         : item.name,
                   })),
                 ]}
-                popoverProps={{ motionProps: popoverMotionProps }}
+                popoverProps={selectPopoverProps}
                 selectedKeys={[platform]}
                 size="sm"
                 onSelectionChange={(keys) => {
@@ -564,7 +577,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
                   key: type,
                   label: t(TYPE_LABELS[type]),
                 }))}
-                popoverProps={{ motionProps: popoverMotionProps }}
+                popoverProps={selectPopoverProps}
                 selectedKeys={[projectType]}
                 size="sm"
                 onSelectionChange={(keys) => {
@@ -603,8 +616,53 @@ const ResourceSearchDialog: React.FC<Props> = ({
                     loader,
                   );
                 }}
-                onValueChange={setGameVersion}
+                onValueChange={(value) => {
+                  setInstanceFilterId("");
+                  setGameVersion(value);
+                }}
               />
+              {instanceFilterOptions.length > 0 ? (
+                <Select
+                  aria-label={t("按实例筛选")}
+                  className="w-44 flex-none"
+                  items={[
+                    { key: "__off__", label: t("按实例筛选") },
+                    ...instanceFilterOptions.map((item) => ({
+                      key: item.value,
+                      label: item.label,
+                    })),
+                  ]}
+                  popoverProps={selectPopoverProps}
+                  selectedKeys={[instanceFilterId || "__off__"]}
+                  size="sm"
+                  onSelectionChange={(keys) => {
+                    const raw = String(Array.from(keys)[0] ?? "__off__");
+                    const next = raw === "__off__" ? "" : raw;
+
+                    setInstanceFilterId(next);
+                    setProject(null);
+                    if (!next) return;
+                    void applyInstanceFilter(
+                      next,
+                      (nextGameVersion, nextLoader) => {
+                        setGameVersion(nextGameVersion);
+                        setLoader(nextLoader);
+                        void runSearch(
+                          platform,
+                          projectType,
+                          query.trim(),
+                          nextGameVersion,
+                          nextLoader,
+                        );
+                      },
+                    );
+                  }}
+                >
+                  {(item) => (
+                    <SelectItem key={item.key}>{item.label}</SelectItem>
+                  )}
+                </Select>
+              ) : null}
               <Select
                 aria-label={t("加载器过滤")}
                 className="w-40 flex-none"
@@ -612,7 +670,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
                   key: value || "__all__",
                   label: loaderLabel(value),
                 }))}
-                popoverProps={{ motionProps: popoverMotionProps }}
+                popoverProps={selectPopoverProps}
                 selectedKeys={[loader || "__all__"]}
                 size="sm"
                 onSelectionChange={(keys) => {
@@ -620,6 +678,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
                   const next = raw === "__all__" ? "" : raw;
 
                   setLoader(next);
+                  setInstanceFilterId("");
                   setProject(null);
                   void runSearch(
                     platform,
@@ -648,45 +707,21 @@ const ResourceSearchDialog: React.FC<Props> = ({
             </div>
           </div>
 
-          {/* 未配置 Key：引导而不是报错 */}
+          {/* 内置 Key 未生效：提示而不是报错（Key 唯一来源是后端编译期内置值） */}
           {needsApiKey ? (
-            <div className="flex flex-col gap-2 rounded-2xl border border-warning-200 nya-panel-inner px-3.5 py-3">
+            <div className="flex flex-col gap-2 rounded-medium border border-warning-200 nya-panel-inner px-3.5 py-3">
               <span className="flex items-center gap-2 text-xs text-warning-600 dark:text-warning-400">
                 <Warning20Regular />
-                {message || t("需要先在设置里填写 CurseForge API Key。")}
+                {message ||
+                  t(
+                    "CurseForge 搜索需要内置 API Key，当前构建未包含，请使用官方发布版。",
+                  )}
               </span>
-              {keyGuideSource?.apiKeyApplyUrl ? (
-                <div className="flex items-center gap-2">
-                  <Input
-                    aria-label={t("CurseForge API Key")}
-                    className="min-w-0 flex-1"
-                    placeholder={t("粘贴 CurseForge API Key")}
-                    radius="full"
-                    size="sm"
-                    value={apiKeyDraft}
-                    onValueChange={setApiKeyDraft}
-                  />
-                  <Button
-                    className="flex-none"
-                    radius="full"
-                    size="sm"
-                    variant="flat"
-                    onPress={() => void saveKey()}
-                  >
-                    {t("保存 Key")}
-                  </Button>
-                </div>
-              ) : null}
-              {keyGuideSource?.apiKeyApplyUrl ? (
-                <span className="break-all text-[11px] text-gray-400">
-                  {t("申请地址：{0}", { "0": keyGuideSource.apiKeyApplyUrl })}
-                </span>
-              ) : null}
             </div>
           ) : null}
 
           {searchError ? (
-            <div className="flex flex-col gap-2 rounded-2xl border nya-panel-inner px-3.5 py-3">
+            <div className="flex flex-col gap-2 rounded-medium border nya-panel-inner px-3.5 py-3">
               <span className="flex items-center gap-2 text-xs text-danger">
                 <Warning20Regular />
                 {t("搜索失败：{0}", { "0": searchError })}
@@ -712,7 +747,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
           ) : null}
 
           {/* 结果列表 / 项目详情 */}
-          <div className="nya-scroll flex max-h-[46vh] min-h-0 flex-col gap-2 overflow-y-auto pr-1">
+          <div className="nya-scroll nya-scroll-area flex max-h-[46vh] min-h-0 flex-col gap-1.5 pr-1">
             {project ? (
               <>
                 <div className="flex items-center gap-2">
@@ -766,10 +801,10 @@ const ResourceSearchDialog: React.FC<Props> = ({
                     {versions.map((version) => (
                       <button
                         key={version.versionId}
-                        className={`flex cursor-pointer items-center gap-3 rounded-2xl border px-3.5 py-3 text-left backdrop-blur-md transition-all ${
+                        className={`flex cursor-pointer items-center gap-3 rounded-lg border px-3.5 py-3 text-left transition-colors ${
                           downloadVersionId === version.versionId
                             ? "border-primary/40 bg-primary/[0.08]"
-                            : "border-transparent nya-panel hover:border-primary/30"
+                            : "border-transparent nya-row hover:border-primary/30"
                         }`}
                         onClick={() => setDownloadVersionId(version.versionId)}
                       >
@@ -808,7 +843,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
               </div>
             ) : hits.length === 0 ? (
               <div className="my-10 flex flex-col items-center gap-3 text-center text-gray-400">
-                <div className="flex size-16 items-center justify-center rounded-3xl bg-gradient-to-br from-default-200 to-default-100 shadow-inner dark:from-gray-800 dark:to-gray-800/50">
+                <div className="flex size-16 items-center justify-center rounded-lg bg-gradient-to-br from-default-200 to-default-100 shadow-inner dark:from-gray-800 dark:to-gray-800/50">
                   <Search20Regular className="h-8 w-8" />
                 </div>
                 <span className="text-[15px] font-semibold text-gray-500 dark:text-gray-400">
@@ -820,17 +855,17 @@ const ResourceSearchDialog: React.FC<Props> = ({
                 {hits.map((hit) => (
                   <button
                     key={`${hit.source}:${hit.projectId}`}
-                    className="group flex cursor-pointer items-center gap-3 rounded-2xl border border-transparent nya-panel px-3.5 py-3 text-left backdrop-blur-md transition-all hover:translate-x-0.5 hover:border-primary/30 hover:bg-primary/[0.06]"
+                    className="group flex cursor-pointer items-center gap-3 rounded-lg border border-transparent nya-row px-3 py-2.5 text-left transition-colors hover:border-primary/30 hover:bg-primary/[0.06]"
                     onClick={() => void openProject(hit)}
                   >
                     {hit.iconUrl ? (
                       <img
                         alt=""
-                        className="size-11 flex-none rounded-xl object-cover shadow-sm"
+                        className="size-11 flex-none rounded-md object-cover shadow-sm"
                         src={hit.iconUrl}
                       />
                     ) : (
-                      <span className="flex size-11 flex-none items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-primary/25">
+                      <span className="flex size-11 flex-none items-center justify-center rounded-md bg-primary text-primary-foreground shadow-md shadow-primary/25">
                         {TYPE_ICONS[hit.projectType] ?? <Box20Regular />}
                       </span>
                     )}
@@ -860,7 +895,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
           </div>
 
           {/* 下载区（回到搜索结果页也保留状态） */}
-          <div className="flex flex-col gap-2 rounded-2xl nya-panel-inner px-3.5 py-3">
+          <div className="flex flex-col gap-2 rounded-medium nya-panel-inner px-3.5 py-3">
             {supportsModpack ? (
               <span className="text-[11px] text-gray-400">
                 {t(
@@ -875,7 +910,7 @@ const ResourceSearchDialog: React.FC<Props> = ({
                   isDisabled={downloading}
                   items={targetOptions}
                   placeholder={t("选择目标实例…")}
-                  popoverProps={{ motionProps: popoverMotionProps }}
+                  popoverProps={selectPopoverProps}
                   selectedKeys={targetId ? [targetId] : []}
                   size="sm"
                   onSelectionChange={(keys) =>

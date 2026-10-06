@@ -12,6 +12,7 @@ import p6 from "./parts/ja-6";
 import p7 from "./parts/ja-7";
 import p8 from "./parts/ja-8";
 import p9 from "./parts/ja-9";
+import p10 from "./parts/ja-10";
 
 const jaJP: Record<string, string> = {
   ...p0,
@@ -24,6 +25,7 @@ const jaJP: Record<string, string> = {
   ...p7,
   ...p8,
   ...p9,
+  ...p10,
 };
 
 export default jaJP;

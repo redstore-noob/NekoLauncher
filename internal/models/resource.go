@@ -29,13 +29,11 @@ type ResourceSourceInfo struct {
 	MirrorHost string `json:"mirrorHost"`
 	// ProjectTypes 该站支持检索的项目类型（统一取值）。
 	ProjectTypes []string `json:"projectTypes"`
-	// RequiresAPIKey 是否必须用户自备 API Key（CurseForge 为 true）。
+	// RequiresAPIKey 是否需要 API Key（CurseForge 为 true；Key 由编译期内置）。
 	RequiresAPIKey bool `json:"requiresApiKey"`
-	// APIKeyConfigured 用户是否已经配置了 Key。
+	// APIKeyConfigured 内置 Key 是否已生效。
 	APIKeyConfigured bool `json:"apiKeyConfigured"`
-	// APIKeyApplyURL Key 申请地址（仅在 RequiresAPIKey 时有意义）。
-	APIKeyApplyURL string `json:"apiKeyApplyUrl"`
-	// Available 现在能不能用（需要 Key 而未配置时为 false，但界面不报错、只引导）。
+	// Available 现在能不能用（需要 Key 而未生效时为 false，但界面不报错、只提示）。
 	Available bool `json:"available"`
 	// Hint 不可用时的中文引导（可直接展示）。
 	Hint string `json:"hint"`

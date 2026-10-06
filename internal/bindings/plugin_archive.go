@@ -104,7 +104,7 @@ func (a *PluginAPI) PackagePlugin(sourceDirectory, targetPath string) (string, e
 		return "", fmt.Errorf("插件目录里找不到入口文件：%s", entryName)
 	}
 
-	target := strings.TrimSpace(targetPath)
+	target := tools.SanitizeSavePath(strings.TrimSpace(targetPath))
 	if target == "" {
 		return "", errors.New("未选择保存位置")
 	}

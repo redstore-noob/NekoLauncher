@@ -64,6 +64,19 @@ func (a *ModpackAPI) ExportSoloPack(options solo.SoloExportOptions, outputPath s
 	})
 }
 
+// ExtractSoloPack 从 NekoSolo 安装包（.exe）提取内嵌的标准 Modrinth 整合包
+// 到 outputPath（.mrpack），可分享给任意支持 Modrinth 格式的启动器。
+func (a *ModpackAPI) ExtractSoloPack(exePath, outputPath string) error {
+	return solo.ExtractSoloPack(exePath, outputPath)
+}
+
+// ImportSoloExe 把 NekoSolo 安装包（.exe）转存为临时 .mrpack，返回其路径；
+// 前端随后走既有的整合包导入流程（建实例 → 装 Loader → 装 mod）。
+// 使用方负责在使用完后删除该临时文件。
+func (a *ModpackAPI) ImportSoloExe(exePath string) (string, error) {
+	return solo.ImportSoloExe(exePath)
+}
+
 // ---- 导出配置档案（按版本目录持久化） ----
 
 // LoadExportProfile 读取导出配置（无则空档案）。

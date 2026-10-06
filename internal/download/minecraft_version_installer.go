@@ -61,8 +61,17 @@ type InstallProgressFunc func(MinecraftInstallProgress)
 // SHA-1 匹配的已有文件直接复用；下载先写临时文件、校验通过后才移动到位。
 type MinecraftVersionInstaller struct{}
 
-// progressReportInterval 进度上报节流间隔。
-const progressReportInterval = 120 * time.Millisecond
+// progressReportInterval 进度上报节流间隔。每次上报都会 EventsEmit 完整快照，
+// 前端多个常驻组件随之重渲染；Linux 的 WebKitGTK 处理高频事件重渲染明显慢于
+// WebView2，降到 1/3 频率换整体流畅（进度条 300ms 一跳肉眼几乎无感）。
+var progressReportInterval = progressReportIntervalForGOOS()
+
+func progressReportIntervalForGOOS() time.Duration {
+	if runtime.GOOS == "linux" {
+		return 300 * time.Millisecond
+	}
+	return 120 * time.Millisecond
+}
 
 type downloadFile struct {
 	url         string
@@ -732,17 +741,31 @@ func validateTemporaryFile(file downloadFile, temporaryPath string) error {
 			return fmt.Errorf("下载文件大小不匹配：%s", file.displayName)
 		}
 	}
+	// 旧版坐标库既无 sha1 也无声明大小：至少拒绝 0 字节文件——镜像返回
+	// 空 body 时它此前会被当作有效库装进去，游戏启动直接缺类崩溃
+	if strings.TrimSpace(file.sha1) == "" && file.size == 0 {
+		info, statErr := os.Stat(temporaryPath)
+		if statErr != nil || info.Size() == 0 {
+			return fmt.Errorf("下载文件为空：%s", file.displayName)
+		}
+	}
 	return nil
 }
 
 func isExistingFileValid(ctx context.Context, file downloadFile) (bool, error) {
-	if _, err := os.Stat(file.targetPath); err != nil {
+	info, err := os.Stat(file.targetPath)
+	if err != nil {
 		return false, nil
 	}
 	if file.size > 0 {
-		if info, err := os.Stat(file.targetPath); err != nil || info.Size() != file.size {
+		if info.Size() != file.size {
 			return false, nil
 		}
+	}
+	// 无哈希且无声明大小的旧版库：0 字节的坏缓存此前会永久视为有效，
+	// 重试与启动修复都无法纠正——至少挡掉空文件
+	if file.size == 0 && strings.TrimSpace(file.sha1) == "" && info.Size() == 0 {
+		return false, nil
 	}
 	done := make(chan bool, 1)
 	go func() { done <- matchesSHA1(file.targetPath, file.sha1) }()

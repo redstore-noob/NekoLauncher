@@ -4,6 +4,7 @@
  */
 import React, {
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
@@ -27,12 +28,24 @@ import {
 } from "../../wailsjs/go/bindings/SystemAPI";
 import { ClipboardSetText } from "../../wailsjs/runtime/runtime";
 import { LOG_LEVEL_CLASS, parseLogLevel } from "../lib/logs";
+import { startVisiblePoll } from "../lib/visibility";
 import { t } from "../i18n";
 
 import { ModalShell, modalBehaviorProps } from "./modal-shell";
 
 /** 打开期间自动刷新的间隔 */
 const POLL_INTERVAL_MS = 1500;
+
+/** 运行日志单行（memo）：1.5 秒轮询重刷时，内容未变的历史行跳过重渲染 */
+const LogLine = memo(function LogLine({ line }: { line: string }) {
+  return (
+    <div
+      className={`whitespace-pre-wrap break-all ${LOG_LEVEL_CLASS[parseLogLevel(line)]}`}
+    >
+      {line || " "}
+    </div>
+  );
+});
 
 interface LogViewerProps {
   isOpen: boolean;
@@ -60,9 +73,8 @@ const LogViewer: React.FC<LogViewerProps> = ({ isOpen, onClose }) => {
     if (!isOpen) return;
     setHint("");
     void reload();
-    const timer = window.setInterval(() => void reload(), POLL_INTERVAL_MS);
 
-    return () => window.clearInterval(timer);
+    return startVisiblePoll(() => void reload(), POLL_INTERVAL_MS);
   }, [isOpen, reload]);
 
   const lines = useMemo(() => {
@@ -182,21 +194,14 @@ const LogViewer: React.FC<LogViewerProps> = ({ isOpen, onClose }) => {
           {/* 日志正文：等宽字体 + 级别着色 */}
           <div
             ref={scrollRef}
-            className="nya-scroll h-[55vh] overflow-y-auto rounded-2xl border nya-border bg-black/[0.03] p-3 font-mono text-[11px] leading-relaxed dark:bg-white/[0.03]"
+            className="nya-scroll h-[55vh] overflow-y-auto rounded-lg border nya-border bg-black/[0.03] p-3 font-mono text-[11px] leading-relaxed dark:bg-white/[0.03]"
           >
             {lines.length === 0 ? (
               <div className="py-10 text-center text-gray-400">
                 {t("暂无日志")}
               </div>
             ) : (
-              lines.map((line, index) => (
-                <div
-                  key={index}
-                  className={`whitespace-pre-wrap break-all ${LOG_LEVEL_CLASS[parseLogLevel(line)]}`}
-                >
-                  {line || "\u00A0"}
-                </div>
-              ))
+              lines.map((line, index) => <LogLine key={index} line={line} />)
             )}
           </div>
         </ModalShell>

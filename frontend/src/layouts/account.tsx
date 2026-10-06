@@ -16,6 +16,7 @@ import {
   ModalContent,
   Select,
   SelectItem,
+  Tooltip,
 } from "@heroui/react";
 // 图标统一用 Fluent UI System Icons（20px 系）
 import {
@@ -29,15 +30,19 @@ import {
   FolderOpen20Regular,
   PaintBrush20Regular,
   Shirt20Regular,
+  Copy20Regular,
+  Checkmark20Regular,
+  Info20Regular,
 } from "@fluentui/react-icons";
 import { AnimatePresence, motion } from "framer-motion";
 
+import { selectPopoverProps } from "../lib/motion";
 import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
 import SwitchTransition, {
   useSwitchDirection,
 } from "../components/screen-transition";
 import SegmentedTabs from "../components/segmented-tabs";
-import { listItemVariants, popoverMotionProps } from "../lib/motion";
+import { listItemVariants } from "../lib/motion";
 import SkinPreviewPanel from "../components/account/SkinPreviewPanel";
 import {
   GetAccounts,
@@ -66,7 +71,6 @@ import { SelectFile } from "../../wailsjs/go/bindings/SystemAPI";
 import { asArray } from "../lib/guards";
 import {
   EventsOn,
-  EventsOff,
   BrowserOpenURL,
   ClipboardSetText,
 } from "../../wailsjs/runtime/runtime";
@@ -131,7 +135,7 @@ function accountDetail(account: LaunchAccount): string {
 
       return typeLabel(account);
     default:
-      return t("默认皮肤：{0}", { "0": account.OfflineSkinId || "steve" });
+      return typeLabel(account);
   }
 }
 
@@ -195,7 +199,17 @@ const AccountPage: React.FC = () => {
     username: string;
   } | null>(null);
 
-  // ---- 披风 / 皮肤库 / 皮肤模型弹层 ----
+  // 账号操作反馈与复制提示
+  const [copiedKey, setCopiedKey] = useState("");
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [codeCopied, setCodeCopied] = useState(false);
+
+  // 常用皮肤站预设
+  const PRESET_AUTHLIB_SERVERS = [
+    { name: "LittleSkin", url: "https://littleskin.cn" },
+    { name: "Blessing Skin", url: "https://skin.prinzeugen.net" },
+    { name: "Ely.by", url: "https://authlib-injector.ely.by" },
+  ];
   const [capeOpen, setCapeOpen] = useState(false);
   const [capeLoading, setCapeLoading] = useState(false);
   const [capeBusy, setCapeBusy] = useState(false);
@@ -209,7 +223,13 @@ const AccountPage: React.FC = () => {
 
   const selected = rows.find((r) => r.stableKey === selectedKey) ?? null;
 
+  // 初始加载 / 微软登录事件 / 增删账号后的 reload 可能交叠：
+  // 慢的旧响应会把新列表（甚至已删除的账号）盖回来，用自增序号只让最后一次落盘
+  const reloadSeqRef = useRef(0);
+
   const reload = async () => {
+    const seq = ++reloadSeqRef.current;
+
     try {
       const list = asArray<LaunchAccount>(await GetAccounts());
       const withKeys = await Promise.all(
@@ -220,6 +240,7 @@ const AccountPage: React.FC = () => {
         })),
       );
 
+      if (seq !== reloadSeqRef.current) return; // 已有更新的刷新在途，丢弃旧结果
       setRows(() =>
         withKeys.map((row) => ({
           ...row,
@@ -246,6 +267,7 @@ const AccountPage: React.FC = () => {
           });
       });
     } catch (ex) {
+      if (seq !== reloadSeqRef.current) return;
       setStatus(
         t("读取账号列表失败：{0}", { "0": (ex as Error)?.message ?? ex }),
       );
@@ -290,7 +312,30 @@ const AccountPage: React.FC = () => {
   // 切换选中账号后退出「确认删除」状态
   useEffect(() => {
     setConfirmingDeleteKey("");
+    if (deleteTimerRef.current) {
+      clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = null;
+    }
   }, [selectedKey]);
+
+  useEffect(() => {
+    return () => {
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+    };
+  }, []);
+
+  const copyAccountName = async (e: React.MouseEvent, row: AccountRow) => {
+    e.stopPropagation();
+    try {
+      await ClipboardSetText(row.account.DisplayName);
+      setCopiedKey(row.stableKey);
+      setTimeout(() => {
+        setCopiedKey((prev) => (prev === row.stableKey ? "" : prev));
+      }, 1800);
+    } catch {
+      /* ignore */
+    }
+  };
 
   // ---- 账号操作 ----
 
@@ -307,11 +352,19 @@ const AccountPage: React.FC = () => {
   };
 
   const removeAccount = async (row: AccountRow) => {
-    // 两步确认（WebView2 不支持 window.confirm）；每个账号各自确认
+    // 两步确认（WebView2 不支持 window.confirm）；每个账号各自确认，4 秒内未再次点击自动恢复
     if (confirmingDeleteKey !== row.stableKey) {
       setConfirmingDeleteKey(row.stableKey);
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = setTimeout(() => {
+        setConfirmingDeleteKey((prev) => (prev === row.stableKey ? "" : prev));
+      }, 4000);
 
       return;
+    }
+    if (deleteTimerRef.current) {
+      clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = null;
     }
     setConfirmingDeleteKey("");
     try {
@@ -368,18 +421,45 @@ const AccountPage: React.FC = () => {
     }
   };
 
+  // 设备码事件订阅只摘自己的监听：EventsOff("auth:deviceCode") 会把该事件
+  // 的全部监听器清掉——旧一轮登录的异步 catch 触发时会把新一轮登录的监听
+  // 一并杀死，新登录就永远卡在"正在请求设备码…"。
+  const deviceCodeUnsubRef = useRef<(() => void) | null>(null);
+
+  const subscribeDeviceCode = () => {
+    deviceCodeUnsubRef.current?.();
+    deviceCodeUnsubRef.current = EventsOn("auth:deviceCode", onDeviceCodeEvent);
+  };
+
+  const unsubscribeDeviceCode = () => {
+    deviceCodeUnsubRef.current?.();
+    deviceCodeUnsubRef.current = null;
+  };
+
+  // 卸载（切页）时退订并取消后端轮询：后台轮询会白跑 15 分钟
+  useEffect(
+    () => () => {
+      unsubscribeDeviceCode();
+      msActive.current = false;
+      CancelMicrosoftLogin().catch(() => {
+        /* 后端已结束轮询时忽略 */
+      });
+    },
+    [],
+  );
+
   const startMicrosoftLogin = () => {
     setAddTab("microsoft");
     setMsBusy(true);
     setDeviceCode("");
     setAddHint("");
     msActive.current = true;
-    EventsOn("auth:deviceCode", onDeviceCodeEvent);
+    subscribeDeviceCode();
 
     LoginMicrosoft()
       .then(async (msAccount) => {
         msActive.current = false;
-        EventsOff("auth:deviceCode");
+        unsubscribeDeviceCode();
         // 同一微软账号（按档案 UUID）已存在则更新凭据并置顶（视为重新登录）
         const accounts = asArray<LaunchAccount>(await GetAccounts());
         const existing = accounts.find(
@@ -412,7 +492,7 @@ const AccountPage: React.FC = () => {
         const cancelled = !msActive.current;
 
         msActive.current = false;
-        EventsOff("auth:deviceCode");
+        unsubscribeDeviceCode();
         setMsBusy(false);
         if (!cancelled)
           setAddHint(
@@ -423,7 +503,7 @@ const AccountPage: React.FC = () => {
 
   const cancelMicrosoftLogin = async () => {
     msActive.current = false;
-    EventsOff("auth:deviceCode");
+    unsubscribeDeviceCode();
     try {
       await CancelMicrosoftLogin();
     } catch {
@@ -727,7 +807,7 @@ const AccountPage: React.FC = () => {
 
   return (
     <div className="nya-scroll h-full w-full overflow-y-auto">
-      <div className="mx-auto flex max-w-4xl flex-col gap-4 px-6 py-5">
+      <div className="mx-auto flex max-w-5xl flex-col gap-4 px-6 py-5">
         {/* 标题区 */}
         <div className="flex flex-none items-center gap-3">
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -752,39 +832,15 @@ const AccountPage: React.FC = () => {
           </Button>
         </div>
 
-        {/* 皮肤展示 + 账号列表：左右排列（窗口较窄时自动换行堆叠） */}
-        <div className="flex flex-wrap items-stretch gap-4">
-          {/* 皮肤展示卡：3D 预览当前选中账号（与主页皮肤展示小组件同源渲染）。
-              S 模式隐藏整卡：只留账号列表，低龄玩家不需要 3D 预览 */}
-          {!simpleMode ? (
-            <div className="flex w-[300px] flex-none flex-col rounded-2xl border nya-border nya-panel p-4 shadow-sm backdrop-blur-md">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div className="text-sm font-semibold">{t("皮肤展示")}</div>
-                {selected ? (
-                  <span className="truncate text-[11px] text-gray-400">
-                    {t("当前：")}
-                    {selected.account.DisplayName}
-                  </span>
-                ) : null}
-              </div>
-              <SkinPreviewPanel
-                accountKey={selected?.stableKey ?? ""}
-                height={260}
-              />
+        {/* 账号列表（左）与玩家外观（右）：无卡两栏，靠留白和细线立住 */}
+        <div className="flex flex-1 flex-col gap-5 md:flex-row md:gap-6">
+          {/* 左列：账号列表（不铺面板，行只保留一条选中带） */}
+          <div className="flex min-w-0 flex-1 flex-col">
+            <div className="px-3 pt-1 pb-1.5 text-[11px] font-semibold tracking-wider text-gray-400 uppercase">
+              {t("账号列表")}
             </div>
-          ) : null}
-
-          {/* 账号列表卡 */}
-          <div className="min-w-[320px] flex-1 rounded-2xl border nya-border nya-panel p-2 shadow-sm backdrop-blur-md">
             {rows.length === 0 ? (
-              <div className="flex flex-col items-center gap-3 py-10 text-center text-gray-400">
-                <div className="flex size-16 items-center justify-center rounded-3xl bg-gradient-to-br from-default-200 to-default-100 dark:from-gray-800 dark:to-gray-800/50 shadow-inner">
-                  <Person20Regular className="w-8 h-8" />
-                </div>
-                <span className="text-[15px] font-semibold text-gray-500 dark:text-gray-400">
-                  {t("暂无账号")}
-                </span>
-              </div>
+              <p className="px-3 py-2 text-xs text-gray-400">{t("暂无账号")}</p>
             ) : (
               <div className="flex flex-col gap-1">
                 <AnimatePresence initial={false}>
@@ -802,10 +858,10 @@ const AccountPage: React.FC = () => {
                         variants={listItemVariants}
                       >
                         <div
-                          className={`group flex cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 transition-all ${
+                          className={`group relative flex cursor-pointer items-center gap-3 overflow-hidden rounded-lg px-3 py-2.5 transition-colors ${
                             active
-                              ? "bg-primary/10"
-                              : "hover:bg-default-100/80 hover:translate-x-0.5"
+                              ? "bg-primary/10 dark:bg-primary/15"
+                              : "hover:bg-default-100/70 dark:hover:bg-white/5"
                           }`}
                           role="button"
                           tabIndex={0}
@@ -817,14 +873,13 @@ const AccountPage: React.FC = () => {
                             }
                           }}
                         >
+                          {/* 无卡列表的选中态：一条左侧强调线，不靠边框与阴影抬升 */}
+                          {active ? (
+                            <div className="absolute inset-y-0 left-0 w-[3px] bg-primary" />
+                          ) : null}
+
                           {/* 头像：皮肤双层（基础+帽子）8×8 头部，失败回退首字母 */}
-                          <div
-                            className={`flex size-11 flex-shrink-0 items-center justify-center overflow-hidden rounded-xl shadow-sm ${
-                              active
-                                ? "ring-2 ring-primary/40"
-                                : "bg-default-200 dark:bg-gray-800"
-                            }`}
-                          >
+                          <div className="flex size-11 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-default-200 dark:bg-gray-800">
                             {row.avatar ? (
                               <img
                                 alt=""
@@ -840,10 +895,31 @@ const AccountPage: React.FC = () => {
                             )}
                           </div>
                           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                            <div className="flex min-w-0 items-center gap-2">
+                            <div className="flex min-w-0 items-center gap-1.5">
                               <span className="overflow-hidden text-sm font-semibold text-ellipsis whitespace-nowrap">
                                 {row.account.DisplayName}
                               </span>
+                              {/* 快捷复制用户名 */}
+                              <Tooltip
+                                content={
+                                  copiedKey === row.stableKey
+                                    ? t("已复制用户名")
+                                    : t("复制用户名")
+                                }
+                                delay={300}
+                              >
+                                <button
+                                  className="flex size-6 flex-none items-center justify-center rounded-md text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-default-200 hover:text-gray-700 dark:hover:text-gray-200 transition-all cursor-pointer"
+                                  type="button"
+                                  onClick={(e) => copyAccountName(e, row)}
+                                >
+                                  {copiedKey === row.stableKey ? (
+                                    <Checkmark20Regular className="w-3.5 h-3.5 text-success" />
+                                  ) : (
+                                    <Copy20Regular className="w-3.5 h-3.5" />
+                                  )}
+                                </button>
+                              </Tooltip>
                               <span
                                 className={`flex-none rounded-full px-2 py-0.5 text-[10px] font-medium ${typeChipClass(row.account.Type)}`}
                               >
@@ -867,6 +943,7 @@ const AccountPage: React.FC = () => {
                               radius="full"
                               size="sm"
                               variant="flat"
+                              onClick={(e) => e.stopPropagation()}
                               onPress={() => void setDefault(row)}
                             >
                               {t("设为默认")}
@@ -887,6 +964,7 @@ const AccountPage: React.FC = () => {
                                 ? "solid"
                                 : "light"
                             }
+                            onClick={(e) => e.stopPropagation()}
                             onPress={() => void removeAccount(row)}
                           >
                             {confirmingDeleteKey === row.stableKey
@@ -901,73 +979,178 @@ const AccountPage: React.FC = () => {
               </div>
             )}
           </div>
-        </div>
 
-        {/* 玩家外观卡 */}
-        <div className="rounded-2xl border nya-border nya-panel p-4 shadow-sm backdrop-blur-md">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div className="text-sm font-semibold">{t("玩家外观")}</div>
+          {/* 右列：皮肤展示 + 玩家外观（无卡：只与左列表隔一条细线） */}
+          <aside className="nya-border flex min-w-0 flex-col gap-4 md:w-[320px] md:flex-none md:border-l md:pl-6">
+            {/* 当前账号：一行，皮肤展示与玩家外观共用，不再各写一遍 */}
             {selected ? (
-              <span className="truncate text-[11px] text-gray-400">
-                {t("当前：")}
-                {selected.account.DisplayName}
-              </span>
+              <div className="flex min-w-0 flex-none items-center gap-2">
+                <span className="overflow-hidden text-sm font-semibold text-ellipsis whitespace-nowrap">
+                  {selected.account.DisplayName}
+                </span>
+                <span
+                  className={`flex-none rounded-full px-2 py-0.5 text-[10px] font-medium ${typeChipClass(
+                    selected.account.Type,
+                  )}`}
+                >
+                  {selected.account.Type === "microsoft"
+                    ? t("正版凭据已就绪")
+                    : selected.account.Type === "authlib"
+                      ? t("外置验证档案")
+                      : t("离线本地档案")}
+                </span>
+              </div>
+            ) : !simpleMode ? null : (
+              /* 非 S 模式下 3D 预览自己会写一行"未选择账号"，这里不再重复 */
+              <p className="flex-none text-xs text-gray-400">
+                {t("未选择账号")}
+              </p>
+            )}
+
+            {/* 皮肤展示：3D 预览当前选中账号（与主页皮肤展示小组件同源渲染）。
+                S 模式只隐藏预览本身，玩家外观的操作仍然保留 */}
+            {!simpleMode ? (
+              <section className="flex flex-none flex-col gap-2">
+                <div className="text-[11px] font-semibold tracking-wider text-gray-400 uppercase">
+                  {t("皮肤展示")}
+                </div>
+                <SkinPreviewPanel
+                  accountKey={selected?.stableKey ?? ""}
+                  height={260}
+                />
+              </section>
             ) : null}
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Button
-              isDisabled={!selected || busy}
-              radius="full"
-              size="sm"
-              startContent={<ArrowUpload20Regular />}
-              variant="flat"
-              onPress={changeMicrosoftSkin}
+
+            <section
+              className={`flex flex-col gap-2 ${
+                !simpleMode ? "nya-border border-t pt-4" : ""
+              }`}
             >
-              {t("上传正版皮肤")}
-            </Button>
-            <Button
-              isDisabled={
-                !selected || busy || selected?.account.Type !== "offline"
-              }
-              radius="full"
-              size="sm"
-              startContent={<FolderOpen20Regular />}
-              variant="flat"
-              onPress={changeOfflineSkinFile}
-            >
-              {t("离线自定义皮肤")}
-            </Button>
-            <Button
-              isDisabled={
-                !selected || busy || selected?.account.Type !== "offline"
-              }
-              radius="full"
-              size="sm"
-              startContent={<PaintBrush20Regular />}
-              variant="flat"
-              onPress={openCatalog}
-            >
-              {t("从皮肤库选择")}
-            </Button>
-            <Button
-              color="primary"
-              isDisabled={
-                !selected || busy || selected?.account.Type !== "microsoft"
-              }
-              radius="full"
-              size="sm"
-              startContent={<Shirt20Regular />}
-              variant="flat"
-              onPress={openCapes}
-            >
-              {t("更换披风")}
-            </Button>
-          </div>
-          {selected?.account.Type === "authlib" ? (
-            <div className="mt-3 text-xs text-gray-400">
-              {t("皮肤站账号请到对应皮肤站的网页端更换皮肤。")}
-            </div>
-          ) : null}
+              <div className="text-[11px] font-semibold tracking-wider text-gray-400 uppercase">
+                {t("玩家外观")}
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Tooltip
+                  content={
+                    !selected
+                      ? t("请先选择账号")
+                      : selected.account.Type !== "microsoft"
+                        ? t("仅微软正版账号支持上传到官方皮肤服务器")
+                        : t("更换正版 Minecraft 官方皮肤")
+                  }
+                  delay={300}
+                >
+                  <div>
+                    <Button
+                      isDisabled={
+                        !selected ||
+                        busy ||
+                        selected.account.Type !== "microsoft"
+                      }
+                      radius="full"
+                      size="sm"
+                      startContent={<ArrowUpload20Regular />}
+                      variant="flat"
+                      onPress={changeMicrosoftSkin}
+                    >
+                      {t("上传正版皮肤")}
+                    </Button>
+                  </div>
+                </Tooltip>
+
+                <Tooltip
+                  content={
+                    !selected
+                      ? t("请先选择账号")
+                      : selected.account.Type !== "offline"
+                        ? t("仅离线账号支持直接加载本地 PNG 贴图文件")
+                        : t("从本地电脑选择 .png 皮肤文件")
+                  }
+                  delay={300}
+                >
+                  <div>
+                    <Button
+                      isDisabled={
+                        !selected || busy || selected.account.Type !== "offline"
+                      }
+                      radius="full"
+                      size="sm"
+                      startContent={<FolderOpen20Regular />}
+                      variant="flat"
+                      onPress={changeOfflineSkinFile}
+                    >
+                      {t("离线自定义皮肤")}
+                    </Button>
+                  </div>
+                </Tooltip>
+
+                <Tooltip
+                  content={
+                    !selected
+                      ? t("请先选择账号")
+                      : selected.account.Type !== "offline"
+                        ? t("仅离线账号支持应用内置预设皮肤")
+                        : t("从经典/纤细等内置默认皮肤库中挑选")
+                  }
+                  delay={300}
+                >
+                  <div>
+                    <Button
+                      isDisabled={
+                        !selected || busy || selected.account.Type !== "offline"
+                      }
+                      radius="full"
+                      size="sm"
+                      startContent={<PaintBrush20Regular />}
+                      variant="flat"
+                      onPress={openCatalog}
+                    >
+                      {t("从皮肤库选择")}
+                    </Button>
+                  </div>
+                </Tooltip>
+
+                <Tooltip
+                  content={
+                    !selected
+                      ? t("请先选择账号")
+                      : selected.account.Type !== "microsoft"
+                        ? t("仅微软正版账号支持装备或停用官方披风")
+                        : t("查看与更换账号拥有的官方披风")
+                  }
+                  delay={300}
+                >
+                  <div>
+                    <Button
+                      color="primary"
+                      isDisabled={
+                        !selected ||
+                        busy ||
+                        selected.account.Type !== "microsoft"
+                      }
+                      radius="full"
+                      size="sm"
+                      startContent={<Shirt20Regular />}
+                      variant="flat"
+                      onPress={openCapes}
+                    >
+                      {t("更换披风")}
+                    </Button>
+                  </div>
+                </Tooltip>
+              </div>
+              {selected?.account.Type === "authlib" ? (
+                <div className="flex items-center gap-1.5 text-xs text-secondary-600 dark:text-secondary-400">
+                  <Info20Regular className="w-4 h-4 flex-none" />
+                  <span>
+                    {t(
+                      "皮肤站账号（Authlib-Injector）请直接登录对应皮肤站网页端进行皮肤与披风管理，启动器会自动同步。",
+                    )}
+                  </span>
+                </div>
+              ) : null}
+            </section>
+          </aside>
         </div>
       </div>
 
@@ -1046,6 +1229,7 @@ const AccountPage: React.FC = () => {
                       {t("离线用户名")}
                     </div>
                     <Input
+                      isClearable
                       classNames={{
                         inputWrapper:
                           "bg-default-100/80 data-[hover=true]:bg-default-200",
@@ -1054,6 +1238,12 @@ const AccountPage: React.FC = () => {
                       radius="lg"
                       size="sm"
                       value={offlineName}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void addOffline();
+                        }
+                      }}
                       onValueChange={setOfflineName}
                     />
                   </div>
@@ -1080,10 +1270,27 @@ const AccountPage: React.FC = () => {
                       </div>
                       {deviceCode ? (
                         <>
-                          <div className="rounded-2xl bg-primary py-5 text-center text-primary-foreground shadow-md shadow-primary/25">
+                          <div
+                            className="group relative cursor-pointer rounded-lg bg-primary py-5 text-center text-primary-foreground shadow-md shadow-primary/25 transition-transform hover:scale-[1.01] active:scale-[0.99]"
+                            title={t("点击复制设备码")}
+                            onClick={async () => {
+                              try {
+                                await ClipboardSetText(deviceCode);
+                                setCodeCopied(true);
+                                setTimeout(() => setCodeCopied(false), 2000);
+                              } catch {
+                                /* ignore */
+                              }
+                            }}
+                          >
                             <div className="text-2xl font-bold tracking-[0.3em] text-white">
                               {deviceCode}
                             </div>
+                            <span className="text-[11px] text-white/80 transition-opacity">
+                              {codeCopied
+                                ? t("✓ 已复制到剪贴板！")
+                                : t("点击此处快速复制")}
+                            </span>
                           </div>
                           <div className="flex justify-center gap-2">
                             <Button
@@ -1146,8 +1353,22 @@ const AccountPage: React.FC = () => {
               {addTab === "authlib" && (
                 <div className="flex flex-col gap-3">
                   <div>
-                    <div className="mb-1 text-[13px] text-gray-600 dark:text-gray-300">
-                      {t("皮肤站地址")}
+                    <div className="mb-1 flex items-center justify-between text-[13px] text-gray-600 dark:text-gray-300">
+                      <span>{t("皮肤站地址")}</span>
+                      {/* 常用皮肤站快捷预设 */}
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span className="text-gray-400">{t("快捷选择:")}</span>
+                        {PRESET_AUTHLIB_SERVERS.map((preset) => (
+                          <button
+                            key={preset.url}
+                            className="rounded px-1.5 py-0.5 text-primary hover:bg-primary/10 transition-colors cursor-pointer"
+                            type="button"
+                            onClick={() => setExtServer(preset.url)}
+                          >
+                            {preset.name}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                     <Input
                       classNames={{
@@ -1158,6 +1379,12 @@ const AccountPage: React.FC = () => {
                       radius="lg"
                       size="sm"
                       value={extServer}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void loginExternal();
+                        }
+                      }}
                       onValueChange={setExtServer}
                     />
                   </div>
@@ -1174,6 +1401,12 @@ const AccountPage: React.FC = () => {
                         radius="lg"
                         size="sm"
                         value={extUsername}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void loginExternal();
+                          }
+                        }}
                         onValueChange={setExtUsername}
                       />
                     </div>
@@ -1190,6 +1423,12 @@ const AccountPage: React.FC = () => {
                         size="sm"
                         type="password"
                         value={extPassword}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void loginExternal();
+                          }
+                        }}
                         onValueChange={setExtPassword}
                       />
                     </div>
@@ -1198,7 +1437,7 @@ const AccountPage: React.FC = () => {
                     <Select
                       defaultSelectedKeys={["0"]}
                       label={t("选择角色")}
-                      popoverProps={{ motionProps: popoverMotionProps }}
+                      popoverProps={selectPopoverProps}
                       radius="lg"
                       size="sm"
                       onSelectionChange={(keys) => {
@@ -1228,7 +1467,7 @@ const AccountPage: React.FC = () => {
             </SwitchTransition>
 
             {addHint ? (
-              <div className="rounded-xl bg-default-100/80 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 break-all">
+              <div className="rounded-lg bg-default-100/80 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 break-all">
                 {addHint}
               </div>
             ) : null}
@@ -1260,7 +1499,7 @@ const AccountPage: React.FC = () => {
               </div>
             ) : capeList.length === 0 ? (
               <div className="flex flex-col items-center gap-3 py-8 text-center text-gray-400">
-                <div className="flex size-16 items-center justify-center rounded-3xl bg-gradient-to-br from-default-200 to-default-100 dark:from-gray-800 dark:to-gray-800/50 shadow-inner">
+                <div className="flex size-16 items-center justify-center rounded-lg bg-gradient-to-br from-default-200 to-default-100 dark:from-gray-800 dark:to-gray-800/50 shadow-inner">
                   <Shirt20Regular className="w-8 h-8" />
                 </div>
                 <div className="text-sm text-gray-500 dark:text-gray-400">
@@ -1273,16 +1512,22 @@ const AccountPage: React.FC = () => {
                   {capeList.map((cape, index) => (
                     <button
                       key={cape.id}
-                      className={`flex flex-col items-center gap-2 rounded-xl border border-transparent nya-panel p-3 backdrop-blur-md transition-all hover:border-primary/30 hover:bg-primary/[0.06] disabled:cursor-default disabled:opacity-60 ${
+                      className={`group relative flex flex-col items-center gap-2 rounded-large border border-transparent nya-panel p-3 backdrop-blur-md transition-all hover:border-primary/30 hover:bg-primary/[0.06] disabled:cursor-default ${
                         cape.isActive
-                          ? "ring-2 ring-primary/50 bg-primary/10"
+                          ? "ring-2 ring-primary/60 bg-primary/10 border-primary/40 shadow-sm"
                           : ""
                       }`}
                       disabled={capeBusy || cape.isActive}
                       onClick={() => applyCape(cape, index)}
                     >
+                      {/* 激活标记徽章 */}
+                      {cape.isActive ? (
+                        <div className="absolute top-2 right-2 flex size-5 items-center justify-center rounded-full bg-primary text-white shadow-sm">
+                          <Checkmark20Regular className="w-3.5 h-3.5" />
+                        </div>
+                      ) : null}
                       {/* 披风预览：裁剪贴图正面区域 (1,0)-(11,16)，×4 放大（pixelated） */}
-                      <div className="flex w-16 h-16 items-center justify-center overflow-hidden rounded-lg bg-default-100 dark:bg-gray-800">
+                      <div className="flex w-16 h-16 items-center justify-center overflow-hidden rounded-lg bg-default-100 dark:bg-gray-800 transition-transform group-hover:scale-105">
                         <div
                           className="w-10 h-16"
                           style={{
@@ -1297,8 +1542,8 @@ const AccountPage: React.FC = () => {
                         {cape.alias?.trim() ||
                           t("披风 {0}", { "0": index + 1 })}
                         {cape.isActive ? (
-                          <span className="ml-1 text-[10px] text-primary">
-                            {t("当前使用")}
+                          <span className="ml-1 text-[10px] text-primary font-semibold">
+                            ({t("已装备")})
                           </span>
                         ) : null}
                       </span>
@@ -1349,12 +1594,20 @@ const AccountPage: React.FC = () => {
                 return (
                   <button
                     key={choice.id}
-                    className={`flex flex-col items-center gap-2 rounded-xl border border-transparent nya-panel p-3 backdrop-blur-md transition-all hover:border-primary/30 hover:bg-primary/[0.06] ${
-                      active ? "ring-2 ring-primary/50 bg-primary/10" : ""
+                    className={`group relative flex flex-col items-center gap-2 rounded-large border border-transparent nya-panel p-3 backdrop-blur-md transition-all hover:border-primary/30 hover:bg-primary/[0.06] ${
+                      active
+                        ? "ring-2 ring-primary/60 bg-primary/10 border-primary/40 shadow-sm"
+                        : ""
                     }`}
                     onClick={() => applyCatalogSkin(choice)}
                   >
-                    <div className="flex w-16 h-16 items-center justify-center overflow-hidden rounded-lg bg-default-100 dark:bg-gray-800">
+                    {/* 激活标记徽章 */}
+                    {active ? (
+                      <div className="absolute top-2 right-2 flex size-5 items-center justify-center rounded-full bg-primary text-white shadow-sm">
+                        <Checkmark20Regular className="w-3.5 h-3.5" />
+                      </div>
+                    ) : null}
+                    <div className="flex w-16 h-16 items-center justify-center overflow-hidden rounded-lg bg-default-100 dark:bg-gray-800 transition-transform group-hover:scale-105">
                       {choice.source ? (
                         <img
                           alt=""
@@ -1370,8 +1623,8 @@ const AccountPage: React.FC = () => {
                     <span className="text-xs font-medium text-gray-700 dark:text-gray-300">
                       {choice.displayName}
                       {active ? (
-                        <span className="ml-1 text-[10px] text-primary">
-                          {t("当前使用")}
+                        <span className="ml-1 text-[10px] text-primary font-semibold">
+                          ({t("当前使用")})
                         </span>
                       ) : null}
                     </span>

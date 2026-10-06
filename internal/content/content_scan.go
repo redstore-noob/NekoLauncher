@@ -530,3 +530,56 @@ func trimDisabledSuffix(name string) string {
 
 	return name[:len(name)-len(".disabled")]
 }
+
+// SniffZipKind 通过压缩包内部结构判断拖入的 zip 是什么内容：
+// "shaderpack"（含 shaders/ 目录）、"resourcepack"（pack.mcmeta / assets/）、
+// "save"（level.dat 在根或第一层）、"unknown"（判不出来，交给用户选）。
+// 打不开的压缩包按 unknown 处理，不报错——调用方随后会走兜底路径。
+func SniffZipKind(path string) string {
+	archive, err := zip.OpenReader(path)
+	if err != nil {
+		return "unknown"
+	}
+	defer archive.Close()
+
+	hasShaders := false
+	hasPackMeta := false
+	hasAssets := false
+	hasLevelDat := false
+	for _, entry := range archive.Reader.File {
+		name := strings.TrimPrefix(filepath.ToSlash(entry.Name), "./")
+		segments := strings.Split(strings.ToLower(name), "/")
+		if len(segments) >= 2 && segments[0] == "shaders" {
+			hasShaders = true
+			continue
+		}
+		if len(segments) == 1 {
+			if segments[0] == "pack.mcmeta" {
+				hasPackMeta = true
+			}
+			if segments[0] == "level.dat" {
+				hasLevelDat = true
+			}
+			continue
+		}
+		// 存档包常见结构是 <世界名>/level.dat
+		if len(segments) == 2 && segments[1] == "level.dat" {
+			hasLevelDat = true
+			continue
+		}
+		if segments[0] == "assets" {
+			hasAssets = true
+		}
+	}
+
+	switch {
+	case hasShaders:
+		return "shaderpack"
+	case hasPackMeta || hasAssets:
+		return "resourcepack"
+	case hasLevelDat:
+		return "save"
+	default:
+		return "unknown"
+	}
+}

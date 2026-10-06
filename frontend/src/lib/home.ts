@@ -257,16 +257,109 @@ export function localFileUrl(path: string): string {
 /** launcher.yaml 中保存的主页小组件顺序（JSON 字符串数组） */
 export const HOME_WIDGET_LAYOUT_KEY = "homeWidgetLayout";
 
-/** launcher.yaml 中保存的主页小组件列数（1~3，缺省 1） */
+/** launcher.yaml 中保存的主页小组件列数（1~4，缺省 2） */
 export const HOME_WIDGET_COLUMNS_KEY = "homeWidgetColumns";
+
+/** 小组件列数上限（外观设置的滑杆与此处共用） */
+export const MAX_WIDGET_COLUMNS = 4;
+
+/** 小组件列数缺省值：配置缺失 / 非法时的回落值 */
+export const DEFAULT_WIDGET_COLUMNS = 2;
+
+/** launcher.yaml 中保存的小组件多页面布局（JSON 对象，键为页面索引） */
+export const HOME_WIDGET_PAGES_KEY = "homeWidgetPages";
+
+/** launcher.yaml 中保存的当前选中页面索引 */
+export const HOME_WIDGET_CURRENT_PAGE_KEY = "homeWidgetCurrentPage";
+
+/** launcher.yaml 中保存的启动面板宽度（像素，左边缘拖拽调整） */
+export const HOME_LAUNCH_PANEL_WIDTH_KEY = "homeLaunchPanelWidth";
+
+/** 启动面板宽度范围（与样式断点保持一致） */
+export const LAUNCH_PANEL_WIDTH_MIN = 280;
+export const LAUNCH_PANEL_WIDTH_MAX = 560;
+
+/** 解析启动面板宽度配置；非法或越界返回 null（调用方回落默认宽） */
+export function parseLaunchPanelWidth(raw: string): number | null {
+  const value = Math.round(parseFloat(raw));
+
+  return Number.isFinite(value) &&
+    value >= LAUNCH_PANEL_WIDTH_MIN &&
+    value <= LAUNCH_PANEL_WIDTH_MAX
+    ? value
+    : null;
+}
+
+/** launcher.yaml 中保存的小组件区宽度（像素，右边缘拖拽调整；不存在 = 自动） */
+export const HOME_WIDGET_AREA_WIDTH_KEY = "homeWidgetAreaWidth";
+
+/** 小组件区自定义宽度范围（超出按自动宽度处理） */
+export const WIDGET_AREA_WIDTH_MIN = 320;
+export const WIDGET_AREA_WIDTH_MAX = 1600;
+
+/** 解析小组件区宽度配置；非法或越界返回 null（调用方回落自动宽度） */
+export function parseWidgetAreaWidth(raw: string): number | null {
+  const value = Math.round(parseFloat(raw));
+
+  return Number.isFinite(value) &&
+    value >= WIDGET_AREA_WIDTH_MIN &&
+    value <= WIDGET_AREA_WIDTH_MAX
+    ? value
+    : null;
+}
+
+/**
+ * launcher.yaml 中后端 Select() 落盘的选中版本键
+ * （internal/instance/store.go 的 selectedVersionConfigKey，改名需两端同步）。
+ */
+export const SELECTED_VERSION_CONFIG_KEY = "selectedGameInstance";
+
+/** 大小写不敏感地在版本列表中找到该 id 的规范写法（版本目录在 Windows 上不分大小写） */
+function matchVersionId(versions: string[], id: string): string {
+  if (!id) return "";
+
+  const lower = id.toLowerCase();
+
+  return versions.find((version) => version.toLowerCase() === lower) ?? "";
+}
+
+/**
+ * 主页启动栏的初始选中版本，优先级：
+ * 本次会话已选中（刷新列表不被重置）> 上次持久化的选中（跨重启恢复）> 首个版本。
+ * 恢复值必须仍在已安装列表里（被删除 / 换目录时自然落掉下一档）。
+ */
+export function resolveInitialVersion(
+  versions: string[],
+  previous: string,
+  persisted: string,
+): string {
+  return (
+    matchVersionId(versions, previous) ||
+    matchVersionId(versions, persisted) ||
+    versions[0] ||
+    ""
+  );
+}
 /** 小组件列数变化事件名（外观设置修改后广播，主页实时跟随） */
 export const WIDGET_COLUMNS_EVENT = "nya:widgetColumns";
 
-/** 解析小组件列数配置；非法值返回 null（调用方回落 1 列） */
+/** 启动卡自定义背景图路径（launcher.yaml；空串 = 无；在外观设置里改） */
+export const LAUNCH_CARD_BG_KEY = "launcherLaunchCardBackgroundPath";
+
+/** 启动卡背景图变化事件名（外观设置修改后广播，主页实时跟随） */
+export const LAUNCH_CARD_BG_EVENT = "nya:launchCardBg";
+
+/** 广播启动卡背景图变化（detail 为新路径，空串 = 清除） */
+export function emitLaunchCardBackground(path: string): void {
+  window.dispatchEvent(new CustomEvent(LAUNCH_CARD_BG_EVENT, { detail: path }));
+}
+
+/** 解析小组件列数配置；非法值返回 null（调用方回落 DEFAULT_WIDGET_COLUMNS 列） */
 export function parseWidgetColumns(raw: string): number | null {
   const value = Number(raw);
 
-  if (!Number.isInteger(value) || value < 1 || value > 3) return null;
+  if (!Number.isInteger(value) || value < 1 || value > MAX_WIDGET_COLUMNS)
+    return null;
 
   return value;
 }
@@ -283,7 +376,10 @@ export function emitWidgetColumns(columns: number): void {
  * 每列各自渲染、独立滚动；1 列时原样返回，保持既有布局语义。
  */
 export function splitWidgetColumns(ids: string[], columns: number): string[][] {
-  const count = Math.max(1, Math.min(3, Math.floor(columns) || 1));
+  const count = Math.max(
+    1,
+    Math.min(MAX_WIDGET_COLUMNS, Math.floor(columns) || 1),
+  );
 
   if (count === 1) return [ids];
 
@@ -350,6 +446,33 @@ export function migrateWidgetIds(ids: string[]): string[] {
   }
 
   return migrated;
+}
+
+/**
+ * 实例 id → 组件定义 id：去掉重复放置产生的 "#2" 后缀。
+ * 首个实例不带后缀（与历史布局兼容），再次放置的实例为 "id#2"、"id#3"…
+ */
+export function widgetBaseId(instanceId: string): string {
+  return instanceId.replace(/#\d+$/, "");
+}
+
+/**
+ * 为再次放置的组件分配不冲突的实例 id：布局里还没有该组件时用原 id，
+ * 已有则取最小的空闲 "#n"（删除中间实例后空位可复用，但已存的 id 不变）。
+ */
+export function allocateWidgetInstanceId(
+  ids: readonly string[],
+  baseId: string,
+): string {
+  if (!ids.includes(baseId)) return baseId;
+
+  const used = new Set(ids);
+
+  for (let n = 2; ; n += 1) {
+    const candidate = `${baseId}#${n}`;
+
+    if (!used.has(candidate)) return candidate;
+  }
 }
 
 /** 解析小组件布局配置；缺失或格式错误返回 null（调用方回落默认布局） */

@@ -193,6 +193,20 @@ export namespace bindings {
 	        this.Versions = source["Versions"];
 	    }
 	}
+	export class LinuxWallpaperTools {
+	    Swww: boolean;
+	    Mpvpaper: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LinuxWallpaperTools(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Swww = source["Swww"];
+	        this.Mpvpaper = source["Mpvpaper"];
+	    }
+	}
 	export class MicrosoftBrowserLoginState {
 	    Active: boolean;
 	    Done: boolean;
@@ -427,6 +441,22 @@ export namespace bindings {
 		    return a;
 		}
 	}
+	export class RssFeedItem {
+	    Title: string;
+	    Link: string;
+	    Published: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new RssFeedItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Title = source["Title"];
+	        this.Link = source["Link"];
+	        this.Published = source["Published"];
+	    }
+	}
 	export class SkinTexture {
 	    skinUri: string;
 	    model: string;
@@ -483,12 +513,68 @@ export namespace bindings {
 	        this.Label = source["Label"];
 	    }
 	}
+	export class weUserProperty {
+	    type: string;
+	    value: any;
+	    text: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new weUserProperty(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.value = source["value"];
+	        this.text = source["text"];
+	    }
+	}
+	export class WallpaperEngineScene {
+	    Entry: string;
+	    DesignWidth: number;
+	    DesignHeight: number;
+	    Objects: number[];
+	    GeneralProperties: Record<string, weUserProperty>;
+	
+	    static createFrom(source: any = {}) {
+	        return new WallpaperEngineScene(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Entry = source["Entry"];
+	        this.DesignWidth = source["DesignWidth"];
+	        this.DesignHeight = source["DesignHeight"];
+	        this.Objects = source["Objects"];
+	        this.GeneralProperties = this.convertValues(source["GeneralProperties"], weUserProperty, true);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class WallpaperEngineWallpaper {
 	    Path: string;
 	    Source: string;
 	    Title: string;
 	    Type: string;
 	    Web: string;
+	    WebConfigVersion: string;
+	    Scene?: WallpaperEngineScene;
 	    Unsupported: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -502,8 +588,28 @@ export namespace bindings {
 	        this.Title = source["Title"];
 	        this.Type = source["Type"];
 	        this.Web = source["Web"];
+	        this.WebConfigVersion = source["WebConfigVersion"];
+	        this.Scene = this.convertValues(source["Scene"], WallpaperEngineScene);
 	        this.Unsupported = source["Unsupported"];
 	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }
@@ -568,6 +674,7 @@ export namespace config {
 	    WrapperCommand: string;
 	    AdditionalEnvironmentVariables: string[];
 	    LaunchFullscreen: boolean;
+	    SnapshotBeforeLaunch: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new GlobalLaunchSettings(source);
@@ -584,6 +691,27 @@ export namespace config {
 	        this.WrapperCommand = source["WrapperCommand"];
 	        this.AdditionalEnvironmentVariables = source["AdditionalEnvironmentVariables"];
 	        this.LaunchFullscreen = source["LaunchFullscreen"];
+	        this.SnapshotBeforeLaunch = source["SnapshotBeforeLaunch"];
+	    }
+	}
+	export class JavaConfig {
+	    JavaExecutable: string;
+	    MinMemoryMB: number;
+	    MaxMemoryMB: number;
+	    AdditionalJvmArguments: string[];
+	    AdditionalGameArguments: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new JavaConfig(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.JavaExecutable = source["JavaExecutable"];
+	        this.MinMemoryMB = source["MinMemoryMB"];
+	        this.MaxMemoryMB = source["MaxMemoryMB"];
+	        this.AdditionalJvmArguments = source["AdditionalJvmArguments"];
+	        this.AdditionalGameArguments = source["AdditionalGameArguments"];
 	    }
 	}
 	export class JavaPathItem {
@@ -661,6 +789,194 @@ export namespace content {
 	        this.FallbackGlyph = source["FallbackGlyph"];
 	    }
 	}
+	export class HealthFinding {
+	    Kind: string;
+	    Severity: string;
+	    Deduction: number;
+	    Subject: string;
+	    Detail: string;
+	    Related: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new HealthFinding(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Kind = source["Kind"];
+	        this.Severity = source["Severity"];
+	        this.Deduction = source["Deduction"];
+	        this.Subject = source["Subject"];
+	        this.Detail = source["Detail"];
+	        this.Related = source["Related"];
+	    }
+	}
+	export class InstanceHealth {
+	    Score: number;
+	    Grade: string;
+	    Findings: HealthFinding[];
+	    BlockingCount: number;
+	    AnalyzedMods: number;
+	    UnreadableMods: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new InstanceHealth(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Score = source["Score"];
+	        this.Grade = source["Grade"];
+	        this.Findings = this.convertValues(source["Findings"], HealthFinding);
+	        this.BlockingCount = source["BlockingCount"];
+	        this.AnalyzedMods = source["AnalyzedMods"];
+	        this.UnreadableMods = source["UnreadableMods"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ModConflict {
+	    Kind: string;
+	    Severity: string;
+	    Subject: string;
+	    DisplayName: string;
+	    Files: string[];
+	    Detail: string;
+	    Related: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ModConflict(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Kind = source["Kind"];
+	        this.Severity = source["Severity"];
+	        this.Subject = source["Subject"];
+	        this.DisplayName = source["DisplayName"];
+	        this.Files = source["Files"];
+	        this.Detail = source["Detail"];
+	        this.Related = source["Related"];
+	    }
+	}
+	export class ModDependency {
+	    ModID: string;
+	    VersionRange: string;
+	    Mandatory: boolean;
+	    ProvidedBy: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModDependency(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ModID = source["ModID"];
+	        this.VersionRange = source["VersionRange"];
+	        this.Mandatory = source["Mandatory"];
+	        this.ProvidedBy = source["ProvidedBy"];
+	    }
+	}
+	export class ModMetadata {
+	    ModID: string;
+	    Name: string;
+	    Version: string;
+	    Loader: string;
+	    FileName: string;
+	    Depends: ModDependency[];
+	    Breaks: string[];
+	    Provides: string[];
+	    DeclaredMCVersions: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModMetadata(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ModID = source["ModID"];
+	        this.Name = source["Name"];
+	        this.Version = source["Version"];
+	        this.Loader = source["Loader"];
+	        this.FileName = source["FileName"];
+	        this.Depends = this.convertValues(source["Depends"], ModDependency);
+	        this.Breaks = source["Breaks"];
+	        this.Provides = source["Provides"];
+	        this.DeclaredMCVersions = source["DeclaredMCVersions"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class ModConflictReport {
+	    Conflicts: ModConflict[];
+	    Mods: ModMetadata[];
+	    AnalyzedMods: number;
+	    UnreadableMods: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModConflictReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Conflicts = this.convertValues(source["Conflicts"], ModConflict);
+	        this.Mods = this.convertValues(source["Mods"], ModMetadata);
+	        this.AnalyzedMods = source["AnalyzedMods"];
+	        this.UnreadableMods = source["UnreadableMods"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	
 	export class RewindSummary {
 	    snapshotCount: number;
 	    blobBytes: number;
@@ -754,6 +1070,34 @@ export namespace content {
 
 export namespace download {
 	
+	export class ContentTaskSnapshot {
+	    id: string;
+	    name: string;
+	    kind: string;
+	    phase: number;
+	    detail: string;
+	    downloadedBytes: number;
+	    totalBytes: number;
+	    bytesPerSecond: number;
+	    etaSeconds: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ContentTaskSnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.kind = source["kind"];
+	        this.phase = source["phase"];
+	        this.detail = source["detail"];
+	        this.downloadedBytes = source["downloadedBytes"];
+	        this.totalBytes = source["totalBytes"];
+	        this.bytesPerSecond = source["bytesPerSecond"];
+	        this.etaSeconds = source["etaSeconds"];
+	    }
+	}
 	export class ContentUpdateApplyResult {
 	    TargetPath: string;
 	    BackupPath: string;
@@ -1087,34 +1431,6 @@ export namespace download {
 	        this.CompletedFiles = source["CompletedFiles"];
 	        this.TotalFiles = source["TotalFiles"];
 	        this.BytesPerSecond = source["BytesPerSecond"];
-	    }
-	}
-	export class ContentTaskSnapshot {
-	    id: string;
-	    name: string;
-	    kind: string;
-	    phase: number;
-	    detail: string;
-	    downloadedBytes: number;
-	    totalBytes: number;
-	    bytesPerSecond: number;
-	    etaSeconds: number;
-
-	    static createFrom(source: any = {}) {
-	        return new ContentTaskSnapshot(source);
-	    }
-
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
-	        this.kind = source["kind"];
-	        this.phase = source["phase"];
-	        this.detail = source["detail"];
-	        this.downloadedBytes = source["downloadedBytes"];
-	        this.totalBytes = source["totalBytes"];
-	        this.bytesPerSecond = source["bytesPerSecond"];
-	        this.etaSeconds = source["etaSeconds"];
 	    }
 	}
 	export class InstalledJavaRuntime {
@@ -1456,11 +1772,11 @@ export namespace launch {
 	    Suggestions: string[];
 	    Summary: string;
 	    Details: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new CrashDiagnosis(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ReportPath = source["ReportPath"];
@@ -1482,11 +1798,11 @@ export namespace launch {
 	    ProcessId: number;
 	    ExitCode: number;
 	    StoppedManually: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GameLaunchSnapshot(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Revision = source["Revision"];
@@ -1499,6 +1815,143 @@ export namespace launch {
 	        this.ExitCode = source["ExitCode"];
 	        this.StoppedManually = source["StoppedManually"];
 	    }
+	}
+	export class LaunchArgumentSource {
+	    Kind: string;
+	    Key: string;
+	    Detail: string;
+	    PluginID: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchArgumentSource(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Kind = source["Kind"];
+	        this.Key = source["Key"];
+	        this.Detail = source["Detail"];
+	        this.PluginID = source["PluginID"];
+	    }
+	}
+	export class LaunchArgumentEntry {
+	    Index: number;
+	    Argument: string;
+	    Section: string;
+	    Source: LaunchArgumentSource;
+	    Shadowed: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchArgumentEntry(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Index = source["Index"];
+	        this.Argument = source["Argument"];
+	        this.Section = source["Section"];
+	        this.Source = this.convertValues(source["Source"], LaunchArgumentSource);
+	        this.Shadowed = source["Shadowed"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class LaunchProvenanceConflict {
+	    Prefix: string;
+	    WinnerIndex: number;
+	    LoserIndices: number[];
+	    WinnerSource: LaunchArgumentSource;
+	    LoserSource: LaunchArgumentSource;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchProvenanceConflict(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Prefix = source["Prefix"];
+	        this.WinnerIndex = source["WinnerIndex"];
+	        this.LoserIndices = source["LoserIndices"];
+	        this.WinnerSource = this.convertValues(source["WinnerSource"], LaunchArgumentSource);
+	        this.LoserSource = this.convertValues(source["LoserSource"], LaunchArgumentSource);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	export class LaunchProvenanceReport {
+	    Entries: LaunchArgumentEntry[];
+	    Effective: LaunchArgumentEntry[];
+	    Overridden: LaunchArgumentEntry[];
+	    Conflicts: LaunchProvenanceConflict[];
+	    JavaExecutable: string;
+	    MainClass: string;
+	    WorkingDirectory: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new LaunchProvenanceReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Entries = this.convertValues(source["Entries"], LaunchArgumentEntry);
+	        this.Effective = this.convertValues(source["Effective"], LaunchArgumentEntry);
+	        this.Overridden = this.convertValues(source["Overridden"], LaunchArgumentEntry);
+	        this.Conflicts = this.convertValues(source["Conflicts"], LaunchProvenanceConflict);
+	        this.JavaExecutable = source["JavaExecutable"];
+	        this.MainClass = source["MainClass"];
+	        this.WorkingDirectory = source["WorkingDirectory"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class LaunchResult {
 	    Success: boolean;
@@ -2099,7 +2552,6 @@ export namespace models {
 	    projectTypes: string[];
 	    requiresApiKey: boolean;
 	    apiKeyConfigured: boolean;
-	    apiKeyApplyUrl: string;
 	    available: boolean;
 	    hint: string;
 	
@@ -2117,7 +2569,6 @@ export namespace models {
 	        this.projectTypes = source["projectTypes"];
 	        this.requiresApiKey = source["requiresApiKey"];
 	        this.apiKeyConfigured = source["apiKeyConfigured"];
-	        this.apiKeyApplyUrl = source["apiKeyApplyUrl"];
 	        this.available = source["available"];
 	        this.hint = source["hint"];
 	    }
@@ -2797,7 +3248,6 @@ export namespace solo {
 	    ContentDirectory: string;
 	    VersionDirectory: string;
 	    VersionID: string;
-	    BundleJava: boolean;
 	    SimpleMode: boolean;
 	    RemoteDistribution: boolean;
 	    PayloadURL: string;
@@ -2821,7 +3271,6 @@ export namespace solo {
 	        this.ContentDirectory = source["ContentDirectory"];
 	        this.VersionDirectory = source["VersionDirectory"];
 	        this.VersionID = source["VersionID"];
-	        this.BundleJava = source["BundleJava"];
 	        this.SimpleMode = source["SimpleMode"];
 	        this.RemoteDistribution = source["RemoteDistribution"];
 	        this.PayloadURL = source["PayloadURL"];
@@ -2850,6 +3299,7 @@ export namespace update {
 	    Name: string;
 	    URL: string;
 	    Size: number;
+	    Digest: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Asset(source);
@@ -2860,6 +3310,7 @@ export namespace update {
 	        this.Name = source["Name"];
 	        this.URL = source["URL"];
 	        this.Size = source["Size"];
+	        this.Digest = source["Digest"];
 	    }
 	}
 	export class CheckResult {

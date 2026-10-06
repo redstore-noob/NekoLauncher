@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"nekolauncher/internal/download"
+	"nekolauncher/internal/tools"
 )
 
 // CheckInstanceContentUpdates 检查实例内容的可更新情况。
@@ -68,6 +69,8 @@ func (a *ContentAPI) DownloadContentUpdate(
 	if strings.TrimSpace(targetPath) == "" {
 		return nil, fmt.Errorf("请先选择保存位置。")
 	}
+	targetPath = tools.SanitizeSavePath(targetPath)
+
 	return download.DownloadContentUpdate(callCtx(a.ctx), downloadURL, targetPath, expectedSHA1,
 		func(downloaded, total int64) {
 			emit(a.ctx, "content:updateDownload", map[string]any{

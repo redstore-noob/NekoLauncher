@@ -226,7 +226,7 @@ const CountdownCard: React.FC = () => {
           ))}
         </div>
       ) : (
-        <div className="rounded-2xl bg-black/5 px-4 py-3 text-center text-xs leading-relaxed text-gray-400 dark:bg-white/5">
+        <div className="rounded-lg bg-black/5 px-4 py-3 text-center text-xs leading-relaxed text-gray-400 dark:bg-white/5">
           {isWeekendNow ? t("周末进行中") : t("近期没有节假日")}
         </div>
       )}

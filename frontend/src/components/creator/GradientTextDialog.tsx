@@ -48,15 +48,16 @@ import {
   TextUnderline20Regular,
 } from "@fluentui/react-icons";
 
+import { selectPopoverProps } from "../../lib/motion";
 import { ModalShell, modalBehaviorProps } from "../modal-shell";
 import { notify } from "../overlay/dialog";
-import { popoverMotionProps } from "../../lib/motion";
 import {
   SaveFile,
   WriteTextFile,
 } from "../../../wailsjs/go/bindings/SystemAPI";
 import { t } from "../../i18n";
 
+import CreatorToolShell from "./CreatorToolShell";
 import {
   EMPTY_FORMATS,
   OUTPUT_FORMAT_OPTIONS,
@@ -70,6 +71,7 @@ import {
 interface GradientTextDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  embedded?: boolean;
 }
 
 const ADD_COLORS = [
@@ -112,6 +114,7 @@ async function copyText(value: string): Promise<boolean> {
 const GradientTextDialog: React.FC<GradientTextDialogProps> = ({
   isOpen,
   onClose,
+  embedded,
 }) => {
   const [text, setText] = useState("Hello World");
   const [stops, setStops] = useState<GradientStop[]>([
@@ -141,6 +144,10 @@ const GradientTextDialog: React.FC<GradientTextDialogProps> = ({
     () => stops.map((stop) => normalizeHex(stop.color) ?? "#FFFFFF"),
     [stops],
   );
+
+  // 缓存 selectedKeys 数组，避免每次渲染都创建新数组导致 Select 闪烁
+  const formatKeys = useMemo(() => [format], [format]);
+
   const output = useMemo(
     () =>
       buildGradientOutput({
@@ -334,6 +341,245 @@ const GradientTextDialog: React.FC<GradientTextDialogProps> = ({
       <span className="text-gray-400">{t("暂无预览")}</span>
     );
 
+  const renderBody = () => (
+    <div className="flex h-full min-h-0 flex-col gap-4">
+      {/* 上方：大预览（无背景） */}
+      <section className="nya-panel-inner nya-border relative min-h-0 flex-1 overflow-hidden rounded-medium border">
+        <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
+          <Select
+            aria-label={t("输出格式")}
+            className="w-52 [&_*]:min-w-0"
+            classNames={{ trigger: "h-8 min-h-8" }}
+            popoverProps={selectPopoverProps}
+            selectedKeys={formatKeys}
+            size="sm"
+            onSelectionChange={(keys) =>
+              setFormat((Array.from(keys)[0] as OutputFormat) ?? "legacy")
+            }
+          >
+            {OUTPUT_FORMAT_OPTIONS.map((option) => (
+              <SelectItem key={option.value}>{option.label}</SelectItem>
+            ))}
+          </Select>
+          <div className="flex overflow-hidden rounded-lg border border-default-300">
+            {(["&", "§"] as const).map((char) => (
+              <button
+                key={char}
+                aria-label={t("控制符 {0}", { "0": char })}
+                className={`h-8 w-8 cursor-pointer font-mono text-sm transition-colors ${
+                  controlChar === char
+                    ? "bg-primary/15 text-primary"
+                    : "text-gray-500 hover:bg-default-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                }`}
+                type="button"
+                onClick={() => setControlChar(char)}
+              >
+                {char}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex h-full items-center justify-center overflow-hidden p-8">
+          <p
+            className="max-w-full break-all text-center font-mono text-3xl leading-relaxed tracking-wide"
+            style={previewStyle}
+          >
+            {renderPreviewText()}
+          </p>
+        </div>
+      </section>
+
+      {/* 下方：控制区 */}
+      <div className="grid h-[40%] min-h-0 flex-none grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] gap-4">
+        {/* 左：文本样式 + 颜色 */}
+        <div className="nya-panel-inner nya-border flex min-h-0 flex-col gap-3 overflow-y-auto rounded-medium border p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
+              {t("文本")}
+            </span>
+            <div className="flex gap-0.5">
+              {toggleButton("bold", t("加粗"), <TextBold20Regular />)}
+              {toggleButton("italic", t("斜体"), <TextItalic20Regular />)}
+              {toggleButton(
+                "underline",
+                t("下划线"),
+                <TextUnderline20Regular />,
+              )}
+              {toggleButton(
+                "strikethrough",
+                t("删除线"),
+                <TextStrikethrough20Regular />,
+              )}
+              {toggleButton("obfuscated", t("混淆"), <Eye20Regular />)}
+            </div>
+          </div>
+          <Textarea
+            aria-label={t("文本")}
+            classNames={{ input: "min-h-14" }}
+            placeholder={t("输入要上色的文字")}
+            size="sm"
+            value={text}
+            onValueChange={setText}
+          />
+
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
+              {t("颜色（")}
+              {stops.length} {t("· 长按手柄拖动排序）")}
+            </span>
+            <Button
+              size="sm"
+              startContent={<Add20Regular />}
+              variant="flat"
+              onPress={addStop}
+            >
+              {t("添加")}
+            </Button>
+          </div>
+
+          <div
+            className="nya-border h-2.5 rounded-full border"
+            style={{ background: cssGradient(colors) }}
+          />
+
+          <div className="flex flex-col gap-1.5">
+            {stops.map((stop, index) => (
+              <div
+                key={stop.id}
+                ref={(element) => {
+                  if (element) rowRefs.current.set(stop.id, element);
+                  else rowRefs.current.delete(stop.id);
+                }}
+                className={`flex items-center gap-2 rounded-lg px-1 py-0.5 transition-colors ${
+                  draggingId === stop.id
+                    ? "bg-primary/5 ring-2 ring-primary/40"
+                    : ""
+                }`}
+              >
+                <button
+                  aria-label={t("长按拖动排序：第 {0} 个颜色", {
+                    "0": index + 1,
+                  })}
+                  className="flex size-7 flex-none cursor-grab touch-none items-center justify-center rounded text-gray-400 transition-colors hover:bg-default-100 active:cursor-grabbing dark:hover:bg-gray-800"
+                  title={t("长按或拖动排序")}
+                  type="button"
+                  onPointerCancel={endDrag}
+                  onPointerDown={(event) => beginDrag(stop.id, event)}
+                  onPointerMove={moveDrag}
+                  onPointerUp={endDrag}
+                >
+                  <ReOrderDotsVertical20Regular />
+                </button>
+                <input
+                  aria-label={t("停靠点 {0} 颜色", { "0": index + 1 })}
+                  className="h-8 w-10 flex-none cursor-pointer rounded border border-default-300 bg-transparent"
+                  type="color"
+                  value={normalizeHex(stop.color) ?? "#ffffff"}
+                  onChange={(event) => patchStop(stop.id, event.target.value)}
+                />
+                <Input
+                  aria-label={t("停靠点 {0} HEX", { "0": index + 1 })}
+                  classNames={{ inputWrapper: "h-8" }}
+                  placeholder="#RRGGBB"
+                  size="sm"
+                  value={stop.color}
+                  onValueChange={(value) => patchStop(stop.id, value)}
+                />
+                <Button
+                  isIconOnly
+                  aria-label={t("删除该颜色")}
+                  isDisabled={stops.length <= 1}
+                  size="sm"
+                  title={t("删除")}
+                  variant="light"
+                  onPress={() => removeStop(stop.id)}
+                >
+                  <Delete20Regular />
+                </Button>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Input
+              aria-label={t("导入颜色")}
+              classNames={{ inputWrapper: "h-8" }}
+              placeholder={t("粘贴 HEX / RGB / CSS 渐变")}
+              size="sm"
+              value={importText}
+              onValueChange={setImportText}
+            />
+            <Button
+              size="sm"
+              startContent={<ClipboardPaste20Regular />}
+              variant="flat"
+              onPress={importColors}
+            >
+              {t("导入")}
+            </Button>
+          </div>
+
+          {error ? (
+            <div className="text-[11px] text-danger">{error}</div>
+          ) : null}
+        </div>
+
+        <div className="nya-panel-inner nya-border flex min-h-0 flex-col gap-2 rounded-medium border p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
+              {t("输出")}
+            </span>
+            <span className="text-[10px] text-gray-400">
+              {OUTPUT_FORMAT_OPTIONS.find((o) => o.value === format)?.hint}
+            </span>
+          </div>
+          <Textarea
+            readOnly
+            aria-label={t("输出文本")}
+            classNames={{
+              base: "min-h-0 flex-1",
+              input: "h-full font-mono text-[12px]",
+            }}
+            size="sm"
+            value={output}
+          />
+          <div className="flex flex-none justify-end gap-2">
+            <Button
+              size="sm"
+              startContent={copied ? <Checkmark20Regular /> : <Copy20Regular />}
+              variant="flat"
+              onPress={() => void copyOutput()}
+            >
+              {t("复制")}
+            </Button>
+            <Button
+              color="primary"
+              isLoading={exporting}
+              size="sm"
+              startContent={<Save20Regular />}
+              onPress={() => void exportOutput()}
+            >
+              {t("导出")}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <CreatorToolShell
+        icon={<TextFont20Regular />}
+        title={t("渐变文字生成器")}
+        onBack={onClose}
+      >
+        {renderBody()}
+      </CreatorToolShell>
+    );
+  }
+
   return (
     <Modal isOpen={isOpen} size="5xl" onClose={onClose} {...modalBehaviorProps}>
       <ModalContent className="h-[88vh] max-h-[88vh]">
@@ -342,237 +588,7 @@ const GradientTextDialog: React.FC<GradientTextDialogProps> = ({
           title={t("渐变文字生成器")}
           onClose={onClose}
         >
-          <div className="flex h-full min-h-0 flex-col gap-4">
-            {/* 上方：大预览（无背景） */}
-            <section className="nya-panel-inner nya-border relative min-h-0 flex-1 overflow-hidden rounded-2xl border">
-              <div className="absolute right-3 top-3 z-10 flex items-center gap-2">
-                <Select
-                  aria-label={t("输出格式")}
-                  className="w-52 [&_*]:min-w-0"
-                  classNames={{ trigger: "h-8 min-h-8" }}
-                  popoverProps={{ motionProps: popoverMotionProps }}
-                  selectedKeys={[format]}
-                  size="sm"
-                  onSelectionChange={(keys) =>
-                    setFormat((Array.from(keys)[0] as OutputFormat) ?? "legacy")
-                  }
-                >
-                  {OUTPUT_FORMAT_OPTIONS.map((option) => (
-                    <SelectItem key={option.value}>{option.label}</SelectItem>
-                  ))}
-                </Select>
-                <div className="flex overflow-hidden rounded-lg border border-default-300">
-                  {(["&", "§"] as const).map((char) => (
-                    <button
-                      key={char}
-                      aria-label={t("控制符 {0}", { "0": char })}
-                      className={`h-8 w-8 cursor-pointer font-mono text-sm transition-colors ${
-                        controlChar === char
-                          ? "bg-primary/15 text-primary"
-                          : "text-gray-500 hover:bg-default-100 dark:text-gray-300 dark:hover:bg-gray-800"
-                      }`}
-                      type="button"
-                      onClick={() => setControlChar(char)}
-                    >
-                      {char}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex h-full items-center justify-center overflow-hidden p-8">
-                <p
-                  className="max-w-full break-all text-center font-mono text-3xl leading-relaxed tracking-wide"
-                  style={previewStyle}
-                >
-                  {renderPreviewText()}
-                </p>
-              </div>
-            </section>
-
-            {/* 下方：控制区 */}
-            <div className="grid h-[40%] min-h-0 flex-none grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] gap-4">
-              {/* 左：文本样式 + 颜色 */}
-              <div className="nya-panel-inner nya-border flex min-h-0 flex-col gap-3 overflow-y-auto rounded-2xl border p-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
-                    {t("文本")}
-                  </span>
-                  <div className="flex gap-0.5">
-                    {toggleButton("bold", t("加粗"), <TextBold20Regular />)}
-                    {toggleButton("italic", t("斜体"), <TextItalic20Regular />)}
-                    {toggleButton(
-                      "underline",
-                      t("下划线"),
-                      <TextUnderline20Regular />,
-                    )}
-                    {toggleButton(
-                      "strikethrough",
-                      t("删除线"),
-                      <TextStrikethrough20Regular />,
-                    )}
-                    {toggleButton("obfuscated", t("混淆"), <Eye20Regular />)}
-                  </div>
-                </div>
-                <Textarea
-                  aria-label={t("文本")}
-                  classNames={{ input: "min-h-14" }}
-                  placeholder={t("输入要上色的文字")}
-                  size="sm"
-                  value={text}
-                  onValueChange={setText}
-                />
-
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
-                    {t("颜色（")}
-                    {stops.length} {t("· 长按手柄拖动排序）")}
-                  </span>
-                  <Button
-                    size="sm"
-                    startContent={<Add20Regular />}
-                    variant="flat"
-                    onPress={addStop}
-                  >
-                    {t("添加")}
-                  </Button>
-                </div>
-
-                <div
-                  className="nya-border h-2.5 rounded-full border"
-                  style={{ background: cssGradient(colors) }}
-                />
-
-                <div className="flex flex-col gap-1.5">
-                  {stops.map((stop, index) => (
-                    <div
-                      key={stop.id}
-                      ref={(element) => {
-                        if (element) rowRefs.current.set(stop.id, element);
-                        else rowRefs.current.delete(stop.id);
-                      }}
-                      className={`flex items-center gap-2 rounded-lg px-1 py-0.5 transition-colors ${
-                        draggingId === stop.id
-                          ? "bg-primary/5 ring-2 ring-primary/40"
-                          : ""
-                      }`}
-                    >
-                      <button
-                        aria-label={t("长按拖动排序：第 {0} 个颜色", {
-                          "0": index + 1,
-                        })}
-                        className="flex size-7 flex-none cursor-grab touch-none items-center justify-center rounded text-gray-400 transition-colors hover:bg-default-100 active:cursor-grabbing dark:hover:bg-gray-800"
-                        title={t("长按或拖动排序")}
-                        type="button"
-                        onPointerCancel={endDrag}
-                        onPointerDown={(event) => beginDrag(stop.id, event)}
-                        onPointerMove={moveDrag}
-                        onPointerUp={endDrag}
-                      >
-                        <ReOrderDotsVertical20Regular />
-                      </button>
-                      <input
-                        aria-label={t("停靠点 {0} 颜色", { "0": index + 1 })}
-                        className="h-8 w-10 flex-none cursor-pointer rounded border border-default-300 bg-transparent"
-                        type="color"
-                        value={normalizeHex(stop.color) ?? "#ffffff"}
-                        onChange={(event) =>
-                          patchStop(stop.id, event.target.value)
-                        }
-                      />
-                      <Input
-                        aria-label={t("停靠点 {0} HEX", { "0": index + 1 })}
-                        classNames={{ inputWrapper: "h-8" }}
-                        placeholder="#RRGGBB"
-                        size="sm"
-                        value={stop.color}
-                        onValueChange={(value) => patchStop(stop.id, value)}
-                      />
-                      <Button
-                        isIconOnly
-                        aria-label={t("删除该颜色")}
-                        isDisabled={stops.length <= 1}
-                        size="sm"
-                        title={t("删除")}
-                        variant="light"
-                        onPress={() => removeStop(stop.id)}
-                      >
-                        <Delete20Regular />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <Input
-                    aria-label={t("导入颜色")}
-                    classNames={{ inputWrapper: "h-8" }}
-                    placeholder={t("粘贴 HEX / RGB / CSS 渐变")}
-                    size="sm"
-                    value={importText}
-                    onValueChange={setImportText}
-                  />
-                  <Button
-                    size="sm"
-                    startContent={<ClipboardPaste20Regular />}
-                    variant="flat"
-                    onPress={importColors}
-                  >
-                    {t("导入")}
-                  </Button>
-                </div>
-
-                {error ? (
-                  <div className="text-[11px] text-danger">{error}</div>
-                ) : null}
-              </div>
-
-              <div className="nya-panel-inner nya-border flex min-h-0 flex-col gap-2 rounded-2xl border p-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
-                    {t("输出")}
-                  </span>
-                  <span className="text-[10px] text-gray-400">
-                    {
-                      OUTPUT_FORMAT_OPTIONS.find((o) => o.value === format)
-                        ?.hint
-                    }
-                  </span>
-                </div>
-                <Textarea
-                  readOnly
-                  aria-label={t("输出文本")}
-                  classNames={{
-                    base: "min-h-0 flex-1",
-                    input: "h-full font-mono text-[12px]",
-                  }}
-                  size="sm"
-                  value={output}
-                />
-                <div className="flex flex-none justify-end gap-2">
-                  <Button
-                    size="sm"
-                    startContent={
-                      copied ? <Checkmark20Regular /> : <Copy20Regular />
-                    }
-                    variant="flat"
-                    onPress={() => void copyOutput()}
-                  >
-                    {t("复制")}
-                  </Button>
-                  <Button
-                    color="primary"
-                    isLoading={exporting}
-                    size="sm"
-                    startContent={<Save20Regular />}
-                    onPress={() => void exportOutput()}
-                  >
-                    {t("导出")}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
+          {renderBody()}
         </ModalShell>
       </ModalContent>
     </Modal>

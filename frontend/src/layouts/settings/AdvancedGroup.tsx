@@ -51,7 +51,7 @@ const AdvancedGroup: React.FC<AdvancedGroupProps> = ({
   const expanded = open || searching || !!forceOpen;
 
   return (
-    <div className="nya-border rounded-xl border bg-default-50/40 px-3.5 dark:bg-white/[0.03]">
+    <div className="nya-border rounded-lg border bg-default-50/40 px-3.5 dark:bg-white/[0.03]">
       <button
         aria-expanded={expanded}
         className="flex w-full cursor-pointer items-center gap-1.5 py-2.5 text-left"

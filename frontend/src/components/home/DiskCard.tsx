@@ -139,7 +139,7 @@ const DiskCard: React.FC = () => {
       valueClass="bg-gradient-to-r from-teal-500 via-cyan-500 to-sky-500"
     >
       {error ? (
-        <div className="rounded-2xl bg-danger/10 px-4 py-3 text-xs leading-relaxed text-danger">
+        <div className="rounded-lg bg-danger/10 px-4 py-3 text-xs leading-relaxed text-danger">
           {error}
         </div>
       ) : usage ? (
@@ -163,7 +163,7 @@ const DiskCard: React.FC = () => {
           </div>
           {(danger || warning) && (
             <div
-              className={`rounded-xl px-3 py-2 text-center text-[11px] leading-relaxed ${
+              className={`rounded-lg px-3 py-2 text-center text-[11px] leading-relaxed ${
                 danger
                   ? "bg-danger/10 text-danger"
                   : "bg-warning/10 text-warning-600 dark:text-warning-500"
@@ -176,7 +176,7 @@ const DiskCard: React.FC = () => {
           )}
         </>
       ) : (
-        <div className="rounded-2xl bg-black/5 px-4 py-3 text-center text-xs text-gray-400 dark:bg-white/5">
+        <div className="rounded-lg bg-black/5 px-4 py-3 text-center text-xs text-gray-400 dark:bg-white/5">
           {t("等待游戏目录就绪…")}
         </div>
       )}

@@ -1,19 +1,17 @@
-// NekoSolo 安装包导出：把启动器本体 + 捆绑 Java（可选）+ 整合包（版本文件与
-// 内容）打成载荷 zip，再拼接到安装器模板（stub）尾部并写尾标。
-// 布局约定（载荷 zip 内的顶层目录）：
+// NekoSolo 安装包导出（v3：Modrinth 整合包壳）：
 //
-//	manifest.json          元数据（model.Manifest）
-//	icon.png               可选，整合包图标（安装器界面展示）
-//	files/                 解压到安装根目录（NekoLauncher.exe、portable.flag）
-//	minecraft/versions/…   解压到 <数据目录>/minecraft/versions/…
-//	                       内容直接进 versions/<id>/，配合首启显式开启的版本隔离，
-//	                       开箱即是"隔离实例"，且首启补齐缺失的 libraries/assets
-//	jre/…                  可选，解压到 <数据目录>/runtime/jre/
+//	最终 exe = 安装器模板（stub，C# WPF）+ 载荷 zip + 32 字节尾标（"NKSOLO3\x03"）。
+//	载荷 zip = 标准 .mrpack 结构（modrinth.index.json + overrides/）
+//	           + manifest.json 元数据 + files/（NekoLauncher.exe、portable.flag）。
 //
-// 载荷**不含任何 Minecraft 客户端本体**（versions/<id>/<id>.jar）：客户端是
-// Mojang 的版权物，随安装包分发属于再分发。载荷只带版本描述 JSON（内含官方
-// 下载地址），玩家首次启动时由启动前文件校验从 Mojang 官方地址拉取——与
-// libraries/assets 走同一条既有的联网补全路径。
+// 与 v1/v2 的区别：载荷里不再有 versions/ 描述文件与 jre/ 运行时——
+//   - mods 优先在 modrinth.index.json 里声明直链（复用 modpack.Export 的
+//     SHA1→Modrinth 匹配），找不到对应文件的 mod 与 config/saves/options.txt
+//     保留在 overrides/ 随包分发；
+//   - Minecraft 本体、libraries/assets 由启动器首启按常规流程联网补全；
+//   - Java 运行时改由启动器首启按 MC 版本联网下载（不再捆绑分发）。
+//   补全流程由安装器写下的 neko-solo.json（pendingPayload 字段）触发，
+//   见 marker.go / completion.go。
 package solo
 
 import (
@@ -29,22 +27,13 @@ import (
 	"path/filepath"
 	"strings"
 
-	"nekolauncher/internal/config"
 	"nekolauncher/internal/modpack"
+	"nekolauncher/internal/tools"
 )
-
-// maxInheritDepth 版本 inheritsFrom 父链的最大回溯深度（与实例扫描一致）。
-const maxInheritDepth = 3
 
 // launcherExecutable 启动器本体路径的获取入口。抽成变量仅为测试注入
 // 小体积的假 exe（真实导出走 os.Executable，即正在运行的启动器）。
 var launcherExecutable = os.Executable
-
-// javaExcludedTopDirs 打包 JRE 时跳过的顶层目录（jmods 仅 JDK 有；demo/man 非运行必需）。
-var javaExcludedTopDirs = map[string]bool{"jmods": true, "demo": true, "man": true}
-
-// javaExcludedFiles 打包 JRE 时跳过的文件（源码包与压缩包说明）。
-var javaExcludedFiles = map[string]bool{"src.zip": true, "javafx-src.zip": true}
 
 // SoloExportOptions NekoSolo 安装包导出参数（字段扁平化，便于生成 Wails 绑定）。
 type SoloExportOptions struct {
@@ -54,7 +43,8 @@ type SoloExportOptions struct {
 	UpdateLink  string
 	Description string
 	IconPngPath string
-	// MinecraftVersion 主游戏版本；LoaderName/LoaderVersion 仅作展示
+	// MinecraftVersion 主游戏版本；LoaderName/LoaderVersion 同时写进
+	// modrinth.index.json 的 dependencies（玩家首启按它装 Loader）。
 	MinecraftVersion string
 	LoaderName       string
 	LoaderVersion    string
@@ -62,12 +52,11 @@ type SoloExportOptions struct {
 	IncludedPaths []string
 	// ContentDirectory 实例内容目录（隔离实例即 versions/<id>，共享实例为游戏根）
 	ContentDirectory string
-	// VersionDirectory 作者实例的 versions/<id> 目录（承载版本 json/jar）
+	// VersionDirectory 作者实例的 versions/<id> 目录。v3 载荷不再携带版本
+	// 描述文件，仅在 VersionID 为空时用它的目录名兜底实例名。
 	VersionDirectory string
-	// VersionID versions/ 下的实例目录名；空串时取 VersionDirectory 的目录名
+	// VersionID 安装后的实例目录名；空串时取 VersionDirectory 的目录名
 	VersionID string
-	// BundleJava 是否捆绑当前首选 Java 运行时
-	BundleJava bool
 	// SimpleMode 安装后启动器默认进入 NekoLauncher-S 模式
 	SimpleMode bool
 	// RemoteDistribution 在线安装包（尾标 v2）：载荷 zip 不打进 exe，
@@ -87,6 +76,9 @@ func ExportSolo(
 	progress func(modpack.ModpackExportProgress),
 ) (modpack.ModpackExportResult, error) {
 	var result modpack.ModpackExportResult
+	// 输出路径来自用户输入（整合包名/版本号拼出来的文件名）：带 '?' 时 Windows
+	// 会拒绝创建文件，统一换成 '0'（mrpack 与临时文件都从它派生，一并受益）。
+	outputPath = tools.SanitizeSavePath(outputPath)
 	if strings.TrimSpace(outputPath) == "" {
 		return result, fmt.Errorf("输出路径不能为空")
 	}
@@ -109,10 +101,6 @@ func ExportSolo(
 	if versionID == "" || versionID == "." || versionID == "/" {
 		return result, fmt.Errorf("无法确定要打包的版本目录")
 	}
-	versionJSONPath := filepath.Join(options.VersionDirectory, versionID+".json")
-	if info, err := os.Stat(versionJSONPath); err != nil || info.IsDir() {
-		return result, fmt.Errorf("版本目录缺少 %s.json：%s", versionID, versionJSONPath)
-	}
 	if info, err := os.Stat(options.ContentDirectory); err != nil || !info.IsDir() {
 		return result, fmt.Errorf("实例内容目录不存在：%s", options.ContentDirectory)
 	}
@@ -126,43 +114,41 @@ func ExportSolo(
 		return result, fmt.Errorf("无法定位启动器本体：%w", err)
 	}
 
-	// ---- 收集待写入载荷的文件 ----
-	emitProgress(progress, "正在收集版本文件", 0, 1)
-	versionsRoot := filepath.Dir(options.VersionDirectory)
-	versionEntries, err := collectVersionChain(versionsRoot, versionID)
-	if err != nil {
-		return result, err
-	}
-
-	emitProgress(progress, "正在收集整合包内容", 0, 1)
-	contentEntries, warnings, err := collectContentEntries(options, versionID)
-	if err != nil {
-		return result, err
-	}
-
-	javaEntries := []payloadEntry{}
-	if options.BundleJava {
-		emitProgress(progress, "正在收集 Java 运行时", 0, 1)
-		javaHome := primaryJavaHome()
-		javaEntries, err = collectJavaEntries(javaHome)
-		if err != nil {
-			return result, err
-		}
-		if len(javaEntries) == 0 {
-			warnings = append(warnings, "未配置首选 Java，跳过捆绑：玩家首次启动时需自行安装 Java。")
-		} else if notice := javaRedistributionNotice(javaHome); notice != "" {
-			// 载荷会把作者本机的 Java 整个分发给玩家：供应商条款必须让作者知道
-			warnings = append(warnings, notice)
-		}
-	}
-
-	// ---- 写载荷 ----
-	emitProgress(progress, "正在写入载荷", 0, 1)
+	// ---- 第一步：按 Modrinth 格式打包内容（mod 直链匹配 + overrides 回填） ----
 	temporaryPath := fmt.Sprintf("%s.%s.nekosolo-tmp", outputPath, newGUID())
 	defer func() { _ = os.Remove(temporaryPath) }()
+	mrpackPath := temporaryPath + ".mrpack"
+	defer func() { _ = os.Remove(mrpackPath) }()
 	payloadTemp := temporaryPath + ".payload"
 	defer func() { _ = os.Remove(payloadTemp) }()
 
+	emitProgress(progress, "正在打包整合包内容", 0, 1)
+	mrpackOptions := modpack.ModpackExportOptions{
+		Format:               modpack.FormatModrinth,
+		PackName:             options.PackName,
+		PackVersion:          options.PackVersion,
+		Author:               options.Author,
+		UpdateLink:           options.UpdateLink,
+		Description:          options.Description,
+		IconPngPath:          options.IconPngPath,
+		MinecraftVersion:     options.MinecraftVersion,
+		LoaderName:           options.LoaderName,
+		LoaderVersion:        options.LoaderVersion,
+		IncludedPaths:        options.IncludedPaths,
+		ResolveModrinthLinks: true,
+	}
+	mrpackResult, err := modpack.Export(ctx, mrpackOptions, options.ContentDirectory, mrpackPath,
+		func(p modpack.ModpackExportProgress) {
+			p.Phase = "正在打包整合包内容：" + p.Phase
+			emitProgress(progress, p.Phase, p.Current, p.Total)
+		})
+	if err != nil {
+		return result, err
+	}
+	warnings := mrpackResult.Warnings
+
+	// ---- 第二步：mrpack + manifest + files/ 组装成 v3 载荷 ----
+	emitProgress(progress, "正在写入载荷", 0, 1)
 	manifest := Manifest{
 		Format:        PayloadFormat,
 		PackID:        SanitizePackID(options.PackName),
@@ -175,29 +161,29 @@ func ExportSolo(
 		LoaderVersion: options.LoaderVersion,
 		VersionID:     versionID,
 		SimpleMode:    options.SimpleMode,
-		HasJava:       len(javaEntries) > 0,
 		UpdateLink:    options.UpdateLink,
 	}
+	// 图标由 modpack.Export 写进 overrides/icon.png（标准 mrpack 的图标位置），
+	// 安装器与导入流程都按该路径展示。
 	if options.IconPngPath != "" {
 		if _, err := os.Stat(options.IconPngPath); err == nil {
-			manifest.IconPath = "icon.png"
+			manifest.IconPath = "overrides/icon.png"
 		}
 	}
 
-	payloadLength, payloadCRC, err := writePayload(ctx, payloadTemp, manifest, options, launcherExe,
-		versionEntries, contentEntries, javaEntries, progress)
+	payloadLength, payloadCRC, err := writePayloadV3(payloadTemp, manifest, mrpackPath, launcherExe)
 	if err != nil {
 		return result, err
 	}
 
-	// ---- 组装最终 exe ----
+	// ---- 第三步：拼接最终 exe ----
 	stubInfo, err := os.Stat(stubPath)
 	if err != nil {
 		return result, err
 	}
 	if options.RemoteDistribution {
-		// v2 在线安装包：exe = stub + 远程清单 JSON + v2 尾标（体积只有几 MB）；
-		// 载荷 zip 保留在输出目录旁，由作者上传到 PayloadURL（如 GitHub Releases）。
+		// 在线安装包：exe = stub + 远程清单 JSON + v2 尾标（体积只有几 MB）；
+		// 载荷 zip（v3 布局）保留在输出目录旁，由作者上传到 PayloadURL。
 		payloadPath, payloadSize, err := assembleRemoteInstaller(stubPath, stubInfo.Size(), payloadTemp,
 			payloadLength, payloadCRC, manifest, options, temporaryPath, outputPath)
 		if err != nil {
@@ -209,8 +195,8 @@ func ExportSolo(
 
 		return modpack.ModpackExportResult{
 			OutputPath:       outputPath,
-			DeclaredFiles:    len(versionEntries),
-			OverrideFiles:    len(contentEntries),
+			DeclaredFiles:    mrpackResult.DeclaredFiles,
+			OverrideFiles:    mrpackResult.OverrideFiles,
 			Warnings:         warnings,
 			PayloadPath:      payloadPath,
 			PayloadSizeBytes: payloadSize,
@@ -227,15 +213,86 @@ func ExportSolo(
 	emitProgress(progress, "完成", 1, 1)
 	return modpack.ModpackExportResult{
 		OutputPath:    outputPath,
-		DeclaredFiles: len(versionEntries),
-		OverrideFiles: len(contentEntries),
+		DeclaredFiles: mrpackResult.DeclaredFiles,
+		OverrideFiles: mrpackResult.OverrideFiles,
 		Warnings:      warnings,
 	}, nil
 }
 
-// assembleRemoteInstaller 生成 v2 在线安装包：stub + 远程清单 JSON + v2 尾标。
-// 载荷 zip（payloadTemp）被移动到 outputPath 同目录下的 "<包名>-payload.zip"，
-// 由作者上传到 GitHub Releases 等托管地址。返回载荷 zip 路径与大小。
+// writePayloadV3 把 mrpack 全部条目 + manifest.json + files/ 写成 v3 载荷 zip；
+// 返回载荷长度与 CRC32。条目逐个流式复制，mrpack 只读不改动。
+func writePayloadV3(payloadPath string, manifest Manifest, mrpackPath, launcherExe string) (int64, uint32, error) {
+	mrpack, err := zip.OpenReader(mrpackPath)
+	if err != nil {
+		return 0, 0, fmt.Errorf("读取整合包载荷失败：%w", err)
+	}
+	defer mrpack.Close()
+
+	file, err := os.OpenFile(payloadPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer file.Close()
+
+	hasher := crc32.NewIEEE()
+	counter := &countingWriter{inner: file}
+	archive := zip.NewWriter(io.MultiWriter(counter, hasher))
+
+	writeErr := func() error {
+		manifestJSON, err := marshalSoloJSON(manifest)
+		if err != nil {
+			return err
+		}
+		if err := writeTextEntry(archive, "manifest.json", manifestJSON); err != nil {
+			return err
+		}
+		// 启动器本体 + 便携标记：安装器整体解到安装根目录。
+		// 载荷内固定命名 NekoLauncher.exe——安装器按此固定名注册与拉起启动器
+		if err := copyFileEntry(archive, "files/NekoLauncher.exe", launcherExe); err != nil {
+			return err
+		}
+		if err := writeTextEntry(archive, "files/portable.flag", ""); err != nil {
+			return err
+		}
+		// mrpack 条目原样复制（modrinth.index.json + overrides/…）
+		for _, entry := range mrpack.File {
+			if err := copyZipEntry(archive, entry); err != nil {
+				return fmt.Errorf("复制 %s 失败：%w", entry.Name, err)
+			}
+		}
+		return nil
+	}()
+	if writeErr != nil {
+		return 0, 0, writeErr
+	}
+	// 中央目录在 Close 时才写：磁盘满/配额不足只在这里暴露
+	if err := archive.Close(); err != nil {
+		return 0, 0, err
+	}
+	return counter.count, hasher.Sum32(), nil
+}
+
+// copyZipEntry 从源 zip 复制单个条目到目标 zip（保持压缩方法，流式拷贝数据）。
+func copyZipEntry(archive *zip.Writer, source *zip.File) error {
+	reader, err := source.Open()
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	writer, err := archive.CreateHeader(&zip.FileHeader{
+		Name:   source.Name,
+		Method: source.Method,
+	})
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(writer, reader)
+	return err
+}
+
+// assembleRemoteInstaller 生成在线安装包：stub + 远程清单 JSON + v2 尾标。
+// 载荷 zip（payloadTemp，v3 布局）被移动到 outputPath 同目录下的
+// "<包名>-payload.zip"，由作者上传到 GitHub Releases 等托管地址。返回载荷 zip 路径与大小。
 func assembleRemoteInstaller(
 	stubPath string,
 	stubSize int64,
@@ -303,344 +360,6 @@ func assembleRemoteInstaller(
 	return payloadPath, payloadLength, nil
 }
 
-// payloadEntry 待写入载荷的单个文件：载荷内路径 + 源文件绝对路径。
-type payloadEntry struct {
-	archivePath string
-	sourcePath  string
-}
-
-// collectVersionChain 收集版本目录及其 inheritsFrom / jar 依赖链的版本描述文件。
-//
-// **只收 <id>.json，不收任何 .jar**：客户端本体是 Mojang 的版权物，随安装包
-// 分发属于再分发。描述文件里带着官方下载地址，玩家首次启动由启动前文件校验
-// （download/game_file_verifier）从 Mojang 官方地址补下，与 libraries/assets
-// 走同一条路径。根版本缺失 json 报错，依赖链缺失同样报错（这样的版本装上
-// 也无法被扫描识别）。
-//
-// jar 字段（客户端 jar 借用另一版本）指向的版本只收描述文件，并一并入队：
-// 校验器会沿同一张图找到它并补下 jar（见 game_file_verifier 的链式遍历）。
-func collectVersionChain(versionsRoot, versionID string) ([]payloadEntry, error) {
-	entries := []payloadEntry{}
-	seen := map[string]bool{}
-	type chainItem struct {
-		id    string
-		depth int
-	}
-	queue := []chainItem{{strings.TrimSpace(versionID), 0}}
-	for len(queue) > 0 {
-		item := queue[0]
-		queue = queue[1:]
-		key := strings.ToLower(item.id)
-		if item.id == "" || seen[key] {
-			continue
-		}
-		seen[key] = true
-
-		versionDirectory := filepath.Join(versionsRoot, item.id)
-		jsonPath := filepath.Join(versionDirectory, item.id+".json")
-		if info, err := os.Stat(jsonPath); err != nil || info.IsDir() {
-			return nil, fmt.Errorf("版本描述文件不存在：%s", jsonPath)
-		}
-		entries = append(entries, payloadEntry{
-			archivePath: "minecraft/versions/" + item.id + "/" + item.id + ".json",
-			sourcePath:  jsonPath,
-		})
-
-		var meta struct {
-			InheritsFrom string `json:"inheritsFrom"`
-			Jar          string `json:"jar"`
-		}
-		raw, err := os.ReadFile(jsonPath)
-		if err != nil {
-			return nil, fmt.Errorf("读取版本描述文件失败：%w", err)
-		}
-		if err := json.Unmarshal(raw, &meta); err != nil {
-			return nil, fmt.Errorf("版本描述文件不是有效 JSON（%s）：%w", item.id, err)
-		}
-		// jar 字段：客户端 jar 借用另一版本的描述（jar 本体不下发，由校验器补下）。
-		// 该来源版本的描述文件必须存在，否则玩家侧无从得知它的下载地址。
-		if jar := strings.TrimSpace(meta.Jar); jar != "" && !strings.EqualFold(jar, item.id) && !seen[strings.ToLower(jar)] {
-			jarJSON := filepath.Join(versionsRoot, jar, jar+".json")
-			if info, err := os.Stat(jarJSON); err != nil || info.IsDir() {
-				return nil, fmt.Errorf("版本 %s 声明的客户端 jar 来源 %s 缺少描述文件：%s", item.id, jar, jarJSON)
-			}
-			queue = append(queue, chainItem{jar, item.depth})
-		}
-		// inheritsFrom：父版本的描述文件同样要带上（同为同层引用，深度不累加）
-		if parent := strings.TrimSpace(meta.InheritsFrom); parent != "" && !strings.EqualFold(parent, item.id) {
-			if item.depth >= maxInheritDepth {
-				return nil, fmt.Errorf("版本 %s 的 inheritsFrom 链过深（>%d）", item.id, maxInheritDepth)
-			}
-			queue = append(queue, chainItem{parent, item.depth + 1})
-		}
-	}
-	return entries, nil
-}
-
-// collectContentEntries 按 IncludedPaths 过滤并展开实例内容，
-// 载荷路径为 minecraft/versions/<versionID>/<相对路径>。重复条目去重。
-func collectContentEntries(options SoloExportOptions, versionID string) ([]payloadEntry, []string, error) {
-	included := map[string]bool{}
-	for _, path := range options.IncludedPaths {
-		included[strings.ToLower(filepath.ToSlash(path))] = true
-	}
-	all := modpack.CollectContent(options.ContentDirectory)
-
-	unique := map[string]bool{}
-	entries := []payloadEntry{}
-	var warnings []string
-	for _, item := range all {
-		if !included[strings.ToLower(item.RelativePath)] {
-			continue
-		}
-		source := filepath.Join(options.ContentDirectory, filepath.FromSlash(item.RelativePath))
-		if item.IsDirectory {
-			for _, file := range enumerateRecursively(source) {
-				relative, err := filepath.Rel(options.ContentDirectory, file)
-				if err != nil {
-					continue
-				}
-				addContentEntry(&entries, unique, versionID, relative, file)
-			}
-		} else {
-			if _, err := os.Stat(source); err != nil {
-				warnings = append(warnings, fmt.Sprintf("跳过 %s：%v", item.RelativePath, err))
-				continue
-			}
-			addContentEntry(&entries, unique, versionID, item.RelativePath, source)
-		}
-	}
-	return entries, warnings, nil
-}
-
-func addContentEntry(entries *[]payloadEntry, unique map[string]bool, versionID, relative, source string) {
-	key := "minecraft/versions/" + versionID + "/" + filepath.ToSlash(relative)
-	normalized := strings.ToLower(key)
-	if unique[normalized] {
-		return
-	}
-	unique[normalized] = true
-	*entries = append(*entries, payloadEntry{archivePath: key, sourcePath: source})
-}
-
-// enumerateRecursively 递归枚举目录下全部文件；不可读子树静默跳过。
-func enumerateRecursively(directory string) []string {
-	var result []string
-	walkSafe(directory, &result)
-	return result
-}
-
-func walkSafe(directory string, result *[]string) {
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		path := filepath.Join(directory, entry.Name())
-		if entry.IsDir() {
-			walkSafe(path, result)
-			continue
-		}
-		*result = append(*result, path)
-	}
-}
-
-// primaryJavaHome 当前首选 Java 的主目录（java.exe 上两级：…/bin/java.exe → …）。
-// 未配置或层级异常时返回空串。
-func primaryJavaHome() string {
-	items := config.GetJavaPaths()
-	if len(items) == 0 || strings.TrimSpace(items[0].JavaPath) == "" {
-		return ""
-	}
-	bin := filepath.Dir(filepath.FromSlash(items[0].JavaPath))
-	home := filepath.Dir(bin)
-	if strings.EqualFold(filepath.Base(bin), "bin") && home != bin {
-		return home
-	}
-	// 路径不符合 <home>/bin/java.exe 布局：把它本身当主目录兜底
-	return bin
-}
-
-// collectJavaEntries 打包 Java 主目录（跳过 jmods/demo/man 与源码包）。
-// javaHome 为空或不可读时返回空列表（由调用方记 warning）。
-func collectJavaEntries(javaHome string) ([]payloadEntry, error) {
-	if strings.TrimSpace(javaHome) == "" {
-		return []payloadEntry{}, nil
-	}
-	info, err := os.Stat(javaHome)
-	if err != nil || !info.IsDir() {
-		return []payloadEntry{}, nil
-	}
-	entries := []payloadEntry{}
-	err = filepath.WalkDir(javaHome, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil // 不可读子树跳过，不中断打包
-		}
-		if d.IsDir() {
-			return nil
-		}
-		relative, err := filepath.Rel(javaHome, path)
-		if err != nil {
-			return nil
-		}
-		parts := strings.Split(filepath.ToSlash(relative), "/")
-		if javaExcludedTopDirs[parts[0]] {
-			return nil
-		}
-		if javaExcludedFiles[parts[len(parts)-1]] {
-			return nil
-		}
-		entries = append(entries, payloadEntry{
-			archivePath: "jre/" + filepath.ToSlash(relative),
-			sourcePath:  path,
-		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
-// javaVendorPermissive 已知许可宽松、可随安装包再分发的 Java 供应商关键字
-// （GPLv2 + Classpath Exception 或同等的宽松条款）。按小写子串匹配。
-var javaVendorPermissive = []string{
-	"zulu", "azul", "temurin", "adoptium", "eclipse", "openjdk",
-	"amazon", "corretto", "microsoft", "bellsoft", "liberica",
-	"ibm", "semeru", "red hat", "alibaba", "dragonwell",
-	"tencent", "kona", "huawei", "bisheng", "sapmachine",
-}
-
-// javaVendorIdentifier 取待捆绑 Java 的供应商标识：优先读主目录下的 release
-// 文件（JDK 9+ 必带 IMPLEMENTOR / JAVA_VENDOR），读不到时回退启动器自管的
-// 目录名（java-zulu-21 / java-temurin-8 / java-oracle-17）。均取不到返回空串。
-func javaVendorIdentifier(javaHome string) string {
-	if strings.TrimSpace(javaHome) == "" {
-		return ""
-	}
-	if raw, err := os.ReadFile(filepath.Join(javaHome, "release")); err == nil {
-		for _, line := range strings.Split(string(raw), "\n") {
-			key, value, found := strings.Cut(line, "=")
-			if !found {
-				continue
-			}
-			switch strings.TrimSpace(key) {
-			case "IMPLEMENTOR", "JAVA_VENDOR":
-				if vendor := strings.Trim(strings.TrimSpace(value), `"`); vendor != "" {
-					return vendor
-				}
-			}
-		}
-	}
-	base := strings.ToLower(filepath.Base(javaHome))
-	for _, vendor := range []string{"zulu", "temurin", "azul", "adoptium", "oracle"} {
-		if strings.Contains(base, vendor) {
-			return vendor
-		}
-	}
-	return ""
-}
-
-// javaRedistributionNotice 判断待捆绑 Java 的再分发条件，返回需要提示作者的
-// 警告文案；许可宽松、可放心分发时返回空串。
-//
-// 为什么必须提示：载荷会把作者本机配置的首选 Java 整个打进去分发给玩家，而
-// 启动器支持的供应商里 Oracle JDK 的条款与 Zulu / Temurin 的 GPLv2+CE 差别
-// 很大（见 download/java_runtime_installer.go 的三家供应商）。这里只提示不拦截
-// ——条款是否满足最终要作者自己确认。
-func javaRedistributionNotice(javaHome string) string {
-	vendor := javaVendorIdentifier(javaHome)
-	normalized := strings.ToLower(vendor)
-	if strings.Contains(normalized, "oracle") {
-		return "捆绑的 Java 运行时来自 Oracle（" + vendor + "）：Oracle JDK 的再分发条款与 Zulu / Temurin 等宽松许可不同，" +
-			"随安装包分发给玩家前请确认已满足其条件；不确定时请改用 Zulu 或 Temurin。"
-	}
-	for _, known := range javaVendorPermissive {
-		if strings.Contains(normalized, known) {
-			return ""
-		}
-	}
-	if vendor == "" {
-		return "无法识别待捆绑 Java 的供应商（未找到 release 文件）：请确认其许可允许随安装包再分发。Zulu 与 Temurin 可放心使用。"
-	}
-	return "待捆绑 Java 的供应商为「" + vendor + "」：请确认其许可允许随安装包再分发。Zulu 与 Temurin 可放心使用。"
-}
-
-// writePayload 把全部条目写成载荷 zip；返回载荷长度与 CRC32。
-func writePayload(
-	ctx context.Context,
-	payloadPath string,
-	manifest Manifest,
-	options SoloExportOptions,
-	launcherExe string,
-	versionEntries, contentEntries, javaEntries []payloadEntry,
-	progress func(modpack.ModpackExportProgress),
-) (int64, uint32, error) {
-	file, err := os.OpenFile(payloadPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer file.Close()
-
-	hasher := crc32.NewIEEE()
-	counter := &countingWriter{inner: file}
-	archive := zip.NewWriter(io.MultiWriter(counter, hasher))
-
-	writeErr := func() error {
-		manifestJSON, err := marshalSoloJSON(manifest)
-		if err != nil {
-			return err
-		}
-		if err := writeTextEntry(archive, "manifest.json", manifestJSON); err != nil {
-			return err
-		}
-		if manifest.IconPath != "" {
-			if err := copyFileEntry(archive, manifest.IconPath, options.IconPngPath); err != nil {
-				return err
-			}
-		}
-		// 启动器本体 + 便携标记：安装器整体解到安装根目录。
-		// 载荷内固定命名 NekoLauncher.exe——安装器按此固定名注册与拉起启动器
-		if err := copyFileEntry(archive, "files/NekoLauncher.exe", launcherExe); err != nil {
-			return err
-		}
-		if err := writeTextEntry(archive, "files/portable.flag", ""); err != nil {
-			return err
-		}
-
-		total := len(versionEntries) + len(contentEntries) + len(javaEntries)
-		written := 0
-		for _, group := range []struct {
-			label  string
-			entries []payloadEntry
-		}{
-			{"正在写入版本文件", versionEntries},
-			{"正在写入整合包内容", contentEntries},
-			{"正在写入 Java 运行时", javaEntries},
-		} {
-			for _, entry := range group.entries {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
-				emitProgress(progress, group.label, written, total)
-				if err := copyFileEntry(archive, entry.archivePath, entry.sourcePath); err != nil {
-					return fmt.Errorf("写入 %s 失败：%w", entry.archivePath, err)
-				}
-				written++
-			}
-		}
-		return nil
-	}()
-	if writeErr != nil {
-		return 0, 0, writeErr
-	}
-	// 中央目录在 Close 时才写：磁盘满/配额不足只在这里暴露
-	if err := archive.Close(); err != nil {
-		return 0, 0, err
-	}
-	return counter.count, hasher.Sum32(), nil
-}
-
 // assembleInstaller 流式拼接 stub + 载荷 + 尾标到 outputPath。
 func assembleInstaller(stubPath string, stubSize int64, payloadPath string, payloadLength int64, payloadCRC uint32, outputPath string) error {
 	stub, err := os.Open(stubPath)
@@ -665,7 +384,7 @@ func assembleInstaller(stubPath string, stubSize int64, payloadPath string, payl
 	if _, err := io.Copy(output, payload); err != nil {
 		return err
 	}
-	if err := AppendTrailer(output, stubSize, payloadLength, payloadCRC); err != nil {
+	if err := AppendTrailerV3(output, stubSize, payloadLength, payloadCRC); err != nil {
 		return err
 	}
 	return output.Sync()

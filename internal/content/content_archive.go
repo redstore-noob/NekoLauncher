@@ -144,6 +144,19 @@ func readJSONString(root map[string]any, propertyName string) string {
 	return ""
 }
 
+// readJSONBool 读取 JSON 对象中布尔类型的字段，缺失或类型不符返回 false。
+// 仅用于"缺省即 false"的语义（如 quilt 依赖的 optional 标志）；
+// 语义上"缺省为 true"的字段不要用它，否则会把默认值读反。
+func readJSONBool(root map[string]any, propertyName string) bool {
+	if root == nil {
+		return false
+	}
+	if value, ok := root[propertyName].(bool); ok {
+		return value
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // 压缩包条目读取
 // ---------------------------------------------------------------------------

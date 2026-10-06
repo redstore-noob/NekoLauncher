@@ -219,12 +219,12 @@ const ModVersionDialog: React.FC<ModVersionDialogProps> = ({
                 {t("正在读取版本列表…")}
               </div>
             ) : error ? (
-              <div className="rounded-xl bg-danger-50 px-3 py-2 text-xs break-all text-danger dark:bg-danger-500/10">
+              <div className="rounded-md bg-danger-50 px-3 py-2 text-xs break-all text-danger dark:bg-danger-500/10">
                 {error}
               </div>
             ) : options?.Notice ? (
               <div className="flex flex-col gap-2">
-                <div className="rounded-xl bg-default-100/80 px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+                <div className="rounded-md bg-default-100/80 px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
                   {options.Notice}
                 </div>
                 {/* 识别失败的降级操作：手工路线图（打开目录 + 资源站搜索） */}
@@ -300,7 +300,7 @@ const ModVersionDialog: React.FC<ModVersionDialogProps> = ({
                   </span>
                 </div>
 
-                <div className="flex max-h-[45vh] flex-col gap-1.5 overflow-y-auto pr-1">
+                <div className="nya-scroll nya-scroll-area flex max-h-[45vh] flex-col gap-1.5 pr-1">
                   {visible.map((version) => {
                     const isCurrent =
                       version.versionId === options?.CurrentVersionID;
@@ -312,7 +312,7 @@ const ModVersionDialog: React.FC<ModVersionDialogProps> = ({
                     return (
                       <div
                         key={version.versionId}
-                        className={`rounded-xl border px-3 py-2 ${
+                        className={`rounded-md border px-3 py-2 ${
                           isCurrent
                             ? "border-primary/40 bg-primary/5"
                             : "nya-border border-transparent bg-default-100/50"

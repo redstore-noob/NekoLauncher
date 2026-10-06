@@ -26,6 +26,7 @@ import React, {
 import { Button } from "@heroui/react";
 import {
   ArrowClockwise20Regular as RefreshIcon,
+  Branch20Regular,
   DocumentText20Regular,
   Open20Regular,
   Warning20Regular,
@@ -38,7 +39,9 @@ import {
 } from "../../../wailsjs/go/bindings/LauncherAPI";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
 import { useLogViewer } from "../LogViewer";
+import { useLaunchProvenance } from "../launch/LaunchProvenancePanel";
 import { logLineClass } from "../../lib/logs";
+import { startVisiblePoll } from "../../lib/visibility";
 import { asText } from "../../lib/guards";
 import { t } from "../../i18n";
 
@@ -243,6 +246,7 @@ function statusOf(
  */
 const LaunchLogCard: React.FC<LaunchLogCardProps> = ({ phase, revision }) => {
   const { openLogs } = useLogViewer();
+  const { open: openProvenance } = useLaunchProvenance();
   const [logText, setLogText] = useState("");
   const [hasLoaded, setHasLoaded] = useState(false);
   const logBoxRef = useRef<HTMLDivElement | null>(null);
@@ -264,9 +268,8 @@ const LaunchLogCard: React.FC<LaunchLogCardProps> = ({ phase, revision }) => {
   useEffect(() => {
     void reload();
     if (!isLive) return;
-    const timer = window.setInterval(() => void reload(), LOG_POLL_INTERVAL_MS);
 
-    return () => window.clearInterval(timer);
+    return startVisiblePoll(() => void reload(), LOG_POLL_INTERVAL_MS);
   }, [reload, revision, isLive]);
 
   // 逐行事件：后端产出日志就推过来（launch:logLine），这里直接追加，
@@ -396,6 +399,17 @@ const LaunchLogCard: React.FC<LaunchLogCardProps> = ({ phase, revision }) => {
             className="h-7 w-7 min-w-7 text-gray-400"
             radius="full"
             size="sm"
+            title={t("启动参数溯源")}
+            variant="light"
+            onClick={openProvenance}
+          >
+            <Branch20Regular />
+          </Button>
+          <Button
+            isIconOnly
+            className="h-7 w-7 min-w-7 text-gray-400"
+            radius="full"
+            size="sm"
             title={t("查看完整日志")}
             variant="light"
             onClick={openLogs}
@@ -448,7 +462,7 @@ const LaunchLogCard: React.FC<LaunchLogCardProps> = ({ phase, revision }) => {
       {diagnosis ? (
         <div
           className={`
-            nya-enter nya-stagger-2 flex items-start gap-2 rounded-2xl px-2.5 py-2
+            nya-enter nya-stagger-2 flex items-start gap-2 rounded-lg px-2.5 py-2
             ${
               diagnosis.tone === "danger"
                 ? "bg-danger/10 text-danger"
@@ -468,14 +482,14 @@ const LaunchLogCard: React.FC<LaunchLogCardProps> = ({ phase, revision }) => {
           </span>
         </div>
       ) : phase === 3 ? (
-        <div className="nya-enter nya-stagger-2 rounded-2xl bg-danger/10 px-2.5 py-2 text-[10px] leading-snug text-danger">
+        <div className="nya-enter nya-stagger-2 rounded-lg bg-danger/10 px-2.5 py-2 text-[10px] leading-snug text-danger">
           {t("启动没有完成，日志末尾记录了原因。")}
         </div>
       ) : null}
 
       {/* 具体报错行：从日志/崩溃报告摘出的原始证据（哪个模组缺什么依赖等） */}
       {diagnosis?.details?.length ? (
-        <div className="nya-enter nya-stagger-2 rounded-2xl bg-black/5 px-2.5 py-1.5 dark:bg-white/5">
+        <div className="nya-enter nya-stagger-2 rounded-lg bg-black/5 px-2.5 py-1.5 dark:bg-white/5">
           <div className="mb-0.5 text-[9px] font-semibold tracking-wide text-gray-400 uppercase">
             {t("具体报错")}
           </div>
@@ -494,7 +508,7 @@ const LaunchLogCard: React.FC<LaunchLogCardProps> = ({ phase, revision }) => {
       <div
         ref={logBoxRef}
         className="
-          nya-scroll max-h-[96px] min-h-[56px] overflow-y-auto rounded-2xl
+          nya-scroll max-h-[96px] min-h-[56px] overflow-y-auto rounded-lg
           bg-black/5 px-2.5 py-2 font-mono text-[10px] leading-relaxed
           dark:bg-white/5
         "

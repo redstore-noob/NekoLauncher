@@ -449,14 +449,20 @@ func TestLoadFromDiskBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("配置损坏回落默认账号", func(t *testing.T) {
+	t.Run("配置损坏时空列表并备份原值", func(t *testing.T) {
 		useTempAuthStorage(t)
 		if !config.SetValue(AccountsConfigKey, "{不是 JSON") {
 			t.Fatal("写入损坏配置失败")
 		}
+		// 防的回归：损坏时回落默认 Player_01 会（1）让用户的账号"凭空消失"
+		// 且毫无提示，（2）后续 Save 覆盖损坏原值、彻底无法恢复。
+		// 正确行为：空列表 + 原值备份到 accounts.corrupted 供人工恢复。
 		accounts := NewAccountStoreService(true).Current()
-		if len(accounts) != 1 || accounts[0].OfflineName != "Player_01" {
-			t.Fatalf("配置损坏时应回落默认账号，实际 %+v", accounts)
+		if len(accounts) != 0 {
+			t.Fatalf("配置损坏时应为空列表（不得回落默认账号），实际 %+v", accounts)
+		}
+		if backup := config.GetValue(AccountsConfigKey + ".corrupted"); backup != "{不是 JSON" {
+			t.Fatalf("损坏原值应备份到 accounts.corrupted，实际 %q", backup)
 		}
 	})
 

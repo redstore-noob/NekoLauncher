@@ -73,8 +73,11 @@ type GameDownloadService struct {
 	current    GameDownloadSnapshot
 	activeTask context.CancelFunc
 	hasActive  bool
-	revision   atomic.Int64
-	taskID     atomic.Int64
+	// warnings 本次任务期间累积的非致命警告（如 Fabric API 补装失败）。
+	// 只放瞬时进度文案的话会被随后的"安装完成"终态覆盖，用户永远看不到。
+	warnings []string
+	revision atomic.Int64
+	taskID   atomic.Int64
 }
 
 // StageNames 下载阶段名（阶段 1-7）。
@@ -165,6 +168,7 @@ func (s *GameDownloadService) runDownloadTask(
 	defer cancel()
 	s.activeTask = cancel
 	s.hasActive = true
+	s.warnings = nil // 新任务清空上一轮的警告累积
 	taskID := s.taskID.Add(1)
 	s.gate.Unlock()
 
@@ -251,6 +255,11 @@ func (s *GameDownloadService) runDownloadTask(
 	completed.StageIndex = StageCount
 	completed.StageName = GameDownloadStageNames[len(GameDownloadStageNames)-1]
 	completed.Detail = completedDetail
+	// 任务级警告（如 Fabric API 补装失败）并入终态文案：只发瞬时进度的话
+	// 会被这条"安装完成"覆盖，用户看到绿色对勾但实例里缺东西
+	if warnings := s.takeWarnings(); len(warnings) > 0 {
+		completed.Detail = completedDetail + "（警告：" + strings.Join(warnings, "；") + "）"
+	}
 	completed.Percentage = 100
 	s.publish(completed)
 	return true
@@ -382,6 +391,12 @@ func (s *GameDownloadService) downloadFabricAPIIfNeeded(
 			Detail:     detail,
 		})
 	}
+	// 失败同时记入任务警告：随终态快照一起展示，否则会在数秒内被
+	// "安装完成"覆盖，实例缺 Fabric API 用户无从知晓。
+	warn := func(detail string) {
+		s.addWarning(detail)
+		publishStage(detail)
+	}
 
 	publishStage(fmt.Sprintf("正在下载 %s…", fabricAPIDisplayName))
 
@@ -391,7 +406,7 @@ func (s *GameDownloadService) downloadFabricAPIIfNeeded(
 			// 用户取消：不能伪装成"下载失败仅警告"，否则取消后任务仍按完成收尾
 			return ctx.Err()
 		}
-		publishStage(fmt.Sprintf("%s 下载失败，请稍后手动安装：%v", fabricAPIDisplayName, err))
+		warn(fmt.Sprintf("%s 下载失败，请稍后手动安装：%v", fabricAPIDisplayName, err))
 		return nil
 	}
 
@@ -403,7 +418,7 @@ func (s *GameDownloadService) downloadFabricAPIIfNeeded(
 		}
 	}
 	if latest == nil {
-		publishStage(fmt.Sprintf("%s 无可用版本，已跳过。", fabricAPIDisplayName))
+		warn(fmt.Sprintf("%s 无可用版本，已跳过。", fabricAPIDisplayName))
 		return nil
 	}
 
@@ -416,11 +431,29 @@ func (s *GameDownloadService) downloadFabricAPIIfNeeded(
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		publishStage(fmt.Sprintf("%s 下载失败，请稍后手动安装：%v", fabricAPIDisplayName, err))
+		warn(fmt.Sprintf("%s 下载失败，请稍后手动安装：%v", fabricAPIDisplayName, err))
 		return nil
 	}
 	publishStage(fmt.Sprintf("%s 已下载至 mods/。", fabricAPIDisplayName))
 	return nil
+}
+
+// addWarning 记录一条任务级非致命警告，随"安装完成"终态快照一起下发。
+// 持 s.gate 调用与读取。
+func (s *GameDownloadService) addWarning(text string) {
+	s.gate.Lock()
+	s.warnings = append(s.warnings, text)
+	s.gate.Unlock()
+}
+
+// takeWarnings 取走当前累积的警告（任务收尾时调用，避免跨任务泄漏）。
+func (s *GameDownloadService) takeWarnings() []string {
+	s.gate.Lock()
+	warnings := s.warnings
+	s.warnings = nil
+	s.gate.Unlock()
+
+	return warnings
 }
 
 type fabricAPIFile struct {

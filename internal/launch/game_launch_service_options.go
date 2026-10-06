@@ -39,13 +39,14 @@ func effectiveHasCustomResolution(minecraftDirectory, versionId string) bool {
 }
 
 // buildLaunchOptions 启动参数装配：实例独立设置与全局高级设置的合并、内存决策、
-// 直接进服参数、插件启动贡献（对应 C# GameLaunchService.Options.cs）。
+// 直接进服参数、快速进存档参数、插件启动贡献（对应 C# GameLaunchService.Options.cs）。
 func (s *GameLaunchService) buildLaunchOptions(
 	instance GameInstanceSnapshot,
 	versionId string,
 	launchAccount MinecraftAccount,
 	serverHost string,
 	serverPort *int,
+	worldName string,
 ) (*MinecraftLaunchOptions, error) {
 	versionProfile := config.Get(instance.MinecraftDirectory, versionId)
 	isolatedGameDirectory := resolveIsolatedGameDirectory(
@@ -64,6 +65,11 @@ func (s *GameLaunchService) buildLaunchOptions(
 	if effectiveMinimumMemory > memoryDecision.MaximumMemoryMb {
 		effectiveMinimumMemory = memoryDecision.MaximumMemoryMb
 	}
+	
+	// 加载实例级别的 Java 配置（优先级最高）
+	instanceJavaConfig, _ := config.LoadInstanceJavaConfig(
+		filepath.Join(instance.MinecraftDirectory, "versions", versionId))
+	
 	globalLaunchSettings := config.LoadGlobalLaunchSettings()
 	javaExecutable := versionProfile.JavaExecutable
 	windowWidth := versionProfile.WindowWidth
@@ -74,6 +80,28 @@ func (s *GameLaunchService) buildLaunchOptions(
 	wrapperCommand := versionProfile.WrapperCommand
 	environmentVariables := versionProfile.AdditionalEnvironmentVariables
 	launchFullscreen := versionProfile.LaunchFullscreen
+	
+	// 应用实例 Java 配置（优先级最高）
+	if instanceJavaConfig != nil {
+		if instanceJavaConfig.JavaExecutable != "" {
+			javaExecutable = instanceJavaConfig.JavaExecutable
+		}
+		if instanceJavaConfig.MinMemoryMB > 0 {
+			effectiveMinimumMemory = instanceJavaConfig.MinMemoryMB
+		}
+		if instanceJavaConfig.MaxMemoryMB > 0 {
+			memoryDecision.MaximumMemoryMb = instanceJavaConfig.MaxMemoryMB
+			memoryDecision.IsAutomatic = false
+			memoryDecision.FromInstanceSettings = true
+		}
+		if len(instanceJavaConfig.AdditionalJvmArguments) > 0 {
+			additionalJvmArguments = append(additionalJvmArguments, instanceJavaConfig.AdditionalJvmArguments...)
+		}
+		if len(instanceJavaConfig.AdditionalGameArguments) > 0 {
+			additionalGameArguments = append(additionalGameArguments, instanceJavaConfig.AdditionalGameArguments...)
+		}
+	}
+	
 	if versionProfile.FollowGlobalAdvancedSettings {
 		javaExecutable = globalLaunchSettings.JavaExecutable
 		windowWidth = globalLaunchSettings.WindowWidth
@@ -100,15 +128,34 @@ func (s *GameLaunchService) buildLaunchOptions(
 			"--fullscreen")
 	}
 	if serverHost != "" {
-		// 直接进服：原版客户端会读取追加在末尾的 --server / --port 参数
+		// 直接进服：优先使用 Minecraft 1.20+ 的 --quickPlayMultiplayer 参数（自动进服），
+		// 不支持时回退到传统 --server / --port 参数（进入多人游戏界面但不自动连接）
 		effectivePort := 25565
 		if serverPort != nil {
 			effectivePort = *serverPort
 		}
+		serverAddress := serverHost
+		if effectivePort != 25565 {
+			serverAddress = fmt.Sprintf("%s:%d", serverHost, effectivePort)
+		}
+		
+		// 优先使用 Quick Play 参数（Minecraft 1.20+）：主菜单跳过，直接进入服务器
 		additionalGameArguments = append(append([]string{}, additionalGameArguments...),
+			"--quickPlayMultiplayer", serverAddress)
+		
+		// 兼容参数：旧版本会忽略 --quickPlayMultiplayer 但识别 --server / --port
+		additionalGameArguments = append(additionalGameArguments,
 			"--server", serverHost,
 			"--port", fmt.Sprintf("%d", effectivePort))
-		s.appendLog(fmt.Sprintf("已指定进入服务器：%s:%d。", serverHost, effectivePort), "LAUNCH")
+		
+		s.appendLog(fmt.Sprintf("已指定快速进入服务器：%s（Quick Play 模式 + 兼容模式）。", serverAddress), "LAUNCH")
+	}
+	if worldName != "" {
+		// 快速进存档：Minecraft 1.20+ 的 --quickPlaySingleplayer 参数（跳过主菜单，直接进入指定世界）
+		// 旧版本会忽略该参数，正常进入主菜单
+		additionalGameArguments = append(append([]string{}, additionalGameArguments...),
+			"--quickPlaySingleplayer", worldName)
+		s.appendLog(fmt.Sprintf("已指定快速进入存档：%s（Quick Play 模式，需 Minecraft 1.20+）。", worldName), "LAUNCH")
 	}
 	effectiveGameDirectory := isolatedGameDirectory
 	if strings.TrimSpace(effectiveGameDirectory) == "" {
@@ -158,25 +205,32 @@ func (s *GameLaunchService) buildLaunchOptions(
 	}
 
 	options := &MinecraftLaunchOptions{
-		MinecraftDirectory:             instance.MinecraftDirectory,
-		GameDirectory:                  effectiveGameDirectory,
-		VersionId:                      versionId,
-		Account:                        launchAccount,
-		JavaExecutable:                 javaExecutableForLaunch,
-		JavaRuntimeDirectory:           javaRuntimeDirectory,
-		MinimumMemoryMb:                effectiveMinimumMemory,
-		MaximumMemoryMb:                memoryDecision.MaximumMemoryMb,
-		WindowWidth:                    windowWidth,
-		WindowHeight:                   windowHeight,
-		AdditionalJvmArguments:         additionalJvmArguments,
-		AdditionalGameArguments:        additionalGameArguments,
-		ProcessPriority:                processPriority,
-		WrapperCommand:                 wrapperCommand,
-		EnvironmentVariables:           parseEnvironmentVariables(environmentVariables),
-		LaunchFullscreen:               launchFullscreen,
+		MinecraftDirectory:      instance.MinecraftDirectory,
+		GameDirectory:           effectiveGameDirectory,
+		VersionId:               versionId,
+		Account:                 launchAccount,
+		JavaExecutable:          javaExecutableForLaunch,
+		JavaRuntimeDirectory:    javaRuntimeDirectory,
+		MinimumMemoryMb:         effectiveMinimumMemory,
+		MaximumMemoryMb:         memoryDecision.MaximumMemoryMb,
+		WindowWidth:             windowWidth,
+		WindowHeight:            windowHeight,
+		AdditionalJvmArguments:  additionalJvmArguments,
+		AdditionalGameArguments: additionalGameArguments,
+		ProcessPriority:         processPriority,
+		WrapperCommand:          wrapperCommand,
+		EnvironmentVariables:    parseEnvironmentVariables(environmentVariables),
+		LaunchFullscreen:        launchFullscreen,
 		// 插件贡献的启动变换：绑定层把插件清单解析成变换后经
 		// LaunchTransformProvider 注入（未注入 → 空变换）
 		Transform: currentLaunchTransform(),
+		// 溯源归因所需的事实（装配完就不是"来自哪里"了，必须在这里记下来）
+		MemoryFromInstanceSettings: memoryDecision.FromInstanceSettings,
+		MemoryIsAutomatic:          memoryDecision.IsAutomatic,
+		UsingGlobalLaunchSettings:  versionProfile.FollowGlobalAdvancedSettings,
+		// 每次都采集：报告只在启动成功后供"为什么这样启动"面板查看，
+		// 采集本身是纯旁路记账，不影响任何下发参数。
+		CollectProvenance: true,
 		GameOutputCallback: func(line string, isStderr bool) {
 			if isStderr {
 				line = "[stderr] " + line
@@ -190,6 +244,11 @@ func (s *GameLaunchService) buildLaunchOptions(
 		s.appendLog("已应用全局高级启动设置。", "LAUNCH")
 	} else {
 		s.appendLog("已应用当前实例的独立高级启动设置。", "LAUNCH")
+	}
+	if instanceJavaConfig != nil && (instanceJavaConfig.JavaExecutable != "" || 
+		instanceJavaConfig.MinMemoryMB > 0 || instanceJavaConfig.MaxMemoryMB > 0 ||
+		len(instanceJavaConfig.AdditionalJvmArguments) > 0 || len(instanceJavaConfig.AdditionalGameArguments) > 0) {
+		s.appendLog("已应用实例级别的 Java 配置（java_config.yaml）。", "LAUNCH")
 	}
 	if wrapperCommand != "" {
 		s.appendLog(fmt.Sprintf("已启用包装命令：%s", wrapperCommand), "LAUNCH")

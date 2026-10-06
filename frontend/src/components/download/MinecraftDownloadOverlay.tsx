@@ -326,13 +326,13 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
       }}
       scrollBehavior="inside"
     >
-      <ModalContent className="h-full overflow-y-auto">
+      <ModalContent className="h-full overflow-hidden">
         <ModalShell
           icon={
             version ? (
               <img
                 alt=""
-                className="size-10 rounded-[10px] object-contain"
+                className="size-10 rounded-lg object-contain"
                 src={`/instance-icons/${versionIconKey}.png`}
                 onError={(ev) => {
                   // 头像加载失败时退回默认立方体图标
@@ -358,11 +358,11 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
         >
           <div className="grid grid-cols-[190px_1fr] gap-4">
             {/* 左栏：加载器选择 */}
-            <div className="nya-panel-inner flex flex-col gap-1 rounded-2xl p-2">
+            <div className="nya-panel-inner flex flex-col gap-1 rounded-medium p-2">
               {LOADER_TYPES.filter((lt) => lt.value !== 0).map((lt) => (
                 <button
                   key={lt.value}
-                  className={`flex cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-[13px] font-semibold transition-colors ${
+                  className={`flex cursor-pointer items-center gap-2.5 rounded-md px-3 py-2 text-[13px] font-semibold transition-colors ${
                     loaderType === lt.value
                       ? "bg-primary-100 text-primary-600 dark:bg-primary-900/40 dark:text-primary-300"
                       : "text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -379,7 +379,7 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
               {LOADER_TYPES.filter((lt) => lt.value === 0).map((lt) => (
                 <button
                   key={lt.value}
-                  className={`flex cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-[13px] font-semibold transition-colors ${
+                  className={`flex cursor-pointer items-center gap-2.5 rounded-md px-3 py-2 text-[13px] font-semibold transition-colors ${
                     loaderType === lt.value
                       ? "bg-primary-100 text-primary-600 dark:bg-primary-900/40 dark:text-primary-300"
                       : "text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -399,13 +399,13 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
               {loaderType !== 0 && (
                 <>
                   {loaderLoading ? (
-                    <div className="nya-panel-inner flex flex-1 items-center justify-center gap-2 rounded-2xl p-6 text-[13px] text-gray-400">
+                    <div className="nya-panel-inner flex flex-1 items-center justify-center gap-2 rounded-medium p-6 text-[13px] text-gray-400">
                       <span className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
                       {t("正在获取可用版本…")}
                     </div>
                   ) : pageVersions.length > 0 ? (
                     <>
-                      <div className="nya-panel-inner flex flex-1 flex-col gap-0.5 overflow-y-auto rounded-2xl p-2">
+                      <div className="nya-panel-inner nya-scroll nya-scroll-area flex min-h-0 flex-1 flex-col gap-0.5 rounded-medium p-2">
                         {pageVersions.map((lv) => {
                           const globalIndex = loaderVersions.indexOf(lv);
                           const selected =
@@ -414,7 +414,7 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
                           return (
                             <button
                               key={lv.LoaderVersion}
-                              className={`flex cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[13px] transition-colors ${
+                              className={`flex cursor-pointer items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] transition-colors ${
                                 selected
                                   ? "bg-primary-100 font-semibold text-primary-600 dark:bg-primary-900/40 dark:text-primary-300"
                                   : "text-gray-600 hover:bg-gray-200 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -442,7 +442,7 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
                       />
                     </>
                   ) : (
-                    <div className="nya-panel-inner flex flex-1 items-center justify-center rounded-2xl p-6 text-center text-[13px] text-gray-400">
+                    <div className="nya-panel-inner flex flex-1 items-center justify-center rounded-medium p-6 text-center text-[13px] text-gray-400">
                       {loaderHint ||
                         t("该 Minecraft 版本暂无可用的加载器版本。")}
                     </div>
@@ -466,7 +466,7 @@ const MinecraftDownloadOverlay: React.FC<Props> = ({
                 </>
               )}
               {loaderType === 0 && (
-                <div className="nya-panel-inner flex flex-1 flex-col items-center justify-center gap-2 rounded-2xl p-6 text-center">
+                <div className="nya-panel-inner flex flex-1 flex-col items-center justify-center gap-2 rounded-medium p-6 text-center">
                   <img
                     alt=""
                     className="size-12 object-contain"

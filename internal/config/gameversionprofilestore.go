@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -62,8 +63,12 @@ func NewGameVersionProfile() GameVersionProfile {
 }
 
 const (
-	foldersKey          = "gameVersionFolders"
-	profilesKey         = "gameVersionProfiles"
+	foldersKey = "gameVersionFolders"
+	// excludedFoldersKey 聚合候选（平台默认目录 / 桌面 .minecraft）的排除名单：
+	// 这些目录不是用户存进 foldersKey 的，从列表移除后下次聚合还会回来，
+	// 必须单独记一份"用户不想要"才压得住。
+	excludedFoldersKey = "excludedGameVersionFolders"
+	profilesKey        = "gameVersionProfiles"
 	selectedInstanceKey = "selectedGameInstance"
 )
 
@@ -83,12 +88,27 @@ func AddChangedHandler(handler func()) {
 }
 
 // DefaultMinecraftDirectoryLocator 平台默认 Minecraft 目录的定位钩子。
+// 注意实现带"不存在则创建骨架"的副作用，只在真的要用默认目录时才能调用。
 // C# 版依赖 Core 中的 MinecraftDirectoryLocator（尚未移植）；
 // 移植后应在此注入实现，未注入时 GetFolders 不追加默认目录。
 var DefaultMinecraftDirectoryLocator func() string
 
-// GetFolders 汇总游戏目录列表：当前活跃目录排最前，用户添加的目录随后，
-// 平台默认目录兜底在最后。
+// DefaultMinecraftDirectoryPath 平台默认 Minecraft 目录的"纯查询"钩子：
+// 只算路径、绝无建目录副作用，供排除名单等只需比较路径的场景使用。
+var DefaultMinecraftDirectoryPath func() string
+
+// defaultDirectoryPath 平台默认目录路径；纯查询钩子未注入时返回空串。
+func defaultDirectoryPath() string {
+	if DefaultMinecraftDirectoryPath == nil {
+		return ""
+	}
+	return DefaultMinecraftDirectoryPath()
+}
+
+// GetFolders 汇总游戏目录列表：用户添加的目录 + 两个固定默认目录
+// （平台默认 .minecraft 与 Windows 的 ~/Desktop/.minecraft）。目录之间
+// 没有主次之分——扫描哪个目录由 GameDirectory（实例页下拉切换）决定，
+// 本列表只负责展示与切换入口。
 func GetFolders() []string {
 	profileGate.Lock()
 	defer profileGate.Unlock()
@@ -96,38 +116,84 @@ func GetFolders() []string {
 }
 
 // getFoldersLocked 需持 profileGate 调用（供 AddFolder/RemoveFolder 复用）。
+// 两个默认目录是展示期聚合的固定项，被用户移除过则进排除名单压住重聚合
+// （见 excludedFoldersKey）。
 func getFoldersLocked() []string {
-	folders := deserializeStringList(GetValue(foldersKey))
-	configured := GameDirectory()
-	if strings.TrimSpace(configured) != "" {
-		folders = append([]string{configured}, folders...)
+	excluded := deserializeStringList(GetValue(excludedFoldersKey))
+
+	result := make([]string, 0, 8)
+	appendUnique := func(path string) {
+		normalized := normalizePathOrOriginal(path)
+		if strings.TrimSpace(normalized) == "" {
+			return
+		}
+		for _, existing := range result {
+			if pathsEqualFold(existing, normalized) {
+				return
+			}
+		}
+		result = append(result, normalized)
+	}
+
+	// 旧配置迁移：历史上"设置主目录"只写 gameDirectory 不进目录列表，
+	// 不并进来的话老用户的目录会从切换下拉里悄悄消失。自愈只补存储，
+	// 不触发变更通知（读取路径，避免通知风暴）。
+	stored := deserializeStringList(GetValue(foldersKey))
+	if configured := GameDirectory(); strings.TrimSpace(configured) != "" &&
+		dirExists(configured) && !pathInList(stored, configured) {
+		stored = distinctPaths(append(stored, normalizePathOrOriginal(configured)))
+		saveFolders(stored)
+	}
+	for _, folder := range stored {
+		appendUnique(folder)
 	}
 
 	if DefaultMinecraftDirectoryLocator != nil {
-		defaultDir := DefaultMinecraftDirectoryLocator()
-		if dirExists(defaultDir) {
-			folders = append(folders, defaultDir)
+		// 排除名单要放在定位器调用之前判定：定位器（EnsureDefaultDirectory）
+		// 带自动建目录的副作用，先调用会把用户刚删掉的默认目录当场复活。
+		if !pathInList(excluded, defaultDirectoryPath()) {
+			defaultDir := DefaultMinecraftDirectoryLocator()
+			// 只在它真实存在时追加（历史行为：定位器保证存在，这里防御性再查一次）
+			if dirExists(defaultDir) {
+				appendUnique(defaultDir)
+			}
 		}
 	}
 
-	result := make([]string, 0, len(folders))
-	for _, path := range folders {
-		if strings.TrimSpace(path) == "" {
-			continue
-		}
-		normalized := normalizePathOrOriginal(path)
-		duplicated := false
-		for _, existing := range result {
-			if pathsEqualFold(existing, normalized) {
-				duplicated = true
-				break
-			}
-		}
-		if !duplicated {
-			result = append(result, normalized)
-		}
+	if candidate := desktopMinecraftCandidate(); candidate != "" &&
+		!pathInList(excluded, candidate) {
+		appendUnique(candidate)
 	}
 	return result
+}
+
+// pathInList 路径成员判定（忽略大小写比较，见 pathsEqualFold）。
+func pathInList(list []string, path string) bool {
+	for _, item := range list {
+		if pathsEqualFold(item, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// desktopMinecraftCandidate Windows 固定默认目录 ~/Desktop/.minecraft：
+// 部分玩家习惯把官方启动器的目录搬到桌面。只在真实存在时返回路径
+// （绝不主动创建），其余平台与不存在的场合返回空串。
+func desktopMinecraftCandidate() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	candidate := trimTrailingSeparator(filepath.Clean(
+		filepath.Join(home, "Desktop", ".minecraft")))
+	if !dirExists(candidate) {
+		return ""
+	}
+	return candidate
 }
 
 // AddFolder 向文件夹列表添加目录。目录不存在或路径非法时返回 false。
@@ -157,16 +223,34 @@ func AddFolder(path string) bool {
 			return true
 		}
 	}
-	// 只追加到用户存储列表；保存前去重，顺带清掉历史版本可能沉淀的重复条目
+	// 只追加到用户存储列表；保存前去重，顺带清掉历史版本可能沉淀的重复条目。
+	// 同一路径若在排除名单里（之前移除过默认目录/桌面候选，现在又手动加回来），
+	// 名单同步解除，不然"添加成功但列表里没有"会显得自相矛盾。
 	stored := distinctPaths(
 		append(deserializeStringList(GetValue(foldersKey)), normalized),
 	)
-	return saveFoldersAndNotify(stored)
+	if !saveFolders(stored) {
+		return false
+	}
+	if excluded := deserializeStringList(GetValue(excludedFoldersKey)); pathInList(excluded, normalized) {
+		keptExcluded := make([]string, 0, len(excluded))
+		for _, item := range excluded {
+			if !pathsEqualFold(item, normalized) {
+				keptExcluded = append(keptExcluded, item)
+			}
+		}
+		saveExcludedFolders(keptExcluded)
+	}
+
+	raiseChanged()
+	return true
 }
 
-// RemoveFolder 从文件夹列表中移除指定目录。不允许移除平台默认 Minecraft 目录；
+// RemoveFolder 从文件夹列表中移除指定目录。聚合候选（平台默认目录 /
+// 桌面 .minecraft）不是用户存储的条目，移除时记入排除名单才能不被下次
+// 聚合重新加回来；用户手动 AddFolder 同一路径时名单自动解除。
 // 若移除的是当前活跃游戏目录，则自动切换到列表中剩余的首个目录。
-// 移除成功返回 true；目录不在列表中或为默认目录时返回 false。
+// 移除成功返回 true；目录不在列表中时返回 false。
 func RemoveFolder(path string) bool {
 	if strings.TrimSpace(path) == "" {
 		logs.Write("ERROR", "RemoveFolder: path 不能为空")
@@ -174,20 +258,18 @@ func RemoveFolder(path string) bool {
 	}
 	normalized, ok := normalizeExistingPath(path)
 	if !ok {
-		return false
-	}
-
-	if DefaultMinecraftDirectoryLocator != nil {
-		defaultDir := DefaultMinecraftDirectoryLocator()
-		if tools.PathsEqual(normalized, trimTrailingSeparator(filepath.Clean(absolutePath(defaultDir)))) {
+		// 目录已从磁盘上消失（用户在启动器外删掉了默认目录）：照样允许
+		// 从列表里清掉并记录排除，否则它会因聚合规则一直留在列表里
+		normalized = normalizePathOrOriginal(path)
+		if strings.TrimSpace(normalized) == "" {
 			return false
 		}
 	}
 
 	profileGate.Lock()
-	// 成员判定走聚合视图（活跃 / 默认 / 已存储），写回只针对用户存储列表：
-	// 把聚合结果落盘会把当时的活跃目录与平台默认目录永久固化进
-	// gameVersionFolders，正是 AddFolder 注释里描述的污染（见上）。
+	// 成员判定走聚合视图（活跃 / 默认 / 桌面候选 / 已存储），写回只针对
+	// 用户存储列表与排除名单：把聚合结果落盘会把当时的活跃目录与平台
+	// 默认目录永久固化进 gameVersionFolders（见 AddFolder 注释）。
 	found := false
 	for _, folder := range getFoldersLocked() {
 		if pathsEqualFold(folder, normalized) {
@@ -197,8 +279,12 @@ func RemoveFolder(path string) bool {
 		}
 	}
 	if !found {
-		profileGate.Unlock()
-		return false
+		// 磁盘上已不存在的默认目录 / 桌面候选不会出现在聚合视图里，
+		// 但只要它在排除名单外、路径与默认目录一致，也视作一次有效的移除
+		if !pathsEqualFold(defaultDirectoryPath(), normalized) {
+			profileGate.Unlock()
+			return false
+		}
 	}
 	stored := deserializeStringList(GetValue(foldersKey))
 	kept := make([]string, 0, len(stored))
@@ -213,13 +299,32 @@ func RemoveFolder(path string) bool {
 		return false
 	}
 
-	// 移除的是当前活跃目录 → 自动切换到列表中剩余的首个目录（没有则清空）
+	// 聚合候选记入排除名单（普通存储条目不需要，重聚合不会带回它们）
+	if !saveExcludedFolders(
+		distinctPaths(append(
+			deserializeStringList(GetValue(excludedFoldersKey)),
+			normalized,
+		)),
+	) {
+		profileGate.Unlock()
+		return false
+	}
+
+	// 移除的是当前活跃目录 → 自动切换到剩余的首个用户目录；一个不剩时
+	// 回落到平台默认目录（默认目录刚好也被移除过才清空，交给扫描侧兜底）
 	if pathsEqualFold(GameDirectory(), normalized) {
 		next := ""
 		for _, folder := range kept {
 			if !pathsEqualFold(folder, normalized) {
 				next = folder
 				break
+			}
+		}
+		if strings.TrimSpace(next) == "" {
+			if fallback := defaultDirectoryPath(); fallback != "" &&
+				dirExists(fallback) && !pathInList(
+				deserializeStringList(GetValue(excludedFoldersKey)), fallback) {
+				next = fallback
 			}
 		}
 		if strings.TrimSpace(next) == "" {
@@ -281,6 +386,15 @@ func PruneMissingVersions(minecraftDirectory string, existingVersionIds []string
 		// 其他 Minecraft 目录的实例配置不受本次扫描影响
 		if matchesDirectory(profile, normalizedDirectory) {
 			if _, exists := existing[strings.ToLower(profile.VersionId)]; !exists {
+				// 扫描列表缺失不等于版本已删除：安装进行中（目录已建、
+				// jar / 版本 JSON 尚未写完）的版本会被扫描校验暂时过滤。
+				// 只有版本目录确实不存在时才清理配置，否则一次时机不好的
+				// 刷新会把安装中实例的隔离 / 内存等设置全部抹掉——之后
+				// 内容目录解析错位，表现为"偶发扫不到 mod"。
+				if versionDirExists(normalizedDirectory, profile.VersionId) {
+					kept = append(kept, profile)
+					continue
+				}
 				removed++
 				continue
 			}
@@ -296,6 +410,24 @@ func PruneMissingVersions(minecraftDirectory string, existingVersionIds []string
 		raiseChanged()
 	}
 	return removed
+}
+
+// versionDirExists 判断 versions/<id> 目录是否仍然存在于磁盘上。
+// Windows 大小写不敏感语义与扫描侧保持一致：目录名逐一大小写折叠比较，
+// 避免手改目录大小写后配置被误判为"版本已删除"。
+func versionDirExists(minecraftDirectory, versionId string) bool {
+	versionsRoot := filepath.Join(minecraftDirectory, "versions")
+	entries, err := os.ReadDir(versionsRoot)
+	if err != nil {
+		// versions 目录读不出来（正在被独占 / 权限问题）时宁可保留配置
+		return true
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && strings.EqualFold(entry.Name(), versionId) {
+			return true
+		}
+	}
+	return false
 }
 
 // Save 新增或覆盖实例配置；校验失败或落盘失败返回 false。
@@ -434,15 +566,6 @@ func matchesVersion(profile GameVersionProfile, versionId string) bool {
 	return strings.EqualFold(profile.VersionId, versionId)
 }
 
-// saveFoldersAndNotify 在锁内保存文件夹列表并触发变更通知（AddFolder 复用）。
-func saveFoldersAndNotify(folders []string) bool {
-	if !saveFolders(folders) {
-		return false
-	}
-	raiseChanged()
-	return true
-}
-
 // normalizeExistingPath 规范化用户输入的目录；目录不存在或路径非法时返回 false。
 func normalizeExistingPath(path string) (string, bool) {
 	trimmed := trimTrailingSeparator(filepath.Clean(absolutePath(strings.TrimSpace(path))))
@@ -458,6 +581,14 @@ func saveFolders(folders []string) bool {
 		folders = []string{}
 	}
 	return SetValue(foldersKey, serializeStringList(folders))
+}
+
+// saveExcludedFolders 持 profileGate 调用（调用方已持锁）。
+func saveExcludedFolders(folders []string) bool {
+	if folders == nil {
+		folders = []string{}
+	}
+	return SetValue(excludedFoldersKey, serializeStringList(folders))
 }
 
 // deserializeStringList 反序列化文件夹列表；坏 JSON 视作未配置（空列表）。

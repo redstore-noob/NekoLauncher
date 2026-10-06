@@ -33,11 +33,10 @@ const (
 	MirrorAPIRoot = "https://mod.mcimirror.top/curseforge/v1"
 	// SiteURL 站点主页。
 	SiteURL = "https://www.curseforge.com"
-	// APIKeyApplyURL API Key 申请地址（设置页引导用）。
-	APIKeyApplyURL = "https://console.curseforge.com/?#/api-keys"
-	// APIKeyHint 未配置 Key 时的中文引导（界面直接展示）。
-	APIKeyHint = "需要先在设置里填写 CurseForge API Key（在 console.curseforge.com 免费申请，见 " +
-		APIKeyApplyURL + "）；未配置时可在 Modrinth 里搜索同类资源。"
+	// APIKeyHint 内置 Key 未生效时的中文引导（界面直接展示）。Key 唯一来源是
+	// 编译期内置值，不提供用户自配入口（见 bindings/builtin_keys.go）。
+	APIKeyHint = "CurseForge 搜索需要内置 API Key，当前构建未包含：请使用官方发布版，" +
+		"或在 Modrinth 里搜索同类资源。"
 )
 
 // requestTimeout 单次请求超时；与 modrinth 客户端保持一致的口径。
@@ -351,16 +350,16 @@ func isRetryable(err error) bool {
 	return true
 }
 
-// describeFailure 拼出可读中文错误：403 单独说明 Key 的问题（这是配错 Key 时
+// describeFailure 拼出可读中文错误：403 单独说明 Key 的问题（这是鉴权失败时
 // 最常见的现象，直接把 "HTTP 403" 丢给用户等于没说）。
 func describeFailure(primaryErr, mirrorErr error, mirrorTried bool, apiKey string) error {
 	var status *statusError
 	if errors.As(primaryErr, &status) && (status.StatusCode == http.StatusForbidden || status.StatusCode == http.StatusUnauthorized) {
 		if strings.TrimSpace(apiKey) == "" {
-			return fmt.Errorf("CurseForge 接口需要 API Key（%s）。%s", APIKeyApplyURL, APIKeyHint)
+			return fmt.Errorf("CurseForge 接口需要内置 API Key，当前构建未包含。%s", APIKeyHint)
 		}
-		return fmt.Errorf("CurseForge 拒绝了这次请求（HTTP %d）：API Key 可能无效或已过期，请在设置里重新填写（%s）",
-			status.StatusCode, APIKeyApplyURL)
+		return fmt.Errorf("CurseForge 拒绝了这次请求（HTTP %d）：内置 API Key 可能无效或已触发限流，请稍后重试",
+			status.StatusCode)
 	}
 
 	if mirrorTried && mirrorErr != nil {

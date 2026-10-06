@@ -373,3 +373,27 @@ func portOf(t *testing.T, address string) int {
 
 	return value
 }
+
+func TestValidateAPIKey(t *testing.T) {
+	cases := []struct {
+		name    string
+		key     string
+		wantErr bool
+	}{
+		{"空密钥交由自动生成", "", false},
+		{"与模组一致的 20 位密钥", "aBcDeFgHiJkLmNoPqRsT", false},
+		{"含空格", "aBcD eFgH", true},
+		{"含换行", "aBcD\n eFgH", true},
+		{"含中文", "密钥aBcD", true},
+		{"超长粘贴", strings.Repeat("a", 129), true},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := validateAPIKey(testCase.key)
+			if (err != nil) != testCase.wantErr {
+				t.Fatalf("validateAPIKey(%q) = %v, wantErr = %v", testCase.key, err, testCase.wantErr)
+			}
+		})
+	}
+}

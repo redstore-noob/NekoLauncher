@@ -35,7 +35,7 @@ const NekoAlert: React.FC = () => {
     <div
       aria-live="polite"
       className={[
-        "nya-panel nya-border fixed bottom-[46px] left-5 z-[940] flex max-w-[min(440px,calc(100vw-2.5rem))] items-start gap-2.5 rounded-2xl border py-3 pl-3.5 pr-2.5 shadow-lg backdrop-blur-md",
+        "nya-panel nya-border fixed bottom-[46px] left-5 z-[940] flex max-w-[min(440px,calc(100vw-2.5rem))] items-start gap-2.5 rounded-large border py-3 pl-3.5 pr-2.5 shadow-lg backdrop-blur-md",
         show && !state.alertClosing ? "neko-alert-enter" : "neko-alert-leave",
       ].join(" ")}
       role="alert"

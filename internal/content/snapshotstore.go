@@ -53,8 +53,17 @@ const (
 	// 快照来源标记。
 	snapshotReasonManual         = "manual"
 	snapshotReasonBeforeRollback = "before-rollback"
+	// snapshotReasonBeforeLaunch 启动前自动快照（时间机器的"还原点"）。
+	//
+	// 与 before-rollback 的区别很重要：before-rollback 是"用户马上要回滚，
+	// 先兜个底"，属于稀有事件；before-launch 每次启动都产生一个，是高频事件。
+	// 因此它必须计入 snapshotMaxAutoSnapshots 的淘汰口径，否则每次启动留一个，
+	// 几天就能把盘吃满（历史实现只对 before-rollback 计数，新增来源必须一起算）。
+	snapshotReasonBeforeLaunch = "before-launch"
 	// 自动安全快照的默认备注。
 	snapshotSafetyLabel = "回滚前自动快照"
+	// snapshotLaunchLabel 启动前自动快照的默认备注。
+	snapshotLaunchLabel = "启动前自动快照"
 
 	// snapshotMaxAutoSnapshots 自动安全快照（回滚前的兜底快照）保留上限。
 	// 每次回滚都会产生一个，反复回滚会把盘吃满，所以只留最近这些个。
@@ -628,7 +637,7 @@ func pruneSnapshotsLocked(repo, keepId string) error {
 	remove := map[string]bool{}
 	autoKept := 0
 	for _, manifest := range manifests {
-		if manifest.Reason != snapshotReasonBeforeRollback || manifest.Id == keepId {
+		if !isAutomaticSnapshotReason(manifest.Reason) || manifest.Id == keepId {
 			continue
 		}
 		autoKept++
@@ -652,7 +661,7 @@ func pruneSnapshotsLocked(repo, keepId string) error {
 				if remove[manifest.Id] || manifest.Id == keepId || isProtectedSnapshot(manifest) {
 					continue
 				}
-				if (manifest.Reason == snapshotReasonBeforeRollback) != pass {
+				if isAutomaticSnapshotReason(manifest.Reason) != pass {
 					continue
 				}
 				remove[manifest.Id] = true
@@ -683,6 +692,115 @@ func pruneSnapshotsLocked(repo, keepId string) error {
 // isProtectedSnapshot 带用户标记的快照（备注或颜色）不参与自动淘汰。
 func isProtectedSnapshot(manifest saveSnapshotManifest) bool {
 	return strings.TrimSpace(manifest.Label) != "" || strings.TrimSpace(manifest.Color) != ""
+}
+
+// isAutomaticSnapshotReason 该来源是否为"系统自动创建"的快照。
+//
+// 自动快照共享一个保留上限（snapshotMaxAutoSnapshots）与同一套淘汰优先级。
+// **新增自动来源时必须登记在这里**，否则它在 count 上限与体积淘汰两条路径上
+// 都会被当成"手动快照"而永不清理——一个高频自动快照足以把磁盘写满。
+func isAutomaticSnapshotReason(reason string) bool {
+	switch reason {
+	case snapshotReasonBeforeRollback, snapshotReasonBeforeLaunch:
+		return true
+	}
+	return false
+}
+
+// CreateLaunchSnapshot 在启动游戏前创建"还原点"快照（时间机器的自动刻度）。
+//
+// 与手动快照的差别：
+//   - 来源标为 before-launch（计入自动快照上限，会被正常淘汰）；
+//   - **已存在内容相同的快照时跳过**：玩家连续启动十次、存档没变，
+//     不该留下十个一模一样的还原点（见 shouldCreateLaunchSnapshot）。
+//
+// 返回 (快照, 是否真的创建了)。跳过时快照为零值、第二返回值为 false。
+func CreateLaunchSnapshot(
+	ctx context.Context,
+	worldDirectory string,
+) (SaveSnapshot, bool, error) {
+	if strings.TrimSpace(worldDirectory) == "" {
+		return SaveSnapshot{}, false, nil
+	}
+	if !shouldCreateLaunchSnapshot(worldDirectory) {
+		return SaveSnapshot{}, false, nil
+	}
+	snapshot, err := createSnapshot(
+		ctx, snapshotKindSave, worldDirectory, snapshotLaunchLabel, "")
+	if err != nil {
+		return SaveSnapshot{}, false, err
+	}
+	// createSnapshot 固定写 manual 来源，这里回填真实来源。
+	// 内容寻址意味着同内容快照几乎不额外占盘，但来源标签影响淘汰策略，必须准确。
+	if err := setSnapshotReason(snapshotKindSave, worldDirectory, snapshot.Id,
+		snapshotReasonBeforeLaunch); err != nil {
+		// 来源回填失败不回滚快照本身：它已是一个可用的还原点，
+		// 顶多被当成手动快照（更不容易被清理，对用户更安全）。
+		return snapshot, true, nil
+	}
+	snapshot.Reason = snapshotReasonBeforeLaunch
+
+	return snapshot, true, nil
+}
+
+// shouldCreateLaunchSnapshot 判断是否需要为本次启动留还原点。
+//
+// 跳过条件：最近一个快照与当前内容一致（没有变化就没有还原价值）。
+// 这里用"最近快照之后目标目录是否被修改过"作为廉价的近似判断：
+// 逐个文件哈希代价太高，而"没改过文件"是最常见的连续启动场景。
+func shouldCreateLaunchSnapshot(worldDirectory string) bool {
+	manifests := listSnapshots(worldDirectory)
+	if len(manifests) == 0 {
+		return true // 从没快照过：第一次启动必须留一个
+	}
+	latest := manifests[0]
+	for _, snapshot := range manifests {
+		if snapshot.CreatedAt.After(latest.CreatedAt) {
+			latest = snapshot
+		}
+	}
+	// 只有当目标目录里存在比最近快照更新的文件时，才值得再存一份
+	return directoryModifiedAfter(worldDirectory, latest.CreatedAt)
+}
+
+// directoryModifiedAfter 目标目录里是否存在晚于给定时刻的常规文件。
+// 读不到的项按"没变化"处理：宁可少存一个还原点，也不要因为一个权限错误
+// 在每次启动都存一遍。
+func directoryModifiedAfter(directory string, moment time.Time) bool {
+	modified := false
+	_ = filepath.WalkDir(directory, func(_ string, entry fs.DirEntry, err error) error {
+		if err != nil || modified {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		if info, infoErr := entry.Info(); infoErr == nil {
+			if info.ModTime().After(moment) {
+				modified = true
+			}
+		}
+		return nil
+	})
+	return modified
+}
+
+// setSnapshotReason 改写已落盘快照的来源标记。
+func setSnapshotReason(kind snapshotKind, directory, snapshotID, reason string) error {
+	normalized, err := normalizeSnapshotDirectory(directory)
+	if err != nil {
+		return err
+	}
+	repo := snapshotRepoDirectory(normalized)
+	unlock := lockSnapshotRepo(normalized)
+	defer unlock()
+
+	manifest, err := loadSnapshotManifest(repo, snapshotID)
+	if err != nil {
+		return err
+	}
+	manifest.Reason = reason
+	return writeSnapshotManifest(repo, manifest)
 }
 
 // RollbackSaveSnapshot 把世界回滚到指定快照。

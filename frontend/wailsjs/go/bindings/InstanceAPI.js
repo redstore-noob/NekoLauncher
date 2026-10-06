@@ -10,6 +10,10 @@ export function DeleteInstance(arg1, arg2) {
   return window['go']['bindings']['InstanceAPI']['DeleteInstance'](arg1, arg2);
 }
 
+export function DeleteInstanceJavaConfig(arg1) {
+  return window['go']['bindings']['InstanceAPI']['DeleteInstanceJavaConfig'](arg1);
+}
+
 export function EnsureDefaultMinecraftDirectory() {
   return window['go']['bindings']['InstanceAPI']['EnsureDefaultMinecraftDirectory']();
 }
@@ -30,6 +34,10 @@ export function GetInstanceDisplayVersion(arg1) {
   return window['go']['bindings']['InstanceAPI']['GetInstanceDisplayVersion'](arg1);
 }
 
+export function GetInstanceJavaConfig(arg1) {
+  return window['go']['bindings']['InstanceAPI']['GetInstanceJavaConfig'](arg1);
+}
+
 export function GetVersionDetails(arg1) {
   return window['go']['bindings']['InstanceAPI']['GetVersionDetails'](arg1);
 }
@@ -44,6 +52,10 @@ export function RenameInstance(arg1, arg2) {
 
 export function ResolveInstanceIsolation(arg1, arg2) {
   return window['go']['bindings']['InstanceAPI']['ResolveInstanceIsolation'](arg1, arg2);
+}
+
+export function SaveInstanceJavaConfig(arg1, arg2) {
+  return window['go']['bindings']['InstanceAPI']['SaveInstanceJavaConfig'](arg1, arg2);
 }
 
 export function ScanImportableInstances() {

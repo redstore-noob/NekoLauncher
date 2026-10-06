@@ -22,10 +22,10 @@ import { Card } from "@heroui/react";
  * 卡片与图标统一走主题色（不再使用彩色渐变背景）。
  */
 export interface HomeCardProps {
-  /** 图标磁贴里的图标（20px 系 Fluent 图标） */
-  icon: React.ReactNode;
-  /** 小号大写标题，如「游玩统计」 */
-  label: string;
+  /** 保留字段：图标磁贴已移除，传入会被忽略 */
+  icon?: React.ReactNode;
+  /** 保留字段：标题已移除，传入会被忽略 */
+  label?: string;
   /** 主数值或状态文本 */
   value: React.ReactNode;
   /** 保留字段：旧插件传入的磁贴类名，现已忽略（统一主题色） */
@@ -40,8 +40,6 @@ export interface HomeCardProps {
 }
 
 const HomeCard: React.FC<HomeCardProps> = ({
-  icon,
-  label,
   value,
   live = false,
   action,
@@ -52,25 +50,14 @@ const HomeCard: React.FC<HomeCardProps> = ({
       as="section"
       className={`
         nya-enter pointer-events-auto flex w-full flex-none flex-col gap-3
-        rounded-3xl p-5 backdrop-blur-md shadow-none bg-transparent
+        rounded-lg p-5 backdrop-blur-md shadow-none bg-transparent
         ${live ? "nya-neon-card nya-neon-live" : "nya-neon-card"}
       `}
       isBlurred={false}
     >
-      {/* 标题 + 主数值 */}
+      {/* 主数值（不再显示图标磁贴与标题） */}
       <div className="flex items-center gap-3">
-        <div
-          className="
-            flex size-10 flex-none items-center justify-center rounded-2xl
-            bg-primary/15 text-primary
-          "
-        >
-          {icon}
-        </div>
         <div className="flex min-w-0 flex-1 flex-col">
-          <span className="text-[11px] font-semibold tracking-wider text-gray-400 uppercase">
-            {label}
-          </span>
           <span
             className="
               truncate text-2xl font-bold tracking-tight

@@ -60,6 +60,10 @@ const CALL_STUBS: Record<string, StubFn> = {
       { Name: "官方节点", Address: "122.51.108.96", Builtin: true },
     ]),
   "go.bindings.OnlineAPI.GetRelayList": () => Promise.resolve(""),
+  "go.bindings.OnlineAPI.SaveRelayList": () => Promise.resolve(),
+  "go.bindings.OnlineAPI.ProbeRelays": () => Promise.resolve([]),
+  "go.bindings.OnlineAPI.GenerateAPIKey": () =>
+    Promise.resolve("MOCKKEY1234567890AB"),
   // 实例管理：一个假的 1.20.1 Fabric 实例 + options.txt，供详情/游戏设置调试
   "go.bindings.InstanceAPI.GetCurrentInstanceSnapshot": () =>
     Promise.resolve({
@@ -96,6 +100,28 @@ const CALL_STUBS: Record<string, StubFn> = {
       Saves: [],
       HasShaderDirectory: true,
     }),
+  // 主页启动卡：目录 / 版本列表 / 选中版本 / 账号与实例快照保持同一套种子数据
+  "go.bindings.ConfigAPI.GetGameDirectory": () => Promise.resolve("E:/mc"),
+  "go.bindings.InstanceAPI.EnsureDefaultMinecraftDirectory": () =>
+    Promise.resolve("E:/mc"),
+  "go.bindings.InstanceAPI.GetInstalledVersionIds": () =>
+    Promise.resolve(["1.20.1", "1.20.4"]),
+  "go.bindings.InstanceAPI.SelectInstance": () => Promise.resolve(true),
+  "go.bindings.ConfigAPI.GetValue": (key: unknown) =>
+    Promise.resolve(key === "selectedGameInstance" ? "1.20.1" : ""),
+  "go.bindings.ConfigAPI.SetValue": () => Promise.resolve(true),
+  "go.bindings.AccountAPI.GetAccounts": () =>
+    Promise.resolve([
+      { DisplayName: "烟花", Type: "microsoft" },
+      { DisplayName: "noob_player", Type: "offline" },
+    ]),
+  "go.bindings.AccountAPI.GetSelectedAccount": () =>
+    Promise.resolve({ DisplayName: "烟花", Type: "microsoft" }),
+  "go.bindings.AccountAPI.GetAccountStableKey": (account: unknown) =>
+    Promise.resolve(
+      `mock:${(account as { DisplayName?: string })?.DisplayName ?? "account"}`,
+    ),
+  "go.bindings.AccountAPI.GetAvatarUrl": () => Promise.resolve(""),
   "go.bindings.SystemAPI.ReadTextFile": (path: unknown) =>
     Promise.resolve(
       String(path).endsWith("options.txt")
@@ -124,19 +150,25 @@ const CALL_STUBS: Record<string, StubFn> = {
     ),
 };
 
-function makeStub(path = ""): unknown {
+function makeStub(
+  path = "",
+  overrides: Record<string, (...args: unknown[]) => unknown> = {},
+): unknown {
   return new Proxy(function stub() {}, {
     get(_target, prop) {
       if (prop === "then" || prop === "catch" || prop === "finally") {
         return undefined; // 避免被当成 thenable 无限展开
       }
 
-      return makeStub(path ? `${path}.${String(prop)}` : String(prop));
+      return makeStub(
+        path ? `${path}.${String(prop)}` : String(prop),
+        overrides,
+      );
     },
     apply(_target, _thisArg, argArray) {
       // null 而非 ""：调用点普遍有 ?? / || 兜底（如 (await ListPlugins()) ?? []），
       // 返回空串会绕过 ?? 兜底导致 .find 等数组操作崩溃
-      const stub = CALL_STUBS[path];
+      const stub = overrides[path] ?? CALL_STUBS[path];
 
       if (stub) return stub(...argArray);
 
@@ -151,7 +183,16 @@ if (typeof window !== "undefined") {
   const w = window as unknown as Record<string, unknown>;
 
   if (!w.go) w.go = makeStub("go");
-  if (!w.runtime) w.runtime = makeStub("runtime");
+  if (!w.runtime) {
+    w.runtime = makeStub("runtime", {
+      // Wails 真实 runtime 的 EventsOnMultiple 返回取消监听函数，组件卸载时会
+      // 调用它（EventsOn 内部也转调这里）；代理 stub 返回的是 Promise/undefined，
+      // 清理回调一跑就抛 "cancel is not a function" 把整个 React 树炸掉。
+      "runtime.EventsOnMultiple": (_event, _callback, _max) => () => {
+        /* mock 无事件源，返回空取消函数 */
+      },
+    });
+  }
 }
 
 export {};

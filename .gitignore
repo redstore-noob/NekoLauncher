@@ -16,6 +16,7 @@ build/bin/
 # 编辑器 / 系统
 .vscode/
 .idea/
+.dsh-research/
 .DS_Store
 Thumbs.db
 

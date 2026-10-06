@@ -103,7 +103,7 @@ const ScreenshotWallCard: React.FC = () => {
       valueClass="bg-gradient-to-r from-purple-500 via-violet-500 to-indigo-500"
     >
       {error ? (
-        <div className="rounded-2xl bg-danger/10 px-4 py-3 text-xs leading-relaxed text-danger">
+        <div className="rounded-lg bg-danger/10 px-4 py-3 text-xs leading-relaxed text-danger">
           {error}
         </div>
       ) : shots.length > 0 ? (
@@ -111,7 +111,7 @@ const ScreenshotWallCard: React.FC = () => {
           {shots.map((shot, index) => (
             <button
               key={shot.Path}
-              className={`nya-enter nya-stagger-${Math.min(index + 1, 9)} group relative aspect-square cursor-pointer overflow-hidden rounded-xl bg-black/5 dark:bg-white/10`}
+              className={`nya-enter nya-stagger-${Math.min(index + 1, 9)} group relative aspect-square cursor-pointer overflow-hidden rounded-lg bg-black/5 dark:bg-white/10`}
               title={t("{0} · {1}", {
                 "0": shot.Name,
                 "1": formatRelativeTimeFrom(shot.ModifiedAt),
@@ -129,8 +129,8 @@ const ScreenshotWallCard: React.FC = () => {
           ))}
         </div>
       ) : (
-        <div className="flex flex-col items-center gap-2 rounded-2xl bg-black/5 px-4 py-4 text-center text-xs leading-relaxed text-gray-400 dark:bg-white/5">
-          <span className="flex size-10 items-center justify-center rounded-xl bg-black/5 text-gray-400 dark:bg-white/10">
+        <div className="flex flex-col items-center gap-2 rounded-lg bg-black/5 px-4 py-4 text-center text-xs leading-relaxed text-gray-400 dark:bg-white/5">
+          <span className="flex size-10 items-center justify-center rounded-lg bg-black/5 text-gray-400 dark:bg-white/10">
             <Camera20Regular className="h-5 w-5" />
           </span>
           {isLoading ? t("正在扫描实例的截图…") : t("游戏里按 F2 截图")}

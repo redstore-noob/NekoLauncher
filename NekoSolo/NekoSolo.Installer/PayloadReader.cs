@@ -20,17 +20,40 @@ namespace NekoSolo.Installer
         private readonly FileStream _stream;
         private readonly long _payloadStart;
 
-        private SoloPayload(FileStream stream, long payloadStart, long length, SoloManifest manifest)
+        private SoloPayload(FileStream stream, long payloadStart, long length, SoloManifest manifest, bool isV3)
         {
             _stream = stream;
             _payloadStart = payloadStart;
             Length = length;
             Manifest = manifest;
+            IsV3 = isV3;
         }
 
         public long Length { get; }
 
         public SoloManifest Manifest { get; }
+
+        /// <summary>v3 格式：载荷 zip 是标准 Modrinth 整合包结构（modrinth.index.json + overrides/）。</summary>
+        public bool IsV3 { get; }
+
+        /// <summary>把整个载荷 zip 区间流式复制为独立文件（v3 安装：转存为待装 mrpack）。</summary>
+        public void CopyPayloadTo(string targetPath)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(targetPath)));
+            _stream.Seek(_payloadStart, SeekOrigin.Begin);
+            using (var target = File.Create(targetPath))
+            {
+                var buffer = new byte[81920];
+                long remaining = Length;
+                while (remaining > 0)
+                {
+                    int read = _stream.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
+                    if (read <= 0) throw new IOException("读取载荷时文件意外结束。");
+                    target.Write(buffer, 0, read);
+                    remaining -= read;
+                }
+            }
+        }
 
         /// <summary>以载荷为内容打开 zip 档案（可寻址，中央目录按需读取）。</summary>
         public ZipArchive OpenZip()
@@ -55,12 +78,15 @@ namespace NekoSolo.Installer
                 stream.Seek(-32, SeekOrigin.End);
                 ReadExact(stream, trailer, trailer.Length);
 
-                // 魔数 "NKSOLOn" + 版本字节：0x01 = 载荷内嵌（v1），0x02 = 在线安装包（v2）
+                // 魔数 "NKSOLOn" + 版本字节：
+                // 0x01 = 载荷内嵌（v1 旧格式），0x02 = 在线安装包（v2），
+                // 0x03 = 载荷内嵌 Modrinth 整合包结构（v3）
                 bool v2 = trailer[7] == 0x02;
+                bool v3 = trailer[7] == 0x03;
                 if (trailer[0] != (byte)'N' || trailer[1] != (byte)'K' || trailer[2] != (byte)'S' ||
                     trailer[3] != (byte)'O' || trailer[4] != (byte)'L' || trailer[5] != (byte)'O' ||
-                    trailer[6] != (byte)'1' && trailer[6] != (byte)'2' ||
-                    trailer[7] != 0x01 && trailer[7] != 0x02)
+                    trailer[6] != (byte)'1' && trailer[6] != (byte)'2' && trailer[6] != (byte)'3' ||
+                    trailer[7] != 0x01 && trailer[7] != 0x02 && trailer[7] != 0x03)
                     throw new InvalidDataException("不是有效的 NekoSolo 安装包（尾标魔数不符）。");
 
                 long offset = BitConverter.ToInt64(trailer, 8);
@@ -106,7 +132,7 @@ namespace NekoSolo.Installer
                     throw new InvalidDataException("载荷校验失败（CRC 不符），安装包可能下载不完整，请重新下载。");
 
                 var payloadManifest = ReadManifest(stream, offset, length);
-                return new SoloPayload(stream, offset, length, payloadManifest);
+                return new SoloPayload(stream, offset, length, payloadManifest, v3);
             }
             catch
             {

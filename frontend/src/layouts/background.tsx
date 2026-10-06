@@ -14,6 +14,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import type { WEScenePayload } from "../lib/we-scene/types";
+
 import React, {
   createContext,
   useCallback,
@@ -29,6 +31,7 @@ import {
   GetBingDailyImagePath,
   GetWallpaperEngineWallpaper,
 } from "../../wailsjs/go/bindings/SystemAPI";
+import { isLinuxPlatform } from "../lib/platform";
 
 // launcher.yaml 中的键（经 ConfigAPI.SetValue/GetValue 读写）
 export const BACKGROUND_PATH_KEY = "launcherBackgroundPath";
@@ -38,12 +41,16 @@ export const BACKGROUND_OPACITY_KEY = "launcherBackgroundOpacity";
 /** 背景 scrim 不透明度（0-100，默认 80）：罩在模糊壁纸上的黑白底色强度 */
 export const BACKGROUND_SCRIM_KEY = "launcherBackgroundScrim";
 export const BACKGROUND_WINDOW_OPACITY_KEY = "launcherWindowOpacity";
-/** 面板毛玻璃（前端 backdrop-filter）开关；未设置或值损坏时默认开启 */
+/** 面板毛玻璃（前端 backdrop-filter）开关；Windows/macOS 未设置时默认开启，Linux 默认关闭 */
 export const PANEL_BLUR_KEY = "launcherPanelBlurEnabled";
 /** 面板毛玻璃强度（0-100，默认 70 = 历史观感；0 等同于关闭） */
 export const PANEL_BLUR_STRENGTH_KEY = "launcherPanelBlurStrength";
 /** 网页类壁纸是否允许接收鼠标交互（默认关闭，避免壁纸吃掉界面点击） */
 export const WEB_WALLPAPER_INTERACTIVE_KEY = "launcherWebWallpaperInteractive";
+/** WE 场景壁纸渲染分辨率倍数（相对窗口 CSS 像素；默认 1，HiDPI 屏可调高） */
+export const WE_SCENE_RESOLUTION_KEY = "launcherWeSceneResolution";
+/** WE 场景壁纸刷新率上限（"auto"=自适应，重壁纸自动锁 30；或数字 fps） */
+export const WE_SCENE_FPS_KEY = "launcherWeSceneFps";
 
 /** 毛玻璃强度默认值：blur 系数 = 强度 / 它，因此 70 时系数为 1（观感不变） */
 export const DEFAULT_PANEL_BLUR_STRENGTH = 70;
@@ -93,8 +100,10 @@ export type BackgroundMode =
   | "image"
   | "wallpaper-engine";
 
-/** 桌面壁纸 / WE 壁纸模式下轮询变化的时间间隔（ms），保证与桌面保持一致 */
-const WALLPAPER_POLL_INTERVAL_MS = 15000;
+/** 桌面壁纸 / WE 壁纸模式下轮询变化的时间间隔（ms），保证与桌面保持一致。
+ * Linux 后端靠 spawn gsettings/kreadconfig 等子进程探测壁纸，频率压低以减少
+ * 周期性的子进程唤醒（换壁纸本来就是低频事件，晚半分钟感知到无所谓） */
+const WALLPAPER_POLL_INTERVAL_MS = isLinuxPlatform() ? 60000 : 15000;
 
 /** 必应每日图重取间隔（ms）：应用长时间挂着跨天时也能换上新一期 */
 const BING_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
@@ -108,6 +117,10 @@ interface BackgroundState {
   webUrl: string;
   /** 网页壁纸是否允许接收鼠标交互 */
   webInteractive: boolean;
+  /** WE 场景壁纸渲染分辨率倍数(相对窗口 CSS 像素;1 = 不按 DPR 放大) */
+  sceneResolution: number;
+  /** WE 场景壁纸刷新率上限(fps);0 = 自适应(重壁纸自动锁 30) */
+  sceneFps: number;
   /** 背景模糊半径（px，0 = 不模糊） */
   blur: number;
   /** 背景不透明度（0-100，默认 100） */
@@ -132,6 +145,16 @@ interface BackgroundState {
   wallpaperEngineTitle: string;
   /** WE 当前壁纸类型（video/scene/web/img，供设置页提示"动态壁纸展示预览图"） */
   wallpaperEngineType: string;
+  /**
+   * WE 网页壁纸用户属性的指纹:用户在 WE 里改配置后变化,
+   * 拼到 iframe URL 上触发壁纸重载(新配置随入口注入重新生效)。
+   */
+  wallpaperEngineWebVersion: string;
+  /**
+   * WE 场景壁纸的完整渲染载荷（多图层/动画/粒子/用户配置）;
+   * 非场景类型或载荷组装失败时为 null,背景层据此回退静态图。
+   */
+  sceneWallpaper: import("../lib/we-scene/types").WEScenePayload | null;
   /** 当前平台不支持 Wallpaper Engine 联动（WE 只有 Windows 版），设置页据此给出提示 */
   wallpaperEngineUnsupported: boolean;
   /**
@@ -149,6 +172,8 @@ const BackgroundContext = createContext<BackgroundState>({
   videoUrl: "",
   webUrl: "",
   webInteractive: false,
+  sceneResolution: 1,
+  sceneFps: 0,
   blur: 0,
   opacity: 100,
   scrim: 80,
@@ -156,11 +181,13 @@ const BackgroundContext = createContext<BackgroundState>({
   isCustom: false,
   windowOpacity: 100,
   acrylic: false,
-  panelBlur: true,
+  panelBlur: !isLinuxPlatform(),
   panelBlurStrength: DEFAULT_PANEL_BLUR_STRENGTH,
   wallpaperPath: "",
   wallpaperEngineTitle: "",
   wallpaperEngineType: "",
+  wallpaperEngineWebVersion: "",
+  sceneWallpaper: null,
   wallpaperEngineUnsupported: false,
   hydrated: false,
   refresh: () => {
@@ -189,7 +216,11 @@ function parseBlur(raw: string): number {
 
   if (!Number.isFinite(value) || value <= 0) return 0;
 
-  return Math.min(40, Math.round(value));
+  // Linux 的 WebKitGTK 对全屏 filter: blur 的栅格化成本远高于 WebView2，
+  // 半径封顶压到 16px（视觉上仍有"磨砂"感，单帧成本降一个量级）
+  const maxBlur = isLinuxPlatform() ? 16 : 40;
+
+  return Math.min(maxBlur, Math.round(value));
 }
 
 function parseOpacity(raw: string, fallback = 100): number {
@@ -202,8 +233,15 @@ function parseOpacity(raw: string, fallback = 100): number {
   return Math.min(100, Math.max(0, Math.round(value)));
 }
 
-/** 面板毛玻璃开关解析：未设置（空串）或值损坏时默认开启 */
+/**
+ * 面板毛玻璃开关解析：Windows/macOS 未设置（空串）或值损坏时默认开启。
+ * Linux 的 WebKitGTK 合成 backdrop-filter 的开销远高于 WebView2（每个模糊
+ * 表面逐帧离屏重采样），未显式开启（"true"）时默认关闭；用户在设置里显式
+ * 打开则尊重其选择。
+ */
 function parsePanelBlur(raw: string): boolean {
+  if (isLinuxPlatform()) return raw === "true";
+
   return raw !== "false";
 }
 
@@ -220,6 +258,25 @@ function parsePanelBlurStrength(raw: string): number {
 /** 布尔配置解析：只有明确写 "true" 才算开启 */
 function parseBoolFlag(raw: string): boolean {
   return raw === "true";
+}
+
+/** 场景壁纸分辨率倍数解析：0.25~3，未设置/损坏回落 1（窗口 CSS 像素） */
+function parseSceneResolution(raw: string): number {
+  const value = Number(raw);
+
+  if (!Number.isFinite(value) || value <= 0) return 1;
+
+  return Math.min(3, Math.max(0.25, value));
+}
+
+/** 场景壁纸刷新率上限解析："auto"/未设置 = 0（自适应）；否则 10~240 fps */
+function parseSceneFps(raw: string): number {
+  if (!raw || raw === "auto") return 0;
+  const value = Number(raw);
+
+  if (!Number.isFinite(value) || value <= 0) return 0;
+
+  return Math.min(240, Math.max(10, Math.round(value)));
 }
 
 /**
@@ -256,17 +313,23 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
   const [weWeb, setWeWeb] = useState("");
   const [weTitle, setWeTitle] = useState("");
   const [weType, setWeType] = useState("");
+  const [weWebVersion, setWeWebVersion] = useState("");
+  const [weScene, setWeScene] = useState<
+    import("../lib/we-scene/types").WEScenePayload | null
+  >(null);
   const [weUnsupported, setWeUnsupported] = useState(false);
   const [blur, setBlur] = useState(0);
   const [opacity, setOpacity] = useState(100);
   const [scrim, setScrim] = useState(80);
   const [windowOpacity, setWindowOpacity] = useState(100);
   const [acrylic, setAcrylic] = useState(false);
-  const [panelBlur, setPanelBlur] = useState(true);
+  const [panelBlur, setPanelBlur] = useState(!isLinuxPlatform());
   const [panelBlurStrength, setPanelBlurStrength] = useState(
     DEFAULT_PANEL_BLUR_STRENGTH,
   );
   const [webInteractive, setWebInteractive] = useState(false);
+  const [sceneResolution, setSceneResolution] = useState(1);
+  const [sceneFps, setSceneFps] = useState(0);
   const [hydrated, setHydrated] = useState(false);
 
   // 各读取自带 catch（失败回落默认值），Promise.all 必然 resolve。
@@ -296,13 +359,19 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
         .catch(() => setAcrylic(false)),
       GetValue(PANEL_BLUR_KEY)
         .then((value) => setPanelBlur(parsePanelBlur(value)))
-        .catch(() => setPanelBlur(true)),
+        .catch(() => setPanelBlur(!isLinuxPlatform())),
       GetValue(PANEL_BLUR_STRENGTH_KEY)
         .then((value) => setPanelBlurStrength(parsePanelBlurStrength(value)))
         .catch(() => setPanelBlurStrength(DEFAULT_PANEL_BLUR_STRENGTH)),
       GetValue(WEB_WALLPAPER_INTERACTIVE_KEY)
         .then((value) => setWebInteractive(parseBoolFlag(value)))
         .catch(() => setWebInteractive(false)),
+      GetValue(WE_SCENE_RESOLUTION_KEY)
+        .then((value) => setSceneResolution(parseSceneResolution(value)))
+        .catch(() => setSceneResolution(1)),
+      GetValue(WE_SCENE_FPS_KEY)
+        .then((value) => setSceneFps(parseSceneFps(value)))
+        .catch(() => setSceneFps(0)),
     ]).then(() => undefined);
   }, []);
 
@@ -310,11 +379,14 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
   // 统一摘掉所有表面的 backdrop-filter 并提升底色不透明度；--nya-blur-scale 乘到
   // 各表面的 blur 半径上、--nya-glass-alpha 换掉底色不透明度，实现"强度"连续可调
   // （0 直接走关闭那条更省合成的路径）。
+  // data-low-fx 标记低性能渲染路径（Linux WebKitGTK）：globals.css 据此停掉
+  // 常驻的 paint/layout 型装饰动画（box-shadow/height/background-position）。
   useEffect(() => {
     const root = document.documentElement;
     const strength = panelBlur ? panelBlurStrength : 0;
 
     root.dataset.panelBlur = strength > 0 ? "on" : "off";
+    root.dataset.lowFx = isLinuxPlatform() ? "true" : "false";
     root.style.setProperty(
       "--nya-blur-scale",
       String(panelBlurScale(strength)),
@@ -396,8 +468,10 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
       setWePath("");
       setWeSource("");
       setWeWeb("");
+      setWeWebVersion("");
       setWeTitle("");
       setWeType("");
+      setWeScene(null);
       setWeUnsupported(false);
 
       return;
@@ -410,17 +484,22 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
           setWePath(value?.Path || "");
           setWeSource(value?.Source || "");
           setWeWeb(value?.Web || "");
+          setWeWebVersion(value?.WebConfigVersion || "");
           setWeTitle(value?.Title || "");
           setWeType(value?.Type || "");
+          setWeScene((value?.Scene as WEScenePayload | undefined) ?? null);
           setWeUnsupported(!!value?.Unsupported);
         })
-        .catch(() => {
+        .catch((err) => {
           if (!alive) return;
+          console.error("[WE] 获取壁纸失败:", err);
           setWePath("");
           setWeSource("");
           setWeWeb("");
+          setWeWebVersion("");
           setWeTitle("");
           setWeType("");
+          setWeScene(null);
           setWeUnsupported(false);
         });
     };
@@ -459,10 +538,23 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
       ? toLocalUrl(weSource)
       : "";
 
+  // WE 场景壁纸：完整渲染载荷交给背景层的 SceneWallpaperRenderer(three.js);
+  // Path 里同时保留了静态提取图,作为资源加载期间与 WebGL 不可用时的兜底。
+  // 载荷只在场景壁纸就绪时给出,其余类型为 null。
+  const sceneWallpaper =
+    mode === "wallpaper-engine" && weType.toLowerCase() === "scene"
+      ? weScene
+      : null;
+
   // WE 网页壁纸：入口 HTML 经 /wwwallpaper 路由交给背景层的 iframe；
-  // 预览图仍在 url 里，作为 iframe 加载完成前的底图
+  // 预览图仍在 url 里，作为 iframe 加载完成前的底图。
+  // 属性指纹拼成 ?v= 参数:用户在 WE 里改配置后指纹变化,iframe 随 key 重挂载,
+  // 新的用户属性随入口 HTML 重新注入(见后端 webwallpaper_polyfill.go)。
   const webUrl =
-    mode === "wallpaper-engine" && weWeb ? toWebWallpaperUrl(weWeb) : "";
+    mode === "wallpaper-engine" && weWeb
+      ? toWebWallpaperUrl(weWeb) +
+        (weWebVersion ? `?v=${encodeURIComponent(weWebVersion)}` : "")
+      : "";
 
   return (
     <BackgroundContext.Provider
@@ -471,6 +563,8 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
         videoUrl,
         webUrl,
         webInteractive,
+        sceneResolution,
+        sceneFps,
         blur,
         opacity,
         scrim,
@@ -483,6 +577,8 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
         wallpaperPath,
         wallpaperEngineTitle: weTitle,
         wallpaperEngineType: weType,
+        wallpaperEngineWebVersion: weWebVersion,
+        sceneWallpaper,
         wallpaperEngineUnsupported: weUnsupported,
         hydrated,
         refresh,

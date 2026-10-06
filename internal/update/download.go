@@ -4,7 +4,11 @@ package update
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,8 +53,46 @@ func Download(ctx context.Context, asset Asset, progress download.ProgressBytes)
 			return "", fmt.Errorf("下载不完整（期望 %d 字节，实际 %d 字节）", asset.Size, info.Size())
 		}
 	}
+	// GitHub 声明了 sha256 摘要就强校验：HTTPS 之外的第二道完整性闸门，
+	// 挡住代理/Hosts 劫持场景下被替换的更新包（换上去的就是任意代码执行）
+	if err := verifyAssetDigest(target, asset.Digest); err != nil {
+		_ = os.Remove(target)
+
+		return "", err
+	}
 
 	return target, nil
+}
+
+// verifyAssetDigest 校验落盘文件的 sha256 与 GitHub 声明一致。
+// 声明为空（旧资产没有 digest 字段）跳过；非 sha256 前缀的未知格式也跳过，
+// 完整性退回大小核对——别让未来的摘要格式把更新通道整个堵死。
+func verifyAssetDigest(path, declared string) error {
+	value := strings.TrimSpace(declared)
+	if value == "" {
+		return nil
+	}
+	expected, ok := strings.CutPrefix(value, "sha256:")
+	if !ok || expected == "" {
+		return nil
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	sum := sha256.New()
+	if _, err := io.Copy(sum, file); err != nil {
+		return err
+	}
+	actual := hex.EncodeToString(sum.Sum(nil))
+	if !strings.EqualFold(actual, expected) {
+		return errors.New("更新包校验失败：SHA-256 与 GitHub 声明不符（文件可能被篡改或下载损坏）")
+	}
+
+	return nil
 }
 
 // sanitizeAssetName 只保留文件名部分，挡掉资产名里带路径分隔符的情况

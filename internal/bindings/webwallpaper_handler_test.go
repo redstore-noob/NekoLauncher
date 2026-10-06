@@ -40,7 +40,7 @@ func writeWebWallpaperProject(t *testing.T, projectType, file string) string {
 func TestWebWallpaperProjectDetection(t *testing.T) {
 	dir := writeWebWallpaperProject(t, "web", "index.html")
 
-	result, err := wallpaperEngineWallpaperFromProject(dir)
+	result, err := wallpaperEngineWallpaperFromProject(dir, "")
 	if err != nil {
 		t.Fatalf("解析壁纸项目失败：%v", err)
 	}
@@ -53,7 +53,7 @@ func TestWebWallpaperProjectDetection(t *testing.T) {
 
 	// 非网页类型必须清空，避免路由继续对外提供上一个壁纸的文件
 	other := writeWebWallpaperProject(t, "video", "video.mp4")
-	if _, err := wallpaperEngineWallpaperFromProject(other); err != nil {
+	if _, err := wallpaperEngineWallpaperFromProject(other, ""); err != nil {
 		t.Fatalf("解析视频壁纸失败：%v", err)
 	}
 	if target := currentWebWallpaperTarget(); target.Root != "" {
@@ -69,7 +69,7 @@ func TestWebWallpaperEntryAliasMissing(t *testing.T) {
 		t.Fatalf("写 project.json 失败：%v", err)
 	}
 
-	result, err := wallpaperEngineWallpaperFromProject(dir)
+	result, err := wallpaperEngineWallpaperFromProject(dir, "")
 	if err != nil {
 		t.Fatalf("解析失败：%v", err)
 	}
@@ -81,7 +81,7 @@ func TestWebWallpaperEntryAliasMissing(t *testing.T) {
 // TestWebWallpaperRouteServesEntryAndAssets 别名取入口、子目录资源可读、越界被挡。
 func TestWebWallpaperRouteServesEntryAndAssets(t *testing.T) {
 	dir := writeWebWallpaperProject(t, "web", "index.html")
-	if _, err := wallpaperEngineWallpaperFromProject(dir); err != nil {
+	if _, err := wallpaperEngineWallpaperFromProject(dir, ""); err != nil {
 		t.Fatalf("解析失败：%v", err)
 	}
 	handler := NewWebWallpaperHandler()
@@ -111,10 +111,14 @@ func TestWebWallpaperRouteServesEntryAndAssets(t *testing.T) {
 	if asset := fetch(webWallpaperRoutePrefix + "js/app.js"); asset.Code != http.StatusOK {
 		t.Fatalf("子目录资源应返回 200，实际 %d", asset.Code)
 	}
-	// 直接请求 index.html 走不通（http.ServeFile 会把 "/index.html" 301 到 "./"，
-	// 而目录路径又命中 Wails 的首页注入规则）——这正是前端要用 __entry 别名的原因
-	if direct := fetch(webWallpaperRoutePrefix + "index.html"); direct.Code == http.StatusOK {
-		t.Fatalf("入口文件本身不应被直接提供，实际 %d", direct.Code)
+	// 直接请求 index.html 现在从字节直出(不再被 http.ServeFile 301 到目录路径,
+	// 子目录里的 index.html 也不会再被带死);但规范入口仍是 __entry 别名——
+	// Wails 的资产层对以 /index.html 结尾的路径有 runtime 注入行为,别名可以绕开
+	if direct := fetch(webWallpaperRoutePrefix + "index.html"); direct.Code != http.StatusOK {
+		t.Fatalf("index.html 直连应 200,实际 %d", direct.Code)
+	}
+	if strings.Contains(fetch(webWallpaperRoutePrefix+"index.html").Body.String(), "__wePolyfillInstalled") {
+		t.Fatal("直连入口(非别名)不应重复注入 polyfill")
 	}
 
 	for _, bad := range []string{
@@ -130,8 +134,8 @@ func TestWebWallpaperRouteServesEntryAndAssets(t *testing.T) {
 
 // TestWebWallpaperRouteWithoutTarget 未选中网页壁纸时整条路由 404。
 func TestWebWallpaperRouteWithoutTarget(t *testing.T) {
-	setWebWallpaperTarget("", "")
-	defer setWebWallpaperTarget("", "")
+	setWebWallpaperTarget("", "", "", "")
+	defer setWebWallpaperTarget("", "", "", "")
 
 	rec := httptest.NewRecorder()
 	NewWebWallpaperHandler().ServeHTTP(

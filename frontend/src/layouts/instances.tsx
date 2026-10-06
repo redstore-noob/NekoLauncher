@@ -16,7 +16,8 @@
  */
 /*
  * 实例管理页（移植自旧版 views/VersionsView.vue，对应 Avalonia VersionManagerPage.axaml）：
- * 左侧实例列表（图标 + 名称）+ 右侧详情卡（概览 / 启动设置 / 内容 / 管理）。
+ * 指挥中心单页流 —— 顶部状态横幅（目录/计数/全部管理动作）+ 封顶实例列表面板（带搜索）+
+ * 选中实例详情下挂在同页（概览 / 启动设置 / 内容 / 游戏设置 / 管理），不弹窗不跳转。
  * - 实例图标：ContentAPI.GetInstanceVisual（自定义图标/版本图标，本地路径经 /localfile 中转）；
  * - 概览：InstanceAPI.GetVersionDetails（加载器/基础版本/隔离状态/内容目录/Java 要求）；
  * - 启动设置：ConfigAPI.GetVersionProfile / SaveVersionProfile（版本隔离、独立内存、
@@ -37,6 +38,7 @@ import type { Variants } from "framer-motion";
 
 import React, {
   useCallback,
+  useDeferredValue,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -64,16 +66,20 @@ import {
   ArrowImport20Regular as ImportIcon,
   ArrowSwap20Regular as VersionIcon,
   Bot20Regular as BotIcon,
+  Branch20Regular as ProvenanceIcon,
+  ChevronDown20Regular as ChevronDownIcon,
+  ChevronUp20Regular as ChevronUpIcon,
   Copy20Regular as CopyIcon,
   Edit20Regular as RenameIcon,
   History20Regular as RewindIcon,
   ArrowSync20Regular as UpdateIcon,
   Play20Regular as PlayIcon,
-  Sparkle20Regular as SparkleIcon,
+  Search20Regular,
   Save20Regular as SaveIcon,
 } from "@fluentui/react-icons";
 import { AnimatePresence, motion } from "framer-motion";
 
+import { selectPopoverProps } from "../lib/motion";
 import {
   CopyInstance,
   DeleteInstance,
@@ -98,6 +104,7 @@ import RewindDialog, {
 import ModVersionDialog, {
   type ModVersionTarget,
 } from "../components/instance/ModVersionDialog";
+import { useLaunchProvenance } from "../components/launch/LaunchProvenancePanel";
 import { TRANSITION_EASINGS } from "../lib/motion";
 import SwitchTransition, {
   useSwitchDirection,
@@ -122,7 +129,6 @@ import {
   RemoveCustomIcon,
   SetCustomIcon,
   ToggleContentEntry,
-  CopyFileIntoDirectory,
 } from "../../wailsjs/go/bindings/ContentAPI";
 import {
   GetMemorySliderMaximum,
@@ -137,14 +143,9 @@ import {
   SelectFile,
   WriteTextFile,
 } from "../../wailsjs/go/bindings/SystemAPI";
-import {
-  EventsOn,
-  OnFileDrop,
-  OnFileDropOff,
-} from "../../wailsjs/runtime/runtime";
+import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { config } from "../../wailsjs/go/models";
 import { asObject, asArray } from "../lib/guards";
-import { popoverMotionProps } from "../lib/motion";
 import {
   badgeToneFor,
   downloadLink,
@@ -160,7 +161,8 @@ import {
   summarizeResult,
   versionTransition,
 } from "../lib/instanceUpdates";
-import { alert, confirm } from "../components/overlay/dialog";
+import { alert, confirm, notify } from "../components/overlay/dialog";
+import { PageActionSlot } from "../plugin";
 import { t } from "../i18n";
 
 type ContentTab = "已安装模组" | "资源包" | "光影包" | "游戏存档";
@@ -730,6 +732,7 @@ const CONTENT_TABS: { key: ContentTab; label: string }[] = [
 const DETAIL_TABS = [
   "overview",
   "launch",
+  "java",
   "content",
   "gamesettings",
   "manage",
@@ -847,6 +850,9 @@ function formatTime(value: unknown): string {
 }
 
 const InstancesPage: React.FC = () => {
+  // 启动参数溯源面板：全局单例，这里只取打开入口
+  const { open: openProvenance } = useLaunchProvenance();
+
   // ---------- 列表与目录 ----------
   const [snap, setSnap] = useState<instance.GameInstanceSnapshot | null>(null);
   const [folders, setFolders] = useState<string[]>([]);
@@ -869,6 +875,20 @@ const InstancesPage: React.FC = () => {
   const [envText, setEnvText] = useState("");
   const [memoryMax, setMemoryMax] = useState(4096);
   const [saving, setSaving] = useState(false);
+  const [advancedSettingsExpanded, setAdvancedSettingsExpanded] =
+    useState(false);
+
+  // ---------- Java 设置（实例级别） ----------
+  const [javaConfig, setJavaConfig] = useState<config.JavaConfig>({
+    JavaExecutable: "",
+    MinMemoryMB: 0,
+    MaxMemoryMB: 0,
+    AdditionalJvmArguments: [],
+    AdditionalGameArguments: [],
+  });
+  const [javaConfigJvmText, setJavaConfigJvmText] = useState("");
+  const [javaConfigGameText, setJavaConfigGameText] = useState("");
+  const [javaSaving, setJavaSaving] = useState(false);
 
   // 实例进程优先级下拉的可选项（label 走 i18n，组件内取译名）
   const priorityKeys = ["normal", "low", "belownormal", "abovenormal", "high"];
@@ -889,7 +909,7 @@ const InstancesPage: React.FC = () => {
 
   // ---------- 内容与管理 ----------
   const [tab, setTab] = useState<
-    "overview" | "launch" | "content" | "gamesettings" | "manage"
+    "overview" | "launch" | "java" | "content" | "gamesettings" | "manage"
   >("overview");
   const [contentTab, setContentTab] = useState<ContentTab>("已安装模组");
   // 游戏设置
@@ -972,7 +992,21 @@ const InstancesPage: React.FC = () => {
     CONTENT_TABS.findIndex((t) => t.key === contentTab),
   );
   // 实例列表序号 → 切换方向（选中项在列表中的上下移动）
-  const versions = snap?.VersionIds ?? [];
+  const versions = useMemo(() => snap?.VersionIds ?? [], [snap]);
+  // 指挥中心单页流：列表搜索 + 下挂详情的展开/收起
+  const [versionSearch, setVersionSearch] = useState("");
+  const [expandedInstance, setExpandedInstance] = useState(true);
+  const filteredVersions = useMemo(() => {
+    const q = versionSearch.trim().toLowerCase();
+
+    if (!q) return versions;
+
+    return versions.filter(
+      (v) =>
+        v.toLowerCase().includes(q) ||
+        (displayNames[v] ?? "").toLowerCase().includes(q),
+    );
+  }, [versions, versionSearch, displayNames]);
   const instanceDirection = useSwitchDirection(
     versions.findIndex((v) => v === selected),
   );
@@ -983,15 +1017,58 @@ const InstancesPage: React.FC = () => {
     top: number;
     height: number;
   } | null>(null);
-  // 左列折叠状态：首帧之后再展开，得到 0fr→1fr 的过渡；
-  // 首屏渲染时不播放，避免启动时列表莫名抖一下。
+  // 左列折叠状态：首屏的行展开（0fr→1fr）推迟到展示名解析就绪之后再播。
+  // 展示名（加载器实例第二行）是逐实例异步返回的：此前 rAF 后立即展开，
+  // 名字随后一个个到货、行一个个变高，整列反复下移——"进页面列表莫名动一下"。
+  // 批量解析完一次性上屏，展开时行高就是最终高度，零抖动；
+  // 800ms 兜底防止个别读取挂住把列表永远留在折叠态。
   const [rowsReady, setRowsReady] = useState(false);
+  const namesSeedKeyRef = useRef("");
 
   useLayoutEffect(() => {
-    const raf = requestAnimationFrame(() => setRowsReady(true));
+    if (!versions.length) return;
+    const seedKey = versions.join("\u0000");
 
-    return () => cancelAnimationFrame(raf);
-  }, []);
+    if (namesSeedKeyRef.current === seedKey) return;
+    namesSeedKeyRef.current = seedKey;
+
+    // 列表改变时先重置折叠状态，等显示名称批量解析完再展开
+    setRowsReady(false);
+
+    let alive = true;
+    const ensure = () => {
+      if (alive) setRowsReady(true);
+    };
+    const fallback = setTimeout(ensure, 800);
+
+    void Promise.allSettled(
+      versions.map((v) =>
+        GetInstanceDisplayVersion(v).then((d) => ({ id: v, display: d })),
+      ),
+    ).then((results) => {
+      clearTimeout(fallback);
+      if (!alive) return;
+      const merged: Record<string, string> = {};
+
+      for (const result of results) {
+        if (
+          result.status === "fulfilled" &&
+          result.value.display &&
+          result.value.display !== result.value.id
+        )
+          merged[result.value.id] = result.value.display;
+      }
+      // 一次性合并：逐条 setState 会让行高随每个到货的名字各跳一次
+      if (Object.keys(merged).length > 0)
+        setDisplayNames((prev) => ({ ...prev, ...merged }));
+      setRowsReady(true);
+    });
+
+    return () => {
+      alive = false;
+      clearTimeout(fallback);
+    };
+  }, [versions]);
 
   // 选中项 / 列表变化后测量高亮块几何，供下方位移动画使用（下一帧再量一次，
   // 覆盖列表布局动画尚未落定的情况）。用 rect 差值测量，不依赖 offsetParent。
@@ -1009,13 +1086,25 @@ const InstancesPage: React.FC = () => {
       const containerRect = container.getBoundingClientRect();
       const nodeRect = node.getBoundingClientRect();
 
+      // 列表用 gap-0.5(0.125rem=2px)，选中项之前的每个 gap 都会累积偏移。
+      // 计算选中项在可见列表中的序号，补偿之前所有 gap 的总高度。
+      const selectedIndex = filteredVersions.indexOf(selected);
+      const gapOffset = selectedIndex > 0 ? selectedIndex * 2 : 0; // gap-0.5 = 2px
+
       setHighlight({
-        top: nodeRect.top - containerRect.top + container.scrollTop,
+        top: nodeRect.top - containerRect.top + container.scrollTop - gapOffset,
         height: nodeRect.height,
       });
     };
 
-    measure();
+    // 首次进入页面时 rowsReady 会从 false→true 触发折叠动画(0fr→1fr, 250ms)，
+    // 必须等动画完成后再测量，否则拿到的是压缩状态的错误高度/位置。
+    // 后续切换实例时 rowsReady 恒为 true，动画已结束，可以立即测量。
+    if (!rowsReady) {
+      return; // 动画尚未开始，等下一轮
+    }
+
+    const initialDelay = setTimeout(measure, 260); // 等折叠动画(250ms)结束
 
     // 跟随真实尺寸变化：自定义名是异步返回的，行内容变高后 pill 也必须跟着变。
     // 之前只依赖 [selected, versions.length, loading]，异步到货时不会重测，
@@ -1025,8 +1114,11 @@ const InstancesPage: React.FC = () => {
     observer.observe(node);
     if (node.firstElementChild) observer.observe(node.firstElementChild);
 
-    return () => observer.disconnect();
-  }, [selected, versions.length, loading, rowsReady]);
+    return () => {
+      clearTimeout(initialDelay);
+      observer.disconnect();
+    };
+  }, [selected, versions.length, loading, rowsReady, filteredVersions]);
   const [contentSearch, setContentSearch] = useState("");
   const [contentBusy, setContentBusy] = useState("");
   const [newName, setNewName] = useState("");
@@ -1034,9 +1126,6 @@ const InstancesPage: React.FC = () => {
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
   const [menuAction, setMenuAction] = useState<null | "rename" | "copy">(null);
   // 拖拽文件安装：拖入时高亮 + zip 类别选择弹层
-  const [dragActive, setDragActive] = useState(false);
-  const [dropChoice, setDropChoice] = useState<string | null>(null);
-  const pendingDropPaths = useRef<string[]>([]);
   /** 内容搜索框外层容器（Ctrl+F 用，HeroUI Input 本体 ref 不可靠） */
   const contentSearchRef = useRef<HTMLDivElement | null>(null);
   const [copyName, setCopyName] = useState("");
@@ -1135,7 +1224,10 @@ const InstancesPage: React.FC = () => {
     const entries = await Promise.all(
       versionIds.map(async (v) => {
         try {
-          return [v, await GetInstanceVisual(v, "")] as const;
+          const visual = await GetInstanceVisual(v, "");
+
+          // 后端异常/浏览器 mock 可能回 null：跳过该图标而不是炸掉整轮加载
+          return visual ? ([v, visual] as const) : null;
         } catch {
           return null;
         }
@@ -1154,8 +1246,21 @@ const InstancesPage: React.FC = () => {
     setBrokenIcons({});
   }, []);
 
+  // ---------- 并发守卫 ----------
+  // selectVersion 序号：快速连点切换实例时，慢的旧响应会晚到并覆盖
+  // details/profile/后端选中态，只有"最后一次点击"的响应允许落盘。
+  const selectionSeqRef = useRef(0);
+  // reloadAll 重入保护：instance:changed 事件与用户操作可能并发触发多轮
+  // 扫描，交错写 snap/folders/visuals。在途时把新请求合并成收尾的一次补跑，
+  // 所有调用方都 await 到"本轮连同补跑全部结束"。
+  const reloadBusyRef = useRef(false);
+  const reloadQueuedRef = useRef<{ folder?: string } | null>(null);
+  const reloadRunningRef = useRef<Promise<void> | null>(null);
+
   const selectVersion = useCallback(
     async (versionId: string, mcDir: string) => {
+      const seq = ++selectionSeqRef.current;
+
       setSelected(versionId);
       setDetails(null);
       setProfile(null);
@@ -1167,8 +1272,12 @@ const InstancesPage: React.FC = () => {
       setUpdateDetail(null);
       setUpdateProgress("");
       try {
-        setDetails(await GetVersionDetails(versionId));
+        const d = await GetVersionDetails(versionId);
+
+        if (seq !== selectionSeqRef.current) return; // 已被更新的点击超越
+        setDetails(d);
       } catch (ex) {
+        if (seq !== selectionSeqRef.current) return;
         setStatus(
           t("读取实例详情失败：{0}", { "0": (ex as Error)?.message ?? ex }),
         );
@@ -1178,15 +1287,45 @@ const InstancesPage: React.FC = () => {
           await GetVersionProfile(mcDir, versionId),
         );
 
+        if (seq !== selectionSeqRef.current) return;
         setProfile(loaded);
         setJvmText((loaded?.AdditionalJvmArguments ?? []).join("\n"));
         setGameText((loaded?.AdditionalGameArguments ?? []).join("\n"));
         setEnvText((loaded?.AdditionalEnvironmentVariables ?? []).join("\n"));
       } catch (ex) {
+        if (seq !== selectionSeqRef.current) return;
         setStatus(
           t("读取实例设置失败：{0}", { "0": (ex as Error)?.message ?? ex }),
         );
       }
+      // 加载实例 Java 配置
+      try {
+        const { GetInstanceJavaConfig } = await import(
+          "../../wailsjs/go/bindings/InstanceAPI"
+        );
+        const loaded = await GetInstanceJavaConfig(versionId);
+
+        if (seq !== selectionSeqRef.current) return;
+        if (loaded) {
+          setJavaConfig({
+            JavaExecutable: loaded.JavaExecutable || "",
+            MinMemoryMB: loaded.MinMemoryMB || 0,
+            MaxMemoryMB: loaded.MaxMemoryMB || 0,
+            AdditionalJvmArguments: loaded.AdditionalJvmArguments || [],
+            AdditionalGameArguments: loaded.AdditionalGameArguments || [],
+          });
+          setJavaConfigJvmText(
+            (loaded.AdditionalJvmArguments || []).join("\n"),
+          );
+          setJavaConfigGameText(
+            (loaded.AdditionalGameArguments || []).join("\n"),
+          );
+        }
+      } catch (ex) {
+        // Java 配置加载失败不阻塞，使用默认值
+        console.warn("加载 Java 配置失败:", ex);
+      }
+      if (seq !== selectionSeqRef.current) return; // 别让旧选择覆盖新选择
       try {
         await SelectInstance(versionId);
       } catch {
@@ -1198,44 +1337,64 @@ const InstancesPage: React.FC = () => {
 
   const reloadAll = useCallback(
     async (folder?: string) => {
-      setLoading(true);
-      setStatus("");
-      try {
-        const snap = await loadSnapshot(folder);
+      const run = async (target?: string) => {
+        setLoading(true);
+        setStatus("");
+        try {
+          const snap = await loadSnapshot(target);
 
-        setFolders(asArray(await GetProfileFolders()));
-        const ids = snap.VersionIds ?? [];
+          setFolders(asArray(await GetProfileFolders()));
+          const ids = snap.VersionIds ?? [];
 
-        await loadVisuals(ids);
-        // 解析展示版本号（加载器实例显示其继承的 MC 版本）
-        ids.forEach((v) => {
-          GetInstanceDisplayVersion(v)
-            .then((d) => {
-              if (d && d !== v) setDisplayNames((p) => ({ ...p, [v]: d }));
-            })
-            .catch(() => {
-              /* 回落显示版本 ID */
-            });
-        });
-        if (ids.length > 0) {
-          await selectVersion(
-            snap.SelectedVersionId && ids.includes(snap.SelectedVersionId)
-              ? snap.SelectedVersionId
-              : ids[0],
-            snap.MinecraftDirectory,
+          await loadVisuals(ids);
+          // 展示名（加载器实例的第二行）由上方 rowsReady 的批量效果统一解析：
+          // 首次进列表等它就绪再展开行（防逐条变高抖动），后续变更去重后增量合并
+          if (ids.length > 0) {
+            await selectVersion(
+              snap.SelectedVersionId && ids.includes(snap.SelectedVersionId)
+                ? snap.SelectedVersionId
+                : ids[0],
+              snap.MinecraftDirectory,
+            );
+          } else {
+            setSelected("");
+            setDetails(null);
+            setProfile(null);
+          }
+        } catch (ex) {
+          setStatus(
+            t("读取实例列表失败：{0}", { "0": (ex as Error)?.message ?? ex }),
           );
-        } else {
-          setSelected("");
-          setDetails(null);
-          setProfile(null);
+        } finally {
+          setLoading(false);
         }
-      } catch (ex) {
-        setStatus(
-          t("读取实例列表失败：{0}", { "0": (ex as Error)?.message ?? ex }),
-        );
-      } finally {
-        setLoading(false);
+      };
+
+      if (reloadBusyRef.current) {
+        // 已有扫描在途：合并为结束时的一次补跑（folder 以最新请求为准），
+        // 并挂在同一轮链上，让调用方的 await 语义不变。
+        reloadQueuedRef.current = { folder };
+
+        return reloadRunningRef.current;
       }
+      reloadBusyRef.current = true;
+      const chain = (async () => {
+        try {
+          await run(folder);
+          while (reloadQueuedRef.current) {
+            const next = reloadQueuedRef.current;
+
+            reloadQueuedRef.current = null;
+            await run(next.folder);
+          }
+        } finally {
+          reloadBusyRef.current = false;
+          reloadRunningRef.current = null;
+        }
+      })();
+
+      reloadRunningRef.current = chain;
+      await chain;
     },
     [loadSnapshot, loadVisuals, selectVersion],
   );
@@ -1249,7 +1408,20 @@ const InstancesPage: React.FC = () => {
 
     const offChanged = EventsOn("instance:changed", changed);
 
-    return () => offChanged();
+    // 保存 / 添加的游戏目录下没有任何版本时，后端推送温和提示（不是错误）。
+    const offEmptyDirectory = EventsOn(
+      "instance:emptyDirectory",
+      (path: string) => {
+        setStatus(
+          t("该目录下没有发现 Minecraft 版本：{0}", { "0": path ?? "" }),
+        );
+      },
+    );
+
+    return () => {
+      offChanged();
+      offEmptyDirectory();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1314,6 +1486,63 @@ const InstancesPage: React.FC = () => {
       setStatus(
         t("打开文件夹失败：{0}", { "0": (ex as Error)?.message ?? ex }),
       );
+    }
+  };
+
+  const saveJavaConfig = async () => {
+    if (!selected) return;
+    setJavaSaving(true);
+    try {
+      const { SaveInstanceJavaConfig } = await import(
+        "../../wailsjs/go/bindings/InstanceAPI"
+      );
+
+      const config: config.JavaConfig = {
+        JavaExecutable: javaConfig.JavaExecutable.trim(),
+        MinMemoryMB: javaConfig.MinMemoryMB,
+        MaxMemoryMB: javaConfig.MaxMemoryMB,
+        AdditionalJvmArguments: javaConfigJvmText
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0),
+        AdditionalGameArguments: javaConfigGameText
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0),
+      };
+
+      await SaveInstanceJavaConfig(selected, config);
+      notify.success(t("Java 设置已保存"));
+    } catch (ex) {
+      notify.error(t("保存失败：{0}", { "0": (ex as Error)?.message ?? ex }));
+    } finally {
+      setJavaSaving(false);
+    }
+  };
+
+  const resetJavaConfig = async () => {
+    if (!selected) return;
+    try {
+      const { DeleteInstanceJavaConfig } = await import(
+        "../../wailsjs/go/bindings/InstanceAPI"
+      );
+
+      await DeleteInstanceJavaConfig(selected);
+
+      // 重置状态
+      setJavaConfig({
+        JavaExecutable: "",
+        MinMemoryMB: 0,
+        MaxMemoryMB: 0,
+        AdditionalJvmArguments: [],
+        AdditionalGameArguments: [],
+      });
+      setJavaConfigJvmText("");
+      setJavaConfigGameText("");
+
+      notify.success(t("已重置为默认设置"));
+    } catch (ex) {
+      notify.error(t("重置失败：{0}", { "0": (ex as Error)?.message ?? ex }));
     }
   };
 
@@ -1443,7 +1672,7 @@ const InstancesPage: React.FC = () => {
     let result: launch.LaunchResult;
 
     try {
-      result = await LaunchVersion(versionId, "", null);
+      result = await LaunchVersion(versionId, "", null, "");
     } catch (ex) {
       alert(t("启动失败：{0}", { "0": (ex as Error)?.message ?? ex }), {
         severity: "danger",
@@ -1574,120 +1803,9 @@ const InstancesPage: React.FC = () => {
     });
   };
 
-  // ---------- 拖拽安装 ----------
-  // Wails OnFileDrop 给绝对路径：jar → 当前实例 mods 目录；
-  // zip 先按存档结构自动识别，识别不出弹类别选择（资源包/光影）。
-
-  const handleDropImport = async (paths: string[]) => {
-    if (paths.length === 0) return;
-    if (!snap?.MinecraftDirectory || !details?.ContentDirectory) {
-      alert(t("请先选择一个实例，再拖入文件。"), { severity: "warning" });
-
-      return;
-    }
-    const contentDir = details.ContentDirectory.replace(/[\\/]+$/, "");
-    const zips: string[] = [];
-
-    for (const path of paths) {
-      const lower = path.toLowerCase();
-
-      if (lower.endsWith(".jar")) {
-        try {
-          await CopyFileIntoDirectory(path, `${contentDir}/mods`);
-          setStatus(
-            t("已安装模组 {0}。", { "0": path.split(/[\\/]/).pop() ?? path }),
-          );
-        } catch (ex) {
-          alert(
-            t("安装 {0} 失败：{1}", {
-              "0": path.split(/[\\/]/).pop() ?? path,
-              "1": (ex as Error)?.message ?? ex,
-            }),
-            {
-              severity: "danger",
-            },
-          );
-        }
-        continue;
-      }
-      if (lower.endsWith(".zip")) {
-        // 存档 zip 有层级特征，先尝试自动识别；识别不出让用户选类别。
-        try {
-          await ImportSave(path, joinPath(contentDir, "saves"));
-          setStatus(
-            t("已导入存档 {0}。", { "0": path.split(/[\\/]/).pop() ?? path }),
-          );
-          setDetails(await GetVersionDetails(selected));
-          continue;
-        } catch {
-          /* 不是存档结构，走手动选择 */
-        }
-        zips.push(path);
-        continue;
-      }
-      alert(
-        t("不支持的文件类型：{0}（仅支持 .jar 模组与 .zip 资源包/光影/存档）", {
-          "0": path.split(/[\\/]/).pop() ?? path,
-        }),
-        { severity: "warning" },
-      );
-    }
-    if (zips.length > 0) {
-      pendingDropPaths.current = zips;
-      setDropChoice(zips[0].split(/[\\/]/).pop() ?? zips[0]);
-    }
-    setDragActive(false);
-  };
-
-  // Wails 原生文件拖放监听（浏览器 dev 环境下 runtime 不存在则自动无效果）
-  useEffect(() => {
-    OnFileDrop((_x, _y, paths) => {
-      setDragActive(false);
-      void handleDropImport(paths);
-    }, false);
-
-    return () => {
-      OnFileDropOff();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只注册一次，回调用到的都是 ref/state setter
-  }, []);
-
-  /** 用户给拖入的 zip 选定类别后落位。 */
-  const finishDropChoice = async (kind: "resourcepacks" | "shaderpacks") => {
-    const paths = pendingDropPaths.current;
-
-    setDropChoice(null);
-    pendingDropPaths.current = [];
-    if (!details?.ContentDirectory || paths.length === 0) return;
-    const target = joinPath(
-      details.ContentDirectory.replace(/[\\/]+$/, ""),
-      kind,
-    );
-
-    for (const path of paths) {
-      try {
-        await CopyFileIntoDirectory(path, target);
-        setStatus(
-          t("已导入 {0}。", { "0": path.split(/[\\/]/).pop() ?? path }),
-        );
-      } catch (ex) {
-        alert(
-          t("导入 {0} 失败：{1}", {
-            "0": path,
-            "1": (ex as Error)?.message ?? ex,
-          }),
-          {
-            severity: "danger",
-          },
-        );
-      }
-    }
-    try {
-      setDetails(await GetVersionDetails(selected));
-    } catch {
-      /* 列表刷新失败不打断提示 */
-    }
-  };
+  // 拖拽安装已全局化：FileDropOverlay 统一注册 Wails OnFileDrop（含 zip
+  // 类别嗅探与选择弹层），任何页面拖入都会装进当前实例并触发 instance:changed
+  // 刷新本页内容列表。
 
   // ---------- 列表键盘操作与快捷键 ----------
   // Ctrl+F 聚焦内容搜索框；实例列表支持 ↑/↓ 切换、双击空白处去下载页。
@@ -1713,13 +1831,14 @@ const InstancesPage: React.FC = () => {
   const handleListKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
-    const index = versions.indexOf(selected);
+    const index = filteredVersions.indexOf(selected);
     const next =
       e.key === "ArrowDown"
-        ? versions[Math.min(versions.length - 1, index + 1)]
-        : versions[Math.max(0, index - 1)];
+        ? filteredVersions[Math.min(filteredVersions.length - 1, index + 1)]
+        : filteredVersions[Math.max(0, index - 1)];
 
     if (next && next !== selected && snap) {
+      setExpandedInstance(true);
       void selectVersion(next, snap.MinecraftDirectory);
     }
   };
@@ -1793,8 +1912,12 @@ const InstancesPage: React.FC = () => {
     }
   }, [details, contentTab]);
 
+  // 搜索词降优先级：输入框始终即时响应，几百行的过滤与列表重渲染
+  // 走后台优先级、可被打断——大模组列表下打字不掉帧
+  const deferredSearch = useDeferredValue(contentSearch);
+
   const filteredContent = useMemo(() => {
-    const q = contentSearch.trim().toLowerCase();
+    const q = deferredSearch.trim().toLowerCase();
 
     if (!q) return contentEntries;
 
@@ -1804,7 +1927,7 @@ const InstancesPage: React.FC = () => {
         // 中文名（MC百科译名）也参与过滤：输入"钠"能找到 sodium-*.jar
         (modNames[e.Name] || "").toLowerCase().includes(q),
     );
-  }, [contentEntries, contentSearch, modNames]);
+  }, [contentEntries, deferredSearch, modNames]);
 
   const contentSummary = useMemo(() => {
     const total = contentEntries.length;
@@ -1921,6 +2044,7 @@ const InstancesPage: React.FC = () => {
     setBulkUpdating(true);
     let okCount = 0;
     let failedCount = 0;
+    let bulkFirstError = "";
 
     try {
       for (const entry of bulkUpdatableFiles) {
@@ -1938,8 +2062,13 @@ const InstancesPage: React.FC = () => {
             entry.SHA1 ?? "",
           );
           okCount++;
-        } catch {
+        } catch (ex) {
           failedCount++;
+          // 留下首条失败原因：只有"失败 N 个"的话，用户分不清是网络问题
+          // 还是作者禁止第三方分发（403），无从决定下一步
+          if (!bulkFirstError) {
+            bulkFirstError = (ex as Error)?.message ?? String(ex);
+          }
         }
       }
       try {
@@ -1960,7 +2089,12 @@ const InstancesPage: React.FC = () => {
       });
 
       setUpdateProgress("");
-      alert(message, { severity: failedCount > 0 ? "warning" : "success" });
+      alert(
+        failedCount > 0 && bulkFirstError
+          ? `${message}\n${t("首个失败原因：{0}", { "0": bulkFirstError })}`
+          : message,
+        { severity: failedCount > 0 ? "warning" : "success" },
+      );
     } finally {
       setBulkUpdating(false);
     }
@@ -2200,7 +2334,6 @@ const InstancesPage: React.FC = () => {
       },
       { label: t("内容目录"), value: details.ContentDirectory },
       { label: t("Java 要求"), value: details.JavaRequirement },
-      { label: t("主类"), value: details.MainClass },
     ];
   }, [details]);
 
@@ -2247,120 +2380,119 @@ const InstancesPage: React.FC = () => {
     (list ?? []).length;
 
   return (
-    <div
-      className="relative h-full w-full flex flex-col overflow-hidden"
-      onDragLeave={(e) => {
-        if (e.currentTarget === e.target) setDragActive(false);
-      }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragActive(true);
-      }}
-      // 实际的落点由 Wails OnFileDrop 处理（能拿到绝对路径），这里只做视觉提示
-    >
-      {/* 拖拽安装提示层 */}
-      {dragActive ? (
-        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-primary/60 bg-primary/5">
-          <span className="rounded-full bg-primary/15 px-4 py-1.5 text-sm font-medium text-primary">
-            {t("松开以安装（模组 .jar / 资源包·光影·存档 .zip）")}
-          </span>
-        </div>
-      ) : null}
-      {/* 标题区（窄窗口时控件换行，避免溢出） */}
-      <div className="px-6 pt-5 pb-3 flex flex-col gap-2 flex-shrink-0">
-        <div className="flex items-end justify-between gap-4">
-          <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-            <h1 className="text-xl font-semibold text-gray-800 dark:text-gray-200">
-              {t("实例管理")}
-            </h1>
+    <div className="relative h-full w-full flex flex-col overflow-hidden">
+      {/* 拖拽安装的视觉提示与落点处理都在全局 FileDropOverlay（任何页面拖入都生效） */}
+      {/* ==== 指挥横幅：目录选择 + 全部管理动作 ==== */}
+      <div className="px-6 pt-5 pb-2 flex-shrink-0">
+        <div className="rounded-large border nya-border nya-panel px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+          {/* 左：游戏目录上下文 + 扫描状态 */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Select
+              aria-label={t("游戏目录")}
+              className="min-w-[200px] max-w-[320px]"
+              items={folders.map((f) => ({ key: f }))}
+              popoverProps={selectPopoverProps}
+              selectedKeys={
+                snap?.MinecraftDirectory ? [snap.MinecraftDirectory] : []
+              }
+              size="sm"
+              variant="bordered"
+              onSelectionChange={(keys) =>
+                void onFolderChange(String(Array.from(keys)[0] ?? ""))
+              }
+            >
+              {(item) => <SelectItem key={item.key}>{item.key}</SelectItem>}
+            </Select>
+            <Button
+              isIconOnly
+              aria-label={t("添加目录")}
+              size="sm"
+              title={t("添加游戏目录")}
+              variant="flat"
+              onPress={() => void addFolder()}
+            >
+              ＋
+            </Button>
             {loading ? (
-              <div className="flex items-center gap-2 text-xs text-gray-400">
-                <Spinner size="sm" /> {t("正在扫描实例…")}
-              </div>
-            ) : (
-              <div className="truncate text-[11px] text-gray-400">
-                {t("游戏目录：")}
-                {snap?.MinecraftDirectory || t("未设置")}
-              </div>
-            )}
+              <Chip size="sm" variant="flat">
+                {t("正在扫描实例…")}
+              </Chip>
+            ) : null}
+            {snap?.ErrorMessage ? (
+              <Chip color="danger" size="sm" variant="flat">
+                {t("扫描失败")}
+              </Chip>
+            ) : null}
           </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Select
-            aria-label={t("游戏目录")}
-            className="min-w-[180px] flex-1 max-w-xs"
-            items={folders.map((f) => ({ key: f }))}
-            popoverProps={{ motionProps: popoverMotionProps }}
-            selectedKeys={
-              snap?.MinecraftDirectory ? [snap.MinecraftDirectory] : []
-            }
-            size="sm"
-            variant="bordered"
-            onSelectionChange={(keys) =>
-              void onFolderChange(String(Array.from(keys)[0] ?? ""))
-            }
-          >
-            {(item) => <SelectItem key={item.key}>{item.key}</SelectItem>}
-          </Select>
-          <Button
-            isIconOnly
-            aria-label={t("添加目录")}
-            size="sm"
-            title={t("添加游戏目录")}
-            variant="flat"
-            onPress={() => void addFolder()}
-          >
-            ＋
-          </Button>
-          <Button
-            size="sm"
-            startContent={<ImportIcon />}
-            variant="flat"
-            onPress={() => void openImport()}
-          >
-            {t("导入其他启动器")}
-          </Button>
-          <Button
-            size="sm"
-            startContent={<RefreshIcon />}
-            variant="flat"
-            onPress={() => void reloadAll()}
-          >
-            {t("重新扫描")}
-          </Button>
-          <Button
-            size="sm"
-            startContent={<FolderIcon />}
-            variant="flat"
-            onPress={() => void openGameFolder()}
-          >
-            {t("打开游戏目录")}
-          </Button>
-          <Button
-            isDisabled={!snap?.MinecraftDirectory}
-            size="sm"
-            startContent={<RewindIcon />}
-            variant="flat"
-            onPress={() => {
-              if (!snap?.MinecraftDirectory) return;
-              setRewindEntry({
-                kind: "instance",
-                name: snap.SelectedVersionId || snap.MinecraftDirectory,
-                path: snap.MinecraftDirectory,
-              });
-            }}
-          >
-            Rewind
-          </Button>
+
+          <div className="flex-1" />
+
+          {/* 右：全局管理动作 */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="sm"
+              startContent={<ImportIcon />}
+              variant="flat"
+              onPress={() => void openImport()}
+            >
+              {t("导入其他启动器")}
+            </Button>
+            <Button
+              size="sm"
+              startContent={<RefreshIcon />}
+              variant="flat"
+              onPress={() => void reloadAll()}
+            >
+              {t("重新扫描")}
+            </Button>
+            <Button
+              size="sm"
+              startContent={<FolderIcon />}
+              variant="flat"
+              onPress={() => void openGameFolder()}
+            >
+              {t("打开游戏目录")}
+            </Button>
+            <Button
+              isDisabled={!snap?.MinecraftDirectory}
+              size="sm"
+              startContent={<RewindIcon />}
+              variant="flat"
+              onPress={() => {
+                if (!snap?.MinecraftDirectory) return;
+                setRewindEntry({
+                  kind: "instance",
+                  name: snap.SelectedVersionId || snap.MinecraftDirectory,
+                  path: snap.MinecraftDirectory,
+                });
+              }}
+            >
+              Rewind
+            </Button>
+            {/* 插件页面按钮插槽：没有插件注册时组件直接返回 null，不占位 */}
+            <PageActionSlot pageId="instances" />
+          </div>
         </div>
       </div>
 
-      {/* 左列表 + 右详情（窄窗口改为上下堆叠：并排时右侧详情会被压成几十像素） */}
-      <div className="flex-1 min-h-0 flex flex-col gap-4 px-6 pb-5 md:flex-row">
-        {/* 左：实例列表（顶层面板用 nya-panel 保证毛玻璃可见） */}
-        <div className="flex max-h-44 w-full flex-shrink-0 flex-col rounded-xl border nya-border nya-panel p-2 md:max-h-none md:w-56">
-          <div className="px-2 pb-1.5 pt-1 text-[13px] font-semibold text-gray-600 dark:text-gray-300">
-            {t("实例版本")}
+      {/* 指挥中心单页流：横幅之下改为左右两列布局 */}
+      <div className="flex min-h-0 flex-1 gap-4 px-6 pb-5">
+        {/* 左列：实例列表面板 */}
+        <div className="flex w-[360px] min-h-0 flex-shrink-0 flex-col rounded-large border nya-border nya-panel p-2">
+          <div className="flex items-center gap-2 px-2 pb-1.5 pt-1">
+            <span className="text-[11px] text-gray-400">
+              {filteredVersions.length} / {versions.length}
+            </span>
+            <div className="flex-1" />
+            <Input
+              aria-label={t("搜索实例")}
+              className="w-40 max-w-full"
+              size="sm"
+              startContent={<Search20Regular className="h-4 w-4" />}
+              value={versionSearch}
+              variant="flat"
+              onValueChange={setVersionSearch}
+            />
           </div>
           <div
             ref={listRef}
@@ -2375,14 +2507,31 @@ const InstancesPage: React.FC = () => {
             onKeyDown={handleListKeyDown}
           >
             {highlight ? (
-              <div
+              <motion.div
+                key={`highlight-${selected}`}
                 aria-hidden
-                className="nya-instance-pill pointer-events-none absolute left-0 right-0 z-0 rounded-lg bg-blue-100 shadow-sm dark:bg-blue-900/40"
+                animate={{
+                  opacity: 1,
+                  x: 0,
+                  transition: {
+                    opacity: { duration: 0.2, delay: rowsReady ? 0.26 : 0 },
+                    x: {
+                      duration: 0.3,
+                      delay: rowsReady ? 0.26 : 0,
+                      ease: [0.22, 1, 0.36, 1],
+                    },
+                  },
+                }}
+                className="nya-instance-pill pointer-events-none absolute left-0 right-0 z-0 overflow-hidden rounded-lg bg-blue-100/70 dark:bg-blue-900/30"
+                initial={{ opacity: 0, x: -20 }}
                 style={{ height: highlight.height, top: highlight.top }}
-              />
+              >
+                {/* 无卡列表的选中态：一条左侧强调线，不靠阴影抬升 */}
+                <span className="absolute inset-y-0 left-0 w-[3px] bg-blue-500" />
+              </motion.div>
             ) : null}
             <AnimatePresence initial={false}>
-              {versions.map((v) => (
+              {filteredVersions.map((v) => (
                 <motion.div
                   key={v}
                   layout
@@ -2412,6 +2561,7 @@ const InstancesPage: React.FC = () => {
                             : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
                         }`}
                         onClick={() => {
+                          setExpandedInstance(true);
                           if (snap)
                             void selectVersion(v, snap.MinecraftDirectory);
                         }}
@@ -2448,28 +2598,17 @@ const InstancesPage: React.FC = () => {
                   <span className="text-gray-400">{t("没有已安装的实例")}</span>
                 )}
               </div>
+            ) : !loading && filteredVersions.length === 0 ? (
+              <div className="px-2 py-6 text-center text-xs text-gray-400">
+                {t("没有名称匹配的实例")}
+              </div>
             ) : null}
-          </div>
-          <div className="px-2 pt-2 text-[10px] text-gray-400">
-            {versions.length} {t("个实例")}
           </div>
         </div>
 
-        {/* 右：详情卡（同左，顶层面板用 nya-panel） */}
-        <div className="flex-1 min-w-0 rounded-xl border nya-border nya-panel flex flex-col overflow-hidden">
-          {!selected ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-2">
-              <span className="text-4xl text-gray-300 dark:text-gray-600">
-                ▦
-              </span>
-              <span className="text-lg font-semibold text-gray-400">
-                {t("未选择实例")}
-              </span>
-              <span className="text-xs text-gray-400">
-                {t("从左侧选择一个实例，查看它的详情")}
-              </span>
-            </div>
-          ) : (
+        {/* 右列：实例详情面板 */}
+        {selected && expandedInstance ? (
+          <div className="nya-border flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border px-4 py-3">
             <SwitchTransition
               activeKey={selected}
               className="flex min-h-0 flex-1 flex-col"
@@ -2481,10 +2620,9 @@ const InstancesPage: React.FC = () => {
                   <Spinner size="sm" /> {t("正在读取实例详情…")}
                 </div>
               ) : (
-                <div className="nya-instance-stagger flex min-h-0 flex-1 flex-col p-4 overflow-hidden">
-                  {/* 详情头部（窄窗口时按钮换行） */}
-                  <div className="mb-3 flex flex-wrap items-center gap-3 flex-shrink-0">
-                    {renderInstanceIcon(selected, "w-12 h-12")}
+                <div className="nya-instance-stagger flex min-h-0 flex-1 flex-col overflow-hidden">
+                  {/* 头部信息区域 */}
+                  <div className="nya-border mb-3 flex flex-shrink-0 items-center gap-3 border-b pb-3">
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-lg font-semibold text-gray-800 dark:text-gray-200">
                         {selected}
@@ -2520,14 +2658,24 @@ const InstancesPage: React.FC = () => {
                     >
                       {t("打开文件夹")}
                     </Button>
+                    <Button
+                      aria-label={t("收起详情")}
+                      size="sm"
+                      startContent={<ChevronUpIcon />}
+                      variant="flat"
+                      onPress={() => setExpandedInstance(false)}
+                    >
+                      {t("收起")}
+                    </Button>
                   </div>
 
-                  {/* 标签页 */}
-                  <div className="flex flex-shrink-0 items-center gap-1 pb-1">
+                  {/* 标签页导航 */}
+                  <div className="flex flex-shrink-0 items-center gap-5 pb-1">
                     {(
                       [
                         ["overview", t("概览")],
                         ["launch", t("启动设置")],
+                        ["java", t("Java 设置")],
                         ["content", t("内容")],
                         ["gamesettings", t("游戏设置")],
                         ["manage", t("管理")],
@@ -2535,10 +2683,10 @@ const InstancesPage: React.FC = () => {
                     ).map(([key, label]) => (
                       <button
                         key={key}
-                        className={`cursor-pointer rounded-lg px-3 py-1.5 text-[13px] transition-colors ${
+                        className={`cursor-pointer border-b-2 px-0.5 pt-1 pb-2 text-[13px] transition-colors ${
                           tab === key
-                            ? "bg-blue-100 dark:bg-blue-900/40 font-semibold text-blue-600 dark:text-blue-300"
-                            : "text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
+                            ? "border-blue-500 font-semibold text-blue-600 dark:text-blue-300"
+                            : "border-transparent text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
                         }`}
                         onClick={() => setTab(key)}
                       >
@@ -2547,6 +2695,7 @@ const InstancesPage: React.FC = () => {
                     ))}
                   </div>
 
+                  {/* 标签页内容区域 */}
                   <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pr-1">
                     <SwitchTransition
                       activeKey={tab}
@@ -2587,183 +2736,61 @@ const InstancesPage: React.FC = () => {
                       {/* ===== 启动设置 ===== */}
                       {tab === "launch" && profile && (
                         <div className="flex flex-col gap-3 pt-2">
-                          <label className="flex items-center gap-2 text-[13px] text-gray-700 dark:text-gray-200">
-                            <Switch
-                              isSelected={!!profile.IsVersionIsolationEnabled}
-                              size="sm"
-                              onValueChange={(v) =>
-                                setProfile({
-                                  ...profile,
-                                  IsVersionIsolationEnabled: v,
-                                })
-                              }
-                            />
-
-                            {t("版本隔离（模组、存档等分到实例目录）")}
-                          </label>
-
-                          <div className="flex flex-col gap-2">
-                            <label className="flex items-center gap-2 text-[13px] text-gray-700 dark:text-gray-200">
-                              <Switch
-                                isSelected={
-                                  !!profile.UseIndependentMemorySettings
-                                }
-                                size="sm"
-                                onValueChange={(v) =>
-                                  setProfile({
-                                    ...profile,
-                                    UseIndependentMemorySettings: v,
-                                  })
-                                }
-                              />
-
-                              {t("独立调整（关闭时使用全局内存设置）")}
-                            </label>
-                            <div className="flex items-center gap-3">
-                              <span className="w-24 flex-shrink-0 text-[13px] text-gray-400">
-                                {t("最小内存")}
-                              </span>
-                              <Slider
-                                aria-label={t("实例最小内存")}
-                                isDisabled={
-                                  !profile.UseIndependentMemorySettings
-                                }
-                                maxValue={4096}
-                                minValue={256}
-                                size="sm"
-                                step={256}
-                                value={profile.MinimumMemoryMb}
-                                onChange={(v) =>
-                                  setProfile({
-                                    ...profile,
-                                    MinimumMemoryMb: Math.round(
-                                      Array.isArray(v) ? v[0] : v,
-                                    ),
-                                  })
-                                }
-                              />
-                              <span className="w-20 flex-shrink-0 text-right text-xs text-gray-400">
-                                {profile.MinimumMemoryMb} MiB
-                              </span>
+                          {/* 窗口设置 */}
+                          <div className="nya-border rounded-lg border p-3">
+                            <div className="mb-2 text-[13px] font-medium text-gray-700 dark:text-gray-200">
+                              {t("窗口设置")}
                             </div>
-                            <div className="flex items-center gap-3">
-                              <span className="w-24 flex-shrink-0 text-[13px] text-gray-400">
-                                {t("最大内存")}
-                              </span>
-                              <Slider
-                                aria-label={t("实例最大内存")}
-                                isDisabled={
-                                  !profile.UseIndependentMemorySettings
-                                }
-                                maxValue={memoryMax}
-                                minValue={512}
-                                size="sm"
-                                step={256}
-                                value={Math.min(
-                                  profile.MaximumMemoryMb,
-                                  memoryMax,
-                                )}
-                                onChange={(v) =>
-                                  setProfile({
-                                    ...profile,
-                                    MaximumMemoryMb: Math.round(
-                                      Array.isArray(v) ? v[0] : v,
-                                    ),
-                                  })
-                                }
-                              />
-                              <span className="w-20 flex-shrink-0 text-right text-xs text-gray-400">
-                                {profile.MaximumMemoryMb} MiB
-                              </span>
-                            </div>
-                          </div>
+                            <div className="mb-3 grid grid-cols-2 gap-3">
+                              <div className="flex flex-col gap-1.5">
+                                <label className="text-[13px] text-gray-600 dark:text-gray-300">
+                                  {t("窗口宽度")}
+                                </label>
+                                <Input
+                                  placeholder="1920"
+                                  size="sm"
+                                  type="number"
+                                  value={
+                                    profile.WindowWidth > 0
+                                      ? String(profile.WindowWidth)
+                                      : ""
+                                  }
+                                  variant="bordered"
+                                  onValueChange={(v) => {
+                                    const num = parseInt(v, 10);
 
-                          <div className="rounded-xl nya-panel-inner p-3 flex flex-col gap-2.5">
-                            <label className="flex items-center gap-2 text-[13px] text-gray-700 dark:text-gray-200">
-                              <Switch
-                                isSelected={
-                                  !!profile.FollowGlobalAdvancedSettings
-                                }
-                                size="sm"
-                                onValueChange={(v) =>
-                                  setProfile({
-                                    ...profile,
-                                    FollowGlobalAdvancedSettings: v,
-                                  })
-                                }
-                              />
+                                    setProfile({
+                                      ...profile,
+                                      WindowWidth: isNaN(num) ? 0 : num,
+                                    });
+                                  }}
+                                />
+                              </div>
+                              <div className="flex flex-col gap-1.5">
+                                <label className="text-[13px] text-gray-600 dark:text-gray-300">
+                                  {t("窗口高度")}
+                                </label>
+                                <Input
+                                  placeholder="1080"
+                                  size="sm"
+                                  type="number"
+                                  value={
+                                    profile.WindowHeight > 0
+                                      ? String(profile.WindowHeight)
+                                      : ""
+                                  }
+                                  variant="bordered"
+                                  onValueChange={(v) => {
+                                    const num = parseInt(v, 10);
 
-                              {t("跟随全局高级启动设置（关闭后才能自定义）")}
-                            </label>
-                            <div className="grid grid-cols-2 gap-3">
-                              <Input
-                                label={t("窗口宽度")}
-                                size="sm"
-                                type="number"
-                                value={String(profile.WindowWidth)}
-                                variant="bordered"
-                                onValueChange={(v) =>
-                                  setProfile({
-                                    ...profile,
-                                    WindowWidth: Number(v) || 0,
-                                  })
-                                }
-                              />
-                              <Input
-                                label={t("窗口高度")}
-                                size="sm"
-                                type="number"
-                                value={String(profile.WindowHeight)}
-                                variant="bordered"
-                                onValueChange={(v) =>
-                                  setProfile({
-                                    ...profile,
-                                    WindowHeight: Number(v) || 0,
-                                  })
-                                }
-                              />
+                                    setProfile({
+                                      ...profile,
+                                      WindowHeight: isNaN(num) ? 0 : num,
+                                    });
+                                  }}
+                                />
+                              </div>
                             </div>
-                            <Input
-                              label={t("Java 可执行文件（留空自动检测）")}
-                              size="sm"
-                              value={profile.JavaExecutable}
-                              variant="bordered"
-                              onValueChange={(v) =>
-                                setProfile({ ...profile, JavaExecutable: v })
-                              }
-                            />
-                            <Select
-                              aria-label={t("进程优先级")}
-                              label={t("进程优先级")}
-                              popoverProps={{ motionProps: popoverMotionProps }}
-                              selectedKeys={[
-                                profile.ProcessPriority || "normal",
-                              ]}
-                              size="sm"
-                              onSelectionChange={(keys) =>
-                                setProfile({
-                                  ...profile,
-                                  ProcessPriority:
-                                    (Array.from(keys)[0] as string) || "normal",
-                                })
-                              }
-                            >
-                              {priorityKeys.map((key) => (
-                                <SelectItem key={key}>
-                                  {priorityLabel(key)}
-                                </SelectItem>
-                              ))}
-                            </Select>
-                            <Input
-                              label={t("包装命令（需含 %command% 占位）")}
-                              placeholder="gamemoderun %command%"
-                              size="sm"
-                              value={profile.WrapperCommand ?? ""}
-                              variant="bordered"
-                              onValueChange={(v) =>
-                                setProfile({ ...profile, WrapperCommand: v })
-                              }
-                            />
                             <label className="flex items-center gap-2 text-[13px] text-gray-700 dark:text-gray-200">
                               <Switch
                                 isSelected={!!profile.LaunchFullscreen}
@@ -2775,56 +2802,401 @@ const InstancesPage: React.FC = () => {
                                   })
                                 }
                               />
-
                               {t("全屏启动")}
                             </label>
-                            <div>
-                              <div className="mb-1 text-[13px] text-gray-600 dark:text-gray-300">
-                                {t("额外 JVM 参数（每行一个）")}
-                              </div>
-                              <Textarea
-                                minRows={2}
-                                size="sm"
-                                value={jvmText}
-                                variant="bordered"
-                                onValueChange={setJvmText}
-                              />
-                            </div>
-                            <div>
-                              <div className="mb-1 text-[13px] text-gray-600 dark:text-gray-300">
-                                {t("额外游戏参数（每行一个）")}
-                              </div>
-                              <Textarea
-                                minRows={2}
-                                size="sm"
-                                value={gameText}
-                                variant="bordered"
-                                onValueChange={setGameText}
-                              />
-                            </div>
-                            <div>
-                              <div className="mb-1 text-[13px] text-gray-600 dark:text-gray-300">
-                                {t("额外环境变量（每行一个，格式 KEY=VALUE）")}
-                              </div>
-                              <Textarea
-                                minRows={2}
-                                size="sm"
-                                value={envText}
-                                variant="bordered"
-                                onValueChange={setEnvText}
-                              />
-                            </div>
                           </div>
 
-                          <div>
+                          {/* 版本隔离 */}
+                          <label className="flex items-center gap-2 text-[13px] text-gray-700 dark:text-gray-200">
+                            <Switch
+                              isSelected={
+                                // 未显式设置（null）时回落到后端解析出的实际布局：
+                                // 全局默认为隔离，直接把 null 当 false 会让开关与真实行为相反
+                                profile.IsVersionIsolationEnabled ??
+                                details?.IsIsolated ??
+                                true
+                              }
+                              size="sm"
+                              onValueChange={(v) =>
+                                setProfile({
+                                  ...profile,
+                                  IsVersionIsolationEnabled: v,
+                                })
+                              }
+                            />
+                            {t("版本隔离（模组、存档等分到实例目录）")}
+                          </label>
+
+                          {/* ===== 高级设置（折叠） ===== */}
+                          <div className="nya-border my-2 border-t" />
+
+                          <div className="nya-border rounded-lg border">
+                            <button
+                              className="flex w-full cursor-pointer items-center justify-between rounded px-4 py-3 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-800"
+                              type="button"
+                              onClick={() =>
+                                setAdvancedSettingsExpanded(
+                                  !advancedSettingsExpanded,
+                                )
+                              }
+                            >
+                              <span className="flex items-center gap-2">
+                                <span>🔧</span>
+                                <span>{t("高级设置")}</span>
+                                {!advancedSettingsExpanded ? (
+                                  <span className="text-xs text-gray-400">
+                                    {t("（进程优先级、包装命令、环境变量等）")}
+                                  </span>
+                                ) : null}
+                              </span>
+                              {advancedSettingsExpanded ? (
+                                <ChevronUpIcon className="h-5 w-5" />
+                              ) : (
+                                <ChevronDownIcon className="h-5 w-5" />
+                              )}
+                            </button>
+
+                            {advancedSettingsExpanded ? (
+                              <div className="nya-border flex flex-col gap-3 border-t px-4 pt-3 pb-4">
+                                {/* 警告 */}
+                                <div className="nya-border rounded-lg border bg-yellow-500/10 px-4 py-3">
+                                  <div className="flex items-start gap-3">
+                                    <span className="mt-0.5 text-yellow-600">
+                                      ⚠️
+                                    </span>
+                                    <div className="flex-1 text-xs leading-relaxed text-gray-600 dark:text-gray-300">
+                                      {t(
+                                        "以下选项需要一定技术了解，不确定时请保持默认设置。",
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* 跟随全局设置 */}
+                                <label className="flex items-center gap-2 text-[13px] text-gray-700 dark:text-gray-200">
+                                  <Switch
+                                    isSelected={
+                                      !!profile.FollowGlobalAdvancedSettings
+                                    }
+                                    size="sm"
+                                    onValueChange={(v) =>
+                                      setProfile({
+                                        ...profile,
+                                        FollowGlobalAdvancedSettings: v,
+                                      })
+                                    }
+                                  />
+
+                                  {t(
+                                    "跟随全局高级启动设置（关闭后才能自定义）",
+                                  )}
+                                </label>
+
+                                {/* 进程优先级 */}
+                                <div className="flex flex-col gap-1.5">
+                                  <label className="text-[13px] text-gray-600 dark:text-gray-300">
+                                    {t("进程优先级（Windows）")}
+                                  </label>
+                                  <Select
+                                    isDisabled={
+                                      !!profile.FollowGlobalAdvancedSettings
+                                    }
+                                    popoverProps={selectPopoverProps}
+                                    selectedKeys={[
+                                      profile.ProcessPriority || "normal",
+                                    ]}
+                                    size="sm"
+                                    onSelectionChange={(keys) =>
+                                      setProfile({
+                                        ...profile,
+                                        ProcessPriority:
+                                          (Array.from(keys)[0] as string) ||
+                                          "normal",
+                                      })
+                                    }
+                                  >
+                                    {priorityKeys.map((key) => (
+                                      <SelectItem key={key}>
+                                        {priorityLabel(key)}
+                                      </SelectItem>
+                                    ))}
+                                  </Select>
+                                </div>
+
+                                {/* 包装命令 */}
+                                <div className="flex flex-col gap-1.5">
+                                  <label className="text-[13px] text-gray-600 dark:text-gray-300">
+                                    {t("包装命令")}
+                                  </label>
+                                  <Input
+                                    isDisabled={
+                                      !!profile.FollowGlobalAdvancedSettings
+                                    }
+                                    placeholder="gamemoderun %command%"
+                                    size="sm"
+                                    value={profile.WrapperCommand ?? ""}
+                                    variant="bordered"
+                                    onValueChange={(v) =>
+                                      setProfile({
+                                        ...profile,
+                                        WrapperCommand: v,
+                                      })
+                                    }
+                                  />
+                                </div>
+
+                                {/* 环境变量 */}
+                                <div>
+                                  <div className="mb-1 text-[13px] text-gray-600 dark:text-gray-300">
+                                    {t(
+                                      "附加环境变量（每行一个，格式 KEY=VALUE）",
+                                    )}
+                                  </div>
+                                  <Textarea
+                                    isDisabled={
+                                      !!profile.FollowGlobalAdvancedSettings
+                                    }
+                                    minRows={2}
+                                    size="sm"
+                                    value={envText}
+                                    variant="bordered"
+                                    onValueChange={setEnvText}
+                                  />
+                                </div>
+
+                                {/* 参数溯源 */}
+                                <div className="nya-border flex items-start gap-2.5 border-t pt-3">
+                                  <span className="mt-0.5 flex-none text-primary">
+                                    <ProvenanceIcon />
+                                  </span>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="text-[13px] font-medium text-gray-700 dark:text-gray-200">
+                                      {t("启动参数是怎么来的？")}
+                                    </div>
+                                    <div className="mt-0.5 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                                      {t(
+                                        "逐条列出上次启动时每个参数由谁添加，以及哪些被后面的同名参数覆盖。",
+                                      )}
+                                    </div>
+                                  </div>
+                                  <Button
+                                    className="flex-none"
+                                    size="sm"
+                                    variant="flat"
+                                    onPress={openProvenance}
+                                  >
+                                    {t("参数溯源")}
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          {/* 保存 */}
+                          <div className="nya-border my-2 border-t" />
+
+                          <div className="flex items-center gap-2">
                             <Button
                               color="primary"
                               isLoading={saving}
                               size="sm"
                               onPress={() => void saveProfile()}
                             >
-                              {t("保存实例设置")}
+                              {t("保存启动设置")}
                             </Button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ===== Java 设置 ===== */}
+                      {tab === "java" && (
+                        <div className="flex flex-col gap-4 pt-2">
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                            {t("Java 运行时")}
+                          </div>
+
+                          <div className="flex flex-col gap-2">
+                            <label className="text-xs text-gray-600 dark:text-gray-300">
+                              {t("Java 可执行文件路径")}
+                            </label>
+                            <Input
+                              classNames={{
+                                inputWrapper: "bg-default-100/60",
+                              }}
+                              placeholder={t("留空使用全局设置或自动检测")}
+                              size="sm"
+                              value={javaConfig.JavaExecutable}
+                              onValueChange={(v) =>
+                                setJavaConfig({
+                                  ...javaConfig,
+                                  JavaExecutable: v,
+                                })
+                              }
+                            />
+                            <div className="text-[10px] text-gray-400">
+                              {t(
+                                "例如: C:\\Program Files\\Java\\jdk-21\\bin\\javaw.exe",
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="nya-border my-2 border-t" />
+
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                            {t("内存设置")}
+                          </div>
+
+                          <div className="flex flex-col gap-2">
+                            <label className="text-xs text-gray-600 dark:text-gray-300">
+                              {t("最小内存（-Xms）")}
+                            </label>
+                            <div className="flex items-center gap-3">
+                              <Input
+                                className="w-32"
+                                classNames={{
+                                  inputWrapper: "bg-default-100/60",
+                                  input: "text-right",
+                                }}
+                                endContent={
+                                  <span className="text-xs text-gray-400">
+                                    MB
+                                  </span>
+                                }
+                                placeholder="0"
+                                size="sm"
+                                type="number"
+                                value={
+                                  javaConfig.MinMemoryMB > 0
+                                    ? javaConfig.MinMemoryMB.toString()
+                                    : ""
+                                }
+                                onValueChange={(v) =>
+                                  setJavaConfig({
+                                    ...javaConfig,
+                                    MinMemoryMB: parseInt(v) || 0,
+                                  })
+                                }
+                              />
+                              <span className="text-xs text-gray-400">
+                                {t("0 = 使用全局设置，推荐 512-2048 MB")}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-2">
+                            <label className="text-xs text-gray-600 dark:text-gray-300">
+                              {t("最大内存（-Xmx）")}
+                            </label>
+                            <div className="flex items-center gap-3">
+                              <Input
+                                className="w-32"
+                                classNames={{
+                                  inputWrapper: "bg-default-100/60",
+                                  input: "text-right",
+                                }}
+                                endContent={
+                                  <span className="text-xs text-gray-400">
+                                    MB
+                                  </span>
+                                }
+                                placeholder="0"
+                                size="sm"
+                                type="number"
+                                value={
+                                  javaConfig.MaxMemoryMB > 0
+                                    ? javaConfig.MaxMemoryMB.toString()
+                                    : ""
+                                }
+                                onValueChange={(v) => {
+                                  // 钳到物理内存上限，避免配出用不了的 -Xmx
+                                  const n = parseInt(v) || 0;
+
+                                  setJavaConfig({
+                                    ...javaConfig,
+                                    MaxMemoryMB:
+                                      n > 0 ? Math.min(n, memoryMax) : 0,
+                                  });
+                                }}
+                              />
+                              <span className="text-xs text-gray-400">
+                                {t("0 = 使用全局设置，推荐 4096-8192 MB")}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="nya-border my-2 border-t" />
+
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                            {t("JVM 参数")}
+                          </div>
+
+                          <div className="flex flex-col gap-2">
+                            <label className="text-xs text-gray-600 dark:text-gray-300">
+                              {t("附加 JVM 参数（每行一个）")}
+                            </label>
+                            <Textarea
+                              classNames={{
+                                inputWrapper: "bg-default-100/60",
+                              }}
+                              minRows={5}
+                              placeholder={t(
+                                "例如:\n-XX:+UseG1GC\n-XX:MaxGCPauseMillis=50\n-Dfml.readTimeout=180",
+                              )}
+                              value={javaConfigJvmText}
+                              onValueChange={setJavaConfigJvmText}
+                            />
+                            <div className="text-[10px] text-gray-400">
+                              {t(
+                                "这些参数会追加到启动器自动优化参数和全局设置之后",
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="nya-border my-2 border-t" />
+
+                          <div className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                            {t("游戏参数")}
+                          </div>
+
+                          <div className="flex flex-col gap-2">
+                            <label className="text-xs text-gray-600 dark:text-gray-300">
+                              {t("附加游戏参数（每行一个）")}
+                            </label>
+                            <Textarea
+                              classNames={{
+                                inputWrapper: "bg-default-100/60",
+                              }}
+                              minRows={3}
+                              placeholder={t(
+                                "例如:\n--fullscreen\n--width 1920\n--height 1080",
+                              )}
+                              value={javaConfigGameText}
+                              onValueChange={setJavaConfigGameText}
+                            />
+                          </div>
+
+                          <div className="nya-border my-2 border-t" />
+
+                          <div className="flex items-center gap-2">
+                            <Button
+                              color="primary"
+                              isLoading={javaSaving}
+                              size="sm"
+                              onPress={() => void saveJavaConfig()}
+                            >
+                              {t("保存 Java 设置")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="flat"
+                              onPress={() => void resetJavaConfig()}
+                            >
+                              {t("重置为默认")}
+                            </Button>
+                            <div className="flex-1" />
+                            <span className="text-[10px] text-gray-400">
+                              {t("配置文件: java_config.yaml")}
+                            </span>
                           </div>
                         </div>
                       )}
@@ -2833,14 +3205,14 @@ const InstancesPage: React.FC = () => {
                       {tab === "content" && (
                         <div className="flex min-h-full flex-col pt-2">
                           <div className="flex flex-wrap items-center gap-2 pb-2">
-                            <div className="flex flex-wrap items-center gap-1">
+                            <div className="flex flex-wrap items-center gap-4">
                               {CONTENT_TABS.map((tab) => (
                                 <button
                                   key={tab.key}
-                                  className={`cursor-pointer rounded-lg px-2.5 py-1 text-xs transition-colors ${
+                                  className={`cursor-pointer py-1 text-xs transition-colors ${
                                     contentTab === tab.key
-                                      ? "bg-gray-200 dark:bg-gray-700 font-semibold text-gray-700 dark:text-gray-200"
-                                      : "text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800"
+                                      ? "font-semibold text-gray-900 dark:text-gray-100"
+                                      : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
                                   }`}
                                   onClick={() => setContentTab(tab.key)}
                                 >
@@ -3217,7 +3589,7 @@ const InstancesPage: React.FC = () => {
                               </span>
                             </div>
                           ) : gameEditMode === "visual" ? (
-                            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            <div className="grid grid-cols-1 gap-x-6 md:grid-cols-2">
                               {GAME_SETTINGS.filter(
                                 (s) => s.category === gameSettingCategory,
                               ).map((setting) => {
@@ -3226,7 +3598,7 @@ const InstancesPage: React.FC = () => {
                                 return (
                                   <div
                                     key={setting.key}
-                                    className="flex flex-col gap-1.5 rounded-xl border nya-border bg-default-50/40 p-3"
+                                    className="nya-border flex flex-col gap-1.5 border-b py-3"
                                   >
                                     <div className="flex items-center justify-between">
                                       <span className="text-xs font-medium text-gray-600">
@@ -3297,9 +3669,7 @@ const InstancesPage: React.FC = () => {
                                         aria-label={t(setting.label)}
                                         className="w-full"
                                         placeholder={t("未设置")}
-                                        popoverProps={{
-                                          motionProps: popoverMotionProps,
-                                        }}
+                                        popoverProps={selectPopoverProps}
                                         selectedKeys={value ? [value] : []}
                                         size="sm"
                                         variant="bordered"
@@ -3368,7 +3738,7 @@ const InstancesPage: React.FC = () => {
                           )}
 
                           {/* 提示 */}
-                          <div className="rounded-lg bg-default-100/50 p-3 text-[11px] text-gray-400">
+                          <div className="text-[11px] text-gray-400">
                             {gameEditMode === "visual"
                               ? t("未列出的设置项可切换到「原始编辑」模式")
                               : t("格式为 key:value，每行一个")}
@@ -3507,7 +3877,7 @@ const InstancesPage: React.FC = () => {
                             </div>
                           </div>
 
-                          <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-3">
+                          <div className="nya-border border-t pt-3">
                             <div className="mb-1 text-[13px] font-semibold text-red-500">
                               {t("危险操作")}
                             </div>
@@ -3538,8 +3908,40 @@ const InstancesPage: React.FC = () => {
                 </div>
               )}
             </SwitchTransition>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="flex min-w-0 flex-1 flex-shrink-0 flex-wrap items-center justify-center gap-3 rounded-large border nya-border nya-panel px-4 py-3 text-xs text-gray-400">
+            {selected ? (
+              <>
+                <span>{t("已收起 {0} 的详情。", { "0": selected })}</span>
+                <Button
+                  size="sm"
+                  startContent={<ChevronDownIcon />}
+                  variant="flat"
+                  onPress={() => setExpandedInstance(true)}
+                >
+                  {t("展开详情")}
+                </Button>
+              </>
+            ) : loading ? (
+              <span className="flex items-center gap-2">
+                <Spinner size="sm" /> {t("正在扫描实例…")}
+              </span>
+            ) : versions.length === 0 ? (
+              <span>
+                {t("还没有已安装的实例，")}
+                <button
+                  className="ml-1 text-blue-500 hover:underline cursor-pointer"
+                  onClick={() => navigateToPage("download")}
+                >
+                  {t("去下载页安装一个")}
+                </button>
+              </span>
+            ) : (
+              <span>{t("点击上方列表中的实例即可查看它的详情")}</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 底部状态栏 */}
@@ -3850,48 +4252,6 @@ const InstancesPage: React.FC = () => {
                     {menuAction === "rename" ? t("重命名") : t("复制")}
                   </Button>
                 </div>
-              </div>
-            </ModalShell>
-          )}
-        </ModalContent>
-      </Modal>
-
-      {/* 拖入 zip 的类别选择弹层（无法自动识别为存档时） */}
-      <Modal
-        isOpen={dropChoice !== null}
-        size="sm"
-        onClose={() => {
-          setDropChoice(null);
-          pendingDropPaths.current = [];
-        }}
-        {...modalBehaviorProps}
-      >
-        <ModalContent>
-          {(onClose) => (
-            <ModalShell
-              subtitle={dropChoice ?? ""}
-              title={t("把拖入的文件装到哪？")}
-              onClose={() => {
-                onClose();
-                setDropChoice(null);
-                pendingDropPaths.current = [];
-              }}
-            >
-              <div className="flex flex-col gap-2">
-                <Button
-                  startContent={<FolderIcon />}
-                  variant="flat"
-                  onPress={() => void finishDropChoice("resourcepacks")}
-                >
-                  {t("资源包")}
-                </Button>
-                <Button
-                  startContent={<SparkleIcon />}
-                  variant="flat"
-                  onPress={() => void finishDropChoice("shaderpacks")}
-                >
-                  {t("光影包")}
-                </Button>
               </div>
             </ModalShell>
           )}

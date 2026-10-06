@@ -24,7 +24,7 @@ import {
   Textarea,
 } from "@heroui/react";
 
-import { popoverMotionProps } from "../../lib/motion";
+import { selectPopoverProps } from "../../lib/motion";
 import {
   LoadGlobalLaunchSettings,
   SaveGlobalLaunchSettings,
@@ -258,7 +258,7 @@ const LaunchSection: React.FC = () => {
         <SettingRow label={t("进程优先级")}>
           <Select
             className="w-40 min-w-0 max-w-full [&_*]:min-w-0"
-            popoverProps={{ motionProps: popoverMotionProps }}
+            popoverProps={selectPopoverProps}
             selectedKeys={[s.ProcessPriority || "normal"]}
             size="sm"
             onSelectionChange={(keys) =>

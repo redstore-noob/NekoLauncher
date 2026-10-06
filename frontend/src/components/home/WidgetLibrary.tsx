@@ -69,9 +69,28 @@ const WidgetLibrary: React.FC<WidgetLibraryProps> = ({
 }) => {
   const [query, setQuery] = useState("");
 
+  // 同一组件允许重复放置：统计每种组件已放了几份，条目上用角标提示
+  const placedCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+
+    for (const widget of placed) {
+      counts.set(widget.id, (counts.get(widget.id) ?? 0) + 1);
+    }
+
+    return counts;
+  }, [placed]);
+  // 搜索结果排序：没放过的排前面，已放过的沉到队列下面（都还能再次添加）
   const matchedAvailable = useMemo(
-    () => available.filter((widget) => matchesQuery(widget, query)),
-    [available, query],
+    () =>
+      available
+        .filter((widget) => matchesQuery(widget, query))
+        .sort((left, right) => {
+          const leftPlaced = placedCounts.has(left.id) ? 1 : 0;
+          const rightPlaced = placedCounts.has(right.id) ? 1 : 0;
+
+          return leftPlaced - rightPlaced;
+        }),
+    [available, placedCounts, query],
   );
   const matchedPlaced = useMemo(
     () => placed.filter((widget) => matchesQuery(widget, query)),
@@ -82,14 +101,14 @@ const WidgetLibrary: React.FC<WidgetLibraryProps> = ({
   return (
     <section
       className="
-        flex h-full flex-col overflow-hidden rounded-3xl
+        flex h-full flex-col overflow-hidden rounded-large
         border nya-border
         nya-panel backdrop-blur-md shadow-lg
       "
     >
       {/* 面板头 */}
       <div className="flex flex-none items-center gap-3 px-5 pt-5 pb-4">
-        <div className="flex size-11 flex-none items-center justify-center rounded-2xl bg-primary/15 text-primary shadow-lg shadow-primary/10">
+        <div className="flex size-11 flex-none items-center justify-center rounded-lg bg-primary/15 text-primary shadow-lg shadow-primary/10">
           <Apps20Regular />
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -134,15 +153,13 @@ const WidgetLibrary: React.FC<WidgetLibraryProps> = ({
       <div className="nya-scroll flex-1 overflow-y-auto px-4 pb-4">
         {matchedAvailable.length === 0 ? (
           <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-gray-400">
-            <div className="flex size-12 items-center justify-center rounded-2xl bg-default-100/80">
+            <div className="flex size-12 items-center justify-center rounded-lg bg-default-100/80">
               <Apps20Regular className="h-6 w-6" />
             </div>
             <span className="text-xs leading-relaxed">
-              {searching && matchedPlaced.length > 0
-                ? t("匹配的组件都已经添加到页面上了")
-                : searching
-                  ? t("没有匹配的组件")
-                  : t("所有组件都已经在页面上了")}
+              {searching
+                ? t("没有匹配的组件")
+                : t("没有可用组件")}
             </span>
           </div>
         ) : (
@@ -152,7 +169,7 @@ const WidgetLibrary: React.FC<WidgetLibraryProps> = ({
                 <div
                   {...libraryHandlers(widget.id)}
                   className={`
-                    flex cursor-grab items-center gap-3 rounded-2xl px-3 py-2.5
+                    flex cursor-grab items-center gap-3 rounded-lg px-3 py-2.5
                     transition-all select-none active:cursor-grabbing
                     hover:bg-default-100/80
                     ${draggingId === widget.id ? "opacity-40" : "opacity-100"}
@@ -170,7 +187,7 @@ const WidgetLibrary: React.FC<WidgetLibraryProps> = ({
                 >
                   <span
                     className={`
-                      flex size-9 flex-none items-center justify-center rounded-xl
+                      flex size-9 flex-none items-center justify-center rounded-lg
                       bg-primary/10 text-primary shadow-sm
                     `}
                   >
@@ -185,6 +202,13 @@ const WidgetLibrary: React.FC<WidgetLibraryProps> = ({
                     </span>
                   </span>
                   <span className="flex-none text-gray-300 dark:text-gray-600">
+                    {(placedCounts.get(widget.id) ?? 0) > 0 ? (
+                      <span className="mr-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary">
+                        {t("已放 {count} 份", {
+                          count: placedCounts.get(widget.id) ?? 0,
+                        })}
+                      </span>
+                    ) : null}
                     <ReOrderDotsVertical20Regular />
                   </span>
                 </div>
@@ -203,9 +227,9 @@ const WidgetLibrary: React.FC<WidgetLibraryProps> = ({
               {matchedPlaced.map((widget) => (
                 <li
                   key={widget.id}
-                  className="flex items-center gap-3 rounded-2xl px-3 py-2.5 opacity-60"
+                  className="flex items-center gap-3 rounded-lg px-3 py-2.5 opacity-60"
                 >
-                  <span className="flex size-9 flex-none items-center justify-center rounded-xl bg-default-100 text-gray-400">
+                  <span className="flex size-9 flex-none items-center justify-center rounded-lg bg-default-100 text-gray-400">
                     {widget.icon}
                   </span>
                   <span className="flex min-w-0 flex-1 flex-col">

@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +25,7 @@ import (
 
 // 代理模式取值。
 const (
-	ProxyModeSystem = "system" // 跟随系统：Windows 用户级系统代理（注册表），其余平台环境变量
+	ProxyModeSystem = "system" // 跟随系统：Windows 读注册表、Linux 读 gsettings，其余平台环境变量
 	ProxyModeOff    = "off"    // 直连：无视系统与环境变量
 	ProxyModeCustom = "custom" // 自定义：手填地址（http / https / socks5）
 )
@@ -152,14 +151,11 @@ func buildProxyFunc(settings ProxySettings) func(*http.Request) (*url.URL, error
 	}
 }
 
-// systemProxyFunc 跟随系统：Windows 读用户级系统代理（注册表，10 秒缓存），
-// 失效回落环境变量；其余平台直接环境变量。
+// systemProxyFunc 跟随系统：平台各自实现 cachedSystemProxy（注册表 / gsettings，
+// 10 秒缓存），拿不到回落环境变量。
 func systemProxyFunc() func(*http.Request) (*url.URL, error) {
-	if runtime.GOOS != "windows" {
-		return http.ProxyFromEnvironment
-	}
 	return func(req *http.Request) (*url.URL, error) {
-		if address := cachedWindowsSystemProxy(); address != "" {
+		if address := cachedSystemProxy(); address != "" {
 			if parsed, err := url.Parse(address); err == nil {
 				return parsed, nil
 			}

@@ -32,6 +32,12 @@ const soloMagic = "NKSOLO1\x01"
 // 安装时由安装器下载），CRC32 为该清单 JSON 的校验。
 const soloMagicV2 = "NKSOLO2\x02"
 
+// soloMagicV3 Modrinth 壳格式（v3）的尾标魔数：载荷 zip = 标准 .mrpack 结构
+//（modrinth.index.json + overrides/）+ manifest.json + files/（启动器本体）。
+// mods 声明直链由玩家首启联网下载，Minecraft 本体与 Java 运行时也全部联网
+// 补全——载荷里不再有 versions/ 描述文件与 jre/。
+const soloMagicV3 = "NKSOLO3\x03"
+
 // trailerSize 尾标总长（字节）。
 const trailerSize = 32
 
@@ -42,6 +48,8 @@ type Trailer struct {
 	CRC32  uint32
 	// V2 为 true 表示在线安装包：Offset/Length 指向内嵌远程清单而非载荷 zip
 	V2 bool
+	// V3 为 true 表示载荷 zip 是 Modrinth 整合包结构（v3 格式）
+	V3 bool
 }
 
 // AppendTrailer 把尾标写到 w（导出与测试共用）。
@@ -52,6 +60,11 @@ func AppendTrailer(w io.Writer, payloadOffset, payloadLength int64, crc uint32) 
 // AppendTrailerV2 写 v2（在线安装包）尾标：Offset/Length/CRC 描述内嵌的远程清单。
 func AppendTrailerV2(w io.Writer, manifestOffset, manifestLength int64, crc uint32) error {
 	return appendTrailer(w, soloMagicV2, manifestOffset, manifestLength, crc)
+}
+
+// AppendTrailerV3 写 v3（Modrinth 壳格式）尾标：Offset/Length/CRC 描述载荷 zip。
+func AppendTrailerV3(w io.Writer, payloadOffset, payloadLength int64, crc uint32) error {
+	return appendTrailer(w, soloMagicV3, payloadOffset, payloadLength, crc)
 }
 
 func appendTrailer(w io.Writer, magic string, offset, length int64, crc uint32) error {
@@ -65,14 +78,14 @@ func appendTrailer(w io.Writer, magic string, offset, length int64, crc uint32) 
 	return err
 }
 
-// ParseTrailer 从 32 字节尾标数据解析；魔数不符返回错误。v1/v2 均可解析，
-// 是否为在线安装包由 V2 字段区分。
+// ParseTrailer 从 32 字节尾标数据解析；魔数不符返回错误。v1/v2/v3 均可解析，
+// 是否为在线安装包由 V2 字段区分，载荷是否为 Modrinth 结构由 V3 字段区分。
 func ParseTrailer(data []byte) (Trailer, error) {
 	if len(data) != trailerSize {
 		return Trailer{}, fmt.Errorf("尾标长度异常：%d（应为 %d）", len(data), trailerSize)
 	}
 	magic := string(data[0:8])
-	if magic != soloMagic && magic != soloMagicV2 {
+	if magic != soloMagic && magic != soloMagicV2 && magic != soloMagicV3 {
 		return Trailer{}, errors.New("不是有效的 NekoSolo 安装包（尾标魔数不符）")
 	}
 	return Trailer{
@@ -80,6 +93,7 @@ func ParseTrailer(data []byte) (Trailer, error) {
 		Length: int64(binary.LittleEndian.Uint64(data[16:24])),
 		CRC32:  binary.LittleEndian.Uint32(data[24:28]),
 		V2:     magic == soloMagicV2,
+		V3:     magic == soloMagicV3,
 	}, nil
 }
 

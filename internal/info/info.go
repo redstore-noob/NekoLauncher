@@ -7,8 +7,8 @@ import "fmt"
 // 注意拼接顺序是 主.次.修：要得到 "0.3.2" 要改 FixVersion，改 SubVersion 会变成 "0.4.0"。
 const (
 	MainVersion = 0
-	SubVersion  = 3
-	FixVersion  = 2
+	SubVersion  = 4
+	FixVersion  = 0
 	Suffix      = ""
 )
 

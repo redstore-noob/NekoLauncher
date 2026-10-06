@@ -51,8 +51,8 @@ var resolveResourceURL = func(rawURL string) (primary string, fallback string) {
 	return primary, fallback
 }
 
-// ListResourceSources 资源站清单（前端数据源切换 + "未配置 Key"引导的唯一依据）。
-// 域名、镜像地址、Key 申请地址都从各客户端的常量取，前端不再抄一份。
+// ListResourceSources 资源站清单（前端数据源切换 + "内置 Key 未生效"提示的唯一依据）。
+// 域名、镜像地址都从各客户端的常量取，前端不再抄一份。
 func ListResourceSources(apiKey string) []models.ResourceSourceInfo {
 	configured := strings.TrimSpace(apiKey) != ""
 
@@ -78,7 +78,6 @@ func ListResourceSources(apiKey string) []models.ResourceSourceInfo {
 			ProjectTypes:     []string{models.ProjectTypeMod, models.ProjectTypeModpack, models.ProjectTypeShader, models.ProjectTypeResourcePack},
 			RequiresAPIKey:   true,
 			APIKeyConfigured: configured,
-			APIKeyApplyURL:   curseforge.APIKeyApplyURL,
 			Available:        configured,
 			Hint:             curseforge.APIKeyHint,
 		},

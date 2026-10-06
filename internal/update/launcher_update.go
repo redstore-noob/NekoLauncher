@@ -35,6 +35,8 @@ type releaseAsset struct {
 	Name string `json:"name"`
 	URL  string `json:"browser_download_url"`
 	Size int64  `json:"size"`
+	// Digest GitHub 侧声明的资产摘要，格式 "sha256:<十六进制>"（旧资产可能为空）。
+	Digest string `json:"digest"`
 }
 
 // release GitHub 版本。
@@ -55,6 +57,8 @@ type Asset struct {
 	URL  string `json:"URL"`
 	// Size 字节数（0 表示未知）。
 	Size int64 `json:"Size"`
+	// Digest GitHub 声明的 sha256 摘要（"sha256:<hex>"；未知为空，此时只按大小粗筛）。
+	Digest string `json:"Digest"`
 }
 
 // CheckResult 一次更新检查的结果（前端直接展示，字段不再二次加工）。
@@ -235,9 +239,9 @@ func pickAsset(assets []releaseAsset) (Asset, bool) {
 		lower := strings.ToLower(name)
 		switch {
 		case lower == "nekolauncher.exe":
-			return Asset{Name: name, URL: asset.URL, Size: asset.Size}, true
+			return Asset{Name: name, URL: asset.URL, Size: asset.Size, Digest: asset.Digest}, true
 		case strings.HasPrefix(lower, strings.ToLower(want)) && strings.HasSuffix(lower, ".exe"):
-			return Asset{Name: name, URL: asset.URL, Size: asset.Size}, true
+			return Asset{Name: name, URL: asset.URL, Size: asset.Size, Digest: asset.Digest}, true
 		}
 	}
 

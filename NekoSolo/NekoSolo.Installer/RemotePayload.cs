@@ -20,8 +20,15 @@ namespace NekoSolo.Installer
     {
         SoloManifest Manifest { get; }
 
+        /// <summary>载荷是否为 v3 Modrinth 整合包结构（modrinth.index.json + overrides/）。
+        /// 远程载荷在下载完成前无法判定，恒为 false。</summary>
+        bool IsV3 { get; }
+
         /// <summary>以载荷为内容打开 zip 档案；远程载荷必须先 EnsureDownloaded。</summary>
         ZipArchive OpenZip();
+
+        /// <summary>把整个载荷 zip 复制为独立文件（v3 安装：转存为待装 mrpack）。</summary>
+        void CopyPayloadTo(string targetPath);
     }
 
     internal sealed class RemotePayload : IPayloadPackage, IDisposable
@@ -48,6 +55,31 @@ namespace NekoSolo.Installer
         }
 
         public SoloManifest Manifest { get; }
+
+        public bool IsV3
+        {
+            get
+            {
+                if (!Downloaded) return false;
+                using (var zip = OpenZip())
+                {
+                    foreach (var entry in zip.Entries)
+                    {
+                        if (string.Equals(entry.FullName, "modrinth.index.json", StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        public void CopyPayloadTo(string targetPath)
+        {
+            if (!Downloaded)
+                throw new InvalidOperationException("载荷尚未下载。");
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(targetPath)));
+            File.Copy(_localPath, targetPath, overwrite: true);
+        }
 
         /// <summary>载荷 zip 是否已就绪（供图标展示等安装前逻辑判断）。</summary>
         public bool Downloaded

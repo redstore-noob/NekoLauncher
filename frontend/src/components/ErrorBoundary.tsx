@@ -42,7 +42,7 @@ export default class ErrorBoundary extends React.Component<
     if (!error) return this.props.children;
 
     return (
-      <div className="rounded-2xl border border-red-200/70 bg-red-50/70 px-4 py-3 text-xs leading-relaxed text-red-600 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+      <div className="rounded-lg border border-red-200/70 bg-red-50/70 px-4 py-3 text-xs leading-relaxed text-red-600 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
         {this.props.title
           ? t("「{0}」加载失败", { "0": this.props.title })
           : t("组件加载失败")}

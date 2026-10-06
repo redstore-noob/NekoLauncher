@@ -7,10 +7,13 @@ dev: true
 author: NekoLauncher
 
 # 权限声明：调用未声明的权限会直接报错（见 docs/Extensions_Guide.md §5）
+# 声明之外还有用户授权：插件页每个权限一个开关，关掉的相关 API 返回 null；
+# 联网（network）、运行日志、账号、音乐库默认关闭，本示例要联网所以声明它。
 capabilities:
   server-status: true   # getServerStatus
   clipboard: true       # setClipboard
   storage: true         # config.*（读取下面的默认设置）
+  network: true         # 联网：宿主代插件发起的网络请求（用户默认关闭，需在插件页打开）
 
 # 默认设置：首次加载时种入 api.config（仅当键为空时写入，用户改过不覆盖）
 settings:

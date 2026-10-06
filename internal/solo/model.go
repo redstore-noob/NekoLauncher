@@ -68,8 +68,12 @@ type Marker struct {
 
 	// MinecraftDirectory 安装器写入的绝对路径（存储目录下 minecraft/）
 	MinecraftDirectory string `json:"minecraftDirectory,omitempty"`
-	// JavaExecutable 捆绑 JRE 的 java.exe 绝对路径；未捆绑时为空
+	// JavaExecutable 捆绑 JRE 的 java.exe 绝对路径（v1/v2 格式）；v3 起为空，
+	// Java 由启动器首启联网安装
 	JavaExecutable string `json:"javaExecutable,omitempty"`
+	// PendingPayload 安装器落盘的待装 mrpack 绝对路径（v3 格式）。启动器首启
+	// 据此补全 mod / Minecraft 本体 / Java，成功后清空该字段。
+	PendingPayload string `json:"pendingPayload,omitempty"`
 
 	UpdateLink string `json:"updateLink,omitempty"`
 }

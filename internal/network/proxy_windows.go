@@ -24,9 +24,9 @@ var (
 	systemProxyReadAt time.Time
 )
 
-// cachedWindowsSystemProxy 读取用户级系统代理地址（http://host:port 形式）；
+// cachedSystemProxy 读取用户级系统代理地址（http://host:port 形式）；
 // 未启用或解析不出时返回空串。
-func cachedWindowsSystemProxy() string {
+func cachedSystemProxy() string {
 	systemProxyMu.Lock()
 	defer systemProxyMu.Unlock()
 	if !systemProxyReadAt.IsZero() && time.Since(systemProxyReadAt) < systemProxyCacheTTL {

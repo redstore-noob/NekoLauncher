@@ -21,6 +21,8 @@ import {
   SelectItem,
   Slider,
   Switch,
+  Tabs,
+  Tab,
 } from "@heroui/react";
 import {
   ArrowClockwise20Regular,
@@ -30,10 +32,14 @@ import {
   WeatherSunny20Regular,
 } from "@fluentui/react-icons";
 
+import { selectPopoverProps } from "../../lib/motion";
+import { notify } from "../../components/overlay/dialog";
 import {
   SelectFile,
   GetWallpaperEngineWallpaper,
   SetAcrylicBackdropEnabled,
+  GetLinuxWallpaperTools,
+  ApplyDesktopWallpaper,
 } from "../../../wailsjs/go/bindings/SystemAPI";
 import {
   GetValue,
@@ -50,16 +56,22 @@ import {
   PANEL_BLUR_KEY,
   PANEL_BLUR_STRENGTH_KEY,
   WEB_WALLPAPER_INTERACTIVE_KEY,
+  WE_SCENE_RESOLUTION_KEY,
+  WE_SCENE_FPS_KEY,
   useBackground,
   BackgroundMode,
 } from "../background";
 import { useThemeMode } from "../../theme";
 import { LOCALE_OPTIONS, useI18n, type Locale } from "../../i18n";
-import { popoverMotionProps } from "../../lib/motion";
 import { useThemeColor, THEME_COLOR_PRESETS } from "../../theme-color";
 import { useSimpleMode } from "../simple-mode";
+import { isLinuxPlatform } from "../../lib/platform";
 import {
   HOME_WIDGET_COLUMNS_KEY,
+  LAUNCH_CARD_BG_KEY,
+  DEFAULT_WIDGET_COLUMNS,
+  MAX_WIDGET_COLUMNS,
+  emitLaunchCardBackground,
   emitWidgetColumns,
   parseWidgetColumns,
 } from "../../lib/home";
@@ -90,6 +102,8 @@ const AppearanceSection: React.FC = () => {
     panelBlur,
     panelBlurStrength,
     webInteractive,
+    sceneResolution,
+    sceneFps,
     wallpaperEngineTitle,
     wallpaperEngineType,
     wallpaperEngineUnsupported: weUnsupported,
@@ -124,8 +138,24 @@ const AppearanceSection: React.FC = () => {
   const [weStatus, setWeStatus] = useState<WeStatus>("checking");
   const [weProbeTitle, setWeProbeTitle] = useState("");
   const [weProbeType, setWeProbeType] = useState("");
-  // 主页小组件列数（1~3，存 homeWidgetColumns，改动实时广播到主页）
-  const [widgetColumns, setWidgetColumns] = useState(1);
+  // 主页小组件列数（1~4，存 homeWidgetColumns，改动实时广播到主页；缺省 2 列）
+  const [widgetColumns, setWidgetColumns] = useState(DEFAULT_WIDGET_COLUMNS);
+  // 启动卡自定义背景图路径（空串 = 无；改动实时广播到主页）
+  const [cardBgPath, setCardBgPath] = useState("");
+  // Linux 桌面壁纸工具（swww / mpvpaper）可用性；null = 非 Linux 或尚未探测
+  const [linuxTools, setLinuxTools] = useState<{
+    Swww: boolean;
+    Mpvpaper: boolean;
+  } | null>(null);
+  // 最近一次"设为桌面壁纸"的结果反馈（成功 / 失败原因），显示在行提示里
+  const [desktopApplyMessage, setDesktopApplyMessage] = useState("");
+
+  useEffect(() => {
+    if (!isLinuxPlatform()) return;
+    GetLinuxWallpaperTools()
+      .then((tools) => setLinuxTools(tools ?? null))
+      .catch(() => setLinuxTools(null));
+  }, []);
 
   useEffect(() => {
     GetValue(HOME_WIDGET_COLUMNS_KEY)
@@ -135,7 +165,12 @@ const AppearanceSection: React.FC = () => {
         if (saved) setWidgetColumns(saved);
       })
       .catch(() => {
-        /* 读配置失败按 1 列显示 */
+        /* 读配置失败按缺省列数显示 */
+      });
+    GetValue(LAUNCH_CARD_BG_KEY)
+      .then((p) => setCardBgPath((p ?? "").trim()))
+      .catch(() => {
+        /* 读配置失败 = 无自定义背景 */
       });
   }, []);
 
@@ -198,6 +233,18 @@ const AppearanceSection: React.FC = () => {
     refresh();
   };
 
+  // 场景壁纸渲染分辨率(相对窗口 CSS 像素的倍数)与刷新率上限;
+  // 改动即时生效(SceneWallpaperRenderer 按这两个值重建渲染器)
+  const saveSceneResolution = async (key: string) => {
+    await SetValue(WE_SCENE_RESOLUTION_KEY, key);
+    refresh();
+  };
+
+  const saveSceneFps = async (key: string) => {
+    await SetValue(WE_SCENE_FPS_KEY, key);
+    refresh();
+  };
+
   const saveMode = async (next: BackgroundMode) => {
     if (next === mode) return;
     await SetValue(BACKGROUND_MODE_KEY, next);
@@ -225,6 +272,30 @@ const AppearanceSection: React.FC = () => {
   const clearBackground = async () => {
     await ClearValue(BACKGROUND_PATH_KEY);
     refresh();
+  };
+
+  // Linux：把选中的文件设成桌面壁纸——图片/动图走 swww，视频走 mpvpaper
+  const pickDesktopWallpaper = async (video: boolean) => {
+    let path = "";
+
+    try {
+      path = await SelectFile(
+        video ? t("选择视频壁纸") : t("选择桌面壁纸"),
+        t("文件"),
+        video
+          ? "*.mp4;*.webm;*.mkv;*.mov;*.avi"
+          : "*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp",
+      );
+    } catch {
+      /* 用户取消 */
+    }
+    if (!path) return;
+    try {
+      await ApplyDesktopWallpaper(path);
+      setDesktopApplyMessage(t("已应用为桌面壁纸"));
+    } catch (error) {
+      setDesktopApplyMessage(String(error ?? t("应用失败")));
+    }
   };
 
   const saveOpacity = async (value: number | number[]) => {
@@ -263,6 +334,43 @@ const AppearanceSection: React.FC = () => {
     } catch {
       /* 持久化失败不阻断界面 */
     }
+  };
+
+  /** 选择/更换启动卡背景图并落盘（广播到主页实时生效）；取消选择不改动 */
+  const pickLaunchCardBackground = async () => {
+    let path = "";
+
+    try {
+      path = await SelectFile(
+        t("选择启动卡背景图"),
+        t("图片"),
+        "*.png;*.jpg;*.jpeg;*.webp;*.gif;*.bmp",
+      );
+    } catch {
+      /* 用户取消 */
+    }
+    if (!path) return;
+
+    setCardBgPath(path);
+    try {
+      await SetValue(LAUNCH_CARD_BG_KEY, path);
+      emitLaunchCardBackground(path);
+    } catch (ex) {
+      notify.error(
+        t("设置背景图失败：{0}", { "0": (ex as Error)?.message ?? ex }),
+      );
+    }
+  };
+
+  /** 清除启动卡自定义背景图（SetValue 拒绝空串，必须走 ClearValue 删键） */
+  const clearLaunchCardBackground = async () => {
+    setCardBgPath("");
+    try {
+      await ClearValue(LAUNCH_CARD_BG_KEY);
+    } catch {
+      /* 删除落盘失败不影响界面已经清掉 */
+    }
+    emitLaunchCardBackground("");
   };
 
   // WE 模式下的状态提示：优先用实时联动数据，未启用时用挂载探测结果
@@ -339,7 +447,7 @@ const AppearanceSection: React.FC = () => {
             key: option.value,
             label: option.label,
           }))}
-          popoverProps={{ motionProps: popoverMotionProps }}
+          popoverProps={selectPopoverProps}
           selectedKeys={[locale]}
           size="sm"
           variant="bordered"
@@ -556,36 +664,66 @@ const AppearanceSection: React.FC = () => {
       {/* S 模式禁用小组件功能，列数设置随之隐藏 */}
       {!simpleMode ? (
         <SettingRow label={t("小组件列数")}>
-          <div className="flex flex-wrap gap-1 justify-end">
-            {[1, 2, 3].map((count) => (
-              <Button
-                key={count}
-                color={widgetColumns === count ? "primary" : "default"}
-                size="sm"
-                variant={widgetColumns === count ? "solid" : "flat"}
-                onPress={() => void saveWidgetColumns(count)}
-              >
-                {t("{count} 列", { count })}
-              </Button>
-            ))}
+          <div className="flex items-center gap-3 w-48">
+            <Slider
+              aria-label={t("小组件列数")}
+              fillOffset={1}
+              maxValue={MAX_WIDGET_COLUMNS}
+              minValue={1}
+              size="sm"
+              step={1}
+              value={widgetColumns}
+              onChangeEnd={(v) =>
+                void saveWidgetColumns(Math.round(Array.isArray(v) ? v[0] : v))
+              }
+            />
+            <span className="text-xs text-gray-400 w-12 text-right">
+              {t("{count} 列", { count: widgetColumns })}
+            </span>
           </div>
         </SettingRow>
       ) : null}
 
-      <SettingRow label={t("背景图源")}>
-        <div className="flex flex-wrap gap-1 max-w-[320px] justify-end">
-          {MODE_OPTIONS.map((option) => (
+      <SettingRow label={t("启动卡背景图")}>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="flat"
+            onPress={() => void pickLaunchCardBackground()}
+          >
+            {cardBgPath ? t("更换图片") : t("选择图片")}
+          </Button>
+          {cardBgPath ? (
             <Button
-              key={option.value}
-              color={mode === option.value ? "primary" : "default"}
+              color="danger"
               size="sm"
-              variant={mode === option.value ? "solid" : "flat"}
-              onPress={() => void saveMode(option.value)}
+              variant="light"
+              onPress={() => void clearLaunchCardBackground()}
             >
-              {t(option.label)}
+              {t("清除")}
             </Button>
-          ))}
+          ) : null}
         </div>
+      </SettingRow>
+
+      <SettingRow label={t("背景图源")}>
+        <Tabs
+          aria-label={t("背景图源")}
+          classNames={{
+            base: "max-w-[320px] justify-end",
+            tabList: "flex-wrap gap-1 bg-content2/60 p-1 rounded-xl",
+            tab: "h-7 min-w-0 px-2.5 text-xs",
+            cursor: "rounded-lg",
+          }}
+          destroyInactiveTabPanel={false}
+          selectedKey={mode}
+          size="sm"
+          onSelectionChange={(key) => void saveMode(key as BackgroundMode)}
+        >
+          {MODE_OPTIONS.map((option) => (
+            <Tab key={option.value} title={t(option.label)} />
+          ))}
+        </Tabs>
       </SettingRow>
 
       {mode === "image" && (
@@ -612,6 +750,47 @@ const AppearanceSection: React.FC = () => {
         </SettingRow>
       )}
 
+      {/* Linux 桌面壁纸（swww / mpvpaper 方案）：设置的是桌面本身，
+          与启动器自己的背景图源互相独立 */}
+      {isLinuxPlatform() && (
+        <SettingRow
+          hint={
+            desktopApplyMessage ||
+            (linuxTools === null
+              ? t("正在检测 swww / mpvpaper…")
+              : !linuxTools.Swww && !linuxTools.Mpvpaper
+                ? t(
+                    "未检测到 swww / mpvpaper：图片与动图壁纸需要 swww，视频壁纸需要 mpvpaper，安装后可用",
+                  )
+                : t(
+                    "图片与动图经 swww 设置（GIF 会动起来），视频经 mpvpaper 循环静音播放",
+                  ))
+          }
+          label={t("桌面壁纸（Linux）")}
+        >
+          <div className="flex gap-2">
+            {linuxTools?.Swww && (
+              <Button
+                size="sm"
+                variant="flat"
+                onPress={() => void pickDesktopWallpaper(false)}
+              >
+                {t("图片 / 动图")}
+              </Button>
+            )}
+            {linuxTools?.Mpvpaper && (
+              <Button
+                size="sm"
+                variant="flat"
+                onPress={() => void pickDesktopWallpaper(true)}
+              >
+                {t("视频")}
+              </Button>
+            )}
+          </div>
+        </SettingRow>
+      )}
+
       {mode === "wallpaper-engine" && (
         <>
           <SettingRow hint={weHint} label="Wallpaper Engine">
@@ -630,6 +809,66 @@ const AppearanceSection: React.FC = () => {
                 onValueChange={(v) => void toggleWebWallpaperInteractive(v)}
               />
             </SettingRow>
+          )}
+          {wallpaperEngineType.toLowerCase() === "scene" && (
+            <>
+              <SettingRow
+                hint={t("渲染倍数,调低可显著降低 GPU 占用")}
+                label={t("场景壁纸分辨率")}
+              >
+                <Select
+                  aria-label={t("场景壁纸分辨率")}
+                  className="w-44"
+                  items={[
+                    { key: "0.5", label: "50%" },
+                    { key: "0.75", label: "75%" },
+                    { key: "1", label: "100%（默认）" },
+                    { key: "1.5", label: "150%" },
+                    { key: "2", label: "200%" },
+                  ]}
+                  popoverProps={selectPopoverProps}
+                  selectedKeys={[String(sceneResolution)]}
+                  size="sm"
+                  variant="bordered"
+                  onSelectionChange={(keys) => {
+                    const key = String(Array.from(keys)[0] ?? "");
+
+                    if (key) void saveSceneResolution(key);
+                  }}
+                >
+                  {(item: { key: string; label: string }) => (
+                    <SelectItem key={item.key}>{item.label}</SelectItem>
+                  )}
+                </Select>
+              </SettingRow>
+              <SettingRow
+                hint={t("自适应=检测到卡顿自动降为 30fps")}
+                label={t("场景壁纸刷新率上限")}
+              >
+                <Select
+                  aria-label={t("场景壁纸刷新率上限")}
+                  className="w-44"
+                  items={[
+                    { key: "auto", label: "自适应（默认）" },
+                    { key: "30", label: "30 fps" },
+                    { key: "60", label: "60 fps" },
+                  ]}
+                  popoverProps={selectPopoverProps}
+                  selectedKeys={[sceneFps > 0 ? String(sceneFps) : "auto"]}
+                  size="sm"
+                  variant="bordered"
+                  onSelectionChange={(keys) => {
+                    const key = String(Array.from(keys)[0] ?? "");
+
+                    if (key) void saveSceneFps(key);
+                  }}
+                >
+                  {(item: { key: string; label: string }) => (
+                    <SelectItem key={item.key}>{item.label}</SelectItem>
+                  )}
+                </Select>
+              </SettingRow>
+            </>
           )}
         </>
       )}

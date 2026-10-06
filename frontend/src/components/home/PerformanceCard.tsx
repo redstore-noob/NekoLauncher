@@ -11,13 +11,18 @@ import { TopSpeed20Regular } from "@fluentui/react-icons";
 
 import { GetSystemUsage } from "../../../wailsjs/go/bindings/MonitorAPI";
 import { asObject } from "../../lib/guards";
+import { isLinuxPlatform } from "../../lib/platform";
+import { startVisiblePoll } from "../../lib/visibility";
 import { t } from "../../i18n";
 
 import HomeCard from "./HomeCard";
 
-/** 采样间隔（ms），与 gopsutil CPU 差值采样节奏匹配 */
-const POLL_INTERVAL_MS = 1000;
-/** 曲线窗口：60 个采样点 = 最近 60 秒 */
+/**
+ * 采样间隔（ms），与 gopsutil CPU 差值采样节奏匹配。Linux 后端要遍历 /proc、
+ * IPC 与卡片重绘（毛玻璃表面）都比 Windows 贵，放宽到 3 秒。
+ */
+const POLL_INTERVAL_MS = isLinuxPlatform() ? 3000 : 1000;
+/** 曲线窗口：60 个采样点（Windows=60 秒，Linux=3 分钟） */
 const WINDOW_SIZE = 60;
 
 /** 三条线的配色（任务管理器风格：CPU 蓝 / GPU 绿 / 内存紫） */
@@ -113,11 +118,11 @@ const PerformanceCard: React.FC = () => {
     };
 
     void sample();
-    const timer = window.setInterval(() => void sample(), POLL_INTERVAL_MS);
+    const stop = startVisiblePoll(() => void sample(), POLL_INTERVAL_MS);
 
     return () => {
       alive = false;
-      window.clearInterval(timer);
+      stop();
     };
   }, []);
 
@@ -215,7 +220,13 @@ const PerformanceCard: React.FC = () => {
               })
             : " "}
         </span>
-        <span>{t("每秒采样 · 最近 60 秒")}</span>
+        <span>
+          {t(
+            isLinuxPlatform()
+              ? "每 3 秒采样 · 最近 3 分钟"
+              : "每秒采样 · 最近 60 秒",
+          )}
+        </span>
       </div>
     </HomeCard>
   );

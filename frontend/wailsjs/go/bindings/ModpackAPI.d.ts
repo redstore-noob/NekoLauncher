@@ -14,7 +14,11 @@ export function ExportModpack(arg1:modpack.ModpackExportOptions,arg2:string,arg3
 
 export function ExportSoloPack(arg1:solo.SoloExportOptions,arg2:string):Promise<modpack.ModpackExportResult>;
 
+export function ExtractSoloPack(arg1:string,arg2:string):Promise<void>;
+
 export function GetSoloStubStatus():Promise<solo.StubStatus>;
+
+export function ImportSoloExe(arg1:string):Promise<string>;
 
 export function LoadExportProfile(arg1:string):Promise<modpack.ModpackExportProfile>;
 

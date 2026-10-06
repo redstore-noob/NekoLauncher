@@ -17,3 +17,7 @@ export function currentPlatform(): RuntimePlatform {
 export function isWindowsPlatform(): boolean {
   return currentPlatform() === "windows";
 }
+
+export function isLinuxPlatform(): boolean {
+  return currentPlatform() === "linux";
+}

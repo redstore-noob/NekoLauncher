@@ -157,7 +157,7 @@ const GoalCard: React.FC<GoalCardProps> = ({ records, isGameRunning }) => {
           </div>
 
           {achieved ? (
-            <div className="rounded-xl bg-amber-500/10 px-3 py-2 text-center text-xs leading-relaxed text-amber-600 dark:text-amber-300">
+            <div className="rounded-lg bg-amber-500/10 px-3 py-2 text-center text-xs leading-relaxed text-amber-600 dark:text-amber-300">
               {t("目标达成！")}
             </div>
           ) : (

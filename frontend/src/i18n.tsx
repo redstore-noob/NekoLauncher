@@ -19,13 +19,21 @@ import React, {
   useState,
 } from "react";
 
+import deDE from "./locales/de-DE";
 import enUS from "./locales/en-US";
 import jaJP from "./locales/ja-JP";
 import ruRU from "./locales/ru-RU";
 import zhHK from "./locales/zh-HK";
 import zhTW from "./locales/zh-TW";
 
-export type Locale = "zh-CN" | "zh-TW" | "zh-HK" | "en-US" | "ja-JP" | "ru-RU";
+export type Locale =
+  | "zh-CN"
+  | "zh-TW"
+  | "zh-HK"
+  | "en-US"
+  | "ja-JP"
+  | "ru-RU"
+  | "de-DE";
 
 export const LOCALE_OPTIONS: Array<{ value: Locale; label: string }> = [
   { value: "zh-CN", label: "简体中文" },
@@ -34,6 +42,7 @@ export const LOCALE_OPTIONS: Array<{ value: Locale; label: string }> = [
   { value: "en-US", label: "English" },
   { value: "ja-JP", label: "日本語" },
   { value: "ru-RU", label: "Русский" },
+  { value: "de-DE", label: "Deutsch" },
 ];
 
 const STORAGE_KEY = "nekolauncher-locale";
@@ -48,10 +57,12 @@ const DICTIONARIES: Record<Locale, Dictionary> = {
   "en-US": enUS,
   "ja-JP": jaJP,
   "ru-RU": ruRU,
+  "de-DE": deDE,
 };
 
-/** 条目缺失时的兜底语言（日/俄缺失先回退英文，再回退中文原文） */
+/** 条目缺失时的兜底语言（德/日/俄缺失先回退英文，再回退中文原文） */
 const FALLBACKS: Partial<Record<Locale, Locale>> = {
+  "de-DE": "en-US",
   "ja-JP": "en-US",
   "ru-RU": "en-US",
 };
@@ -63,6 +74,7 @@ const LOCALES: Locale[] = [
   "en-US",
   "ja-JP",
   "ru-RU",
+  "de-DE",
 ];
 
 function isLocale(value: string | null): value is Locale {
@@ -76,7 +88,7 @@ function readStoredLocale(): Locale | null {
 }
 
 /** 按浏览器语言猜测：zh-HK/zh-MO → 香港繁體；zh-Hant/zh-TW → 台灣繁體；
- * 其余中文 → 简中；en → 英文 */
+ * 其余中文 → 简中；en → 英文；de → 德文（de-AT/de-CH 等变体同样命中） */
 function detectLocale(): Locale {
   const candidates = navigator.languages?.length
     ? navigator.languages
@@ -93,6 +105,7 @@ function detectLocale(): Locale {
     if (lang.startsWith("en")) return "en-US";
     if (lang.startsWith("ja")) return "ja-JP";
     if (lang.startsWith("ru")) return "ru-RU";
+    if (lang.startsWith("de")) return "de-DE";
   }
 
   return "zh-CN";

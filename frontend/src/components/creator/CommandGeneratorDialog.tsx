@@ -37,13 +37,17 @@ import {
   Options20Regular,
 } from "@fluentui/react-icons";
 
+import { selectPopoverProps } from "../../lib/motion";
 import { ModalShell, modalBehaviorProps } from "../modal-shell";
 import { notify } from "../overlay/dialog";
 import { t } from "../../i18n";
 
+import CreatorToolShell from "./CreatorToolShell";
+
 interface CommandGeneratorDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  embedded?: boolean;
 }
 
 /** 命令类型：每个类型定义自己的参数表单与拼接逻辑 */
@@ -270,25 +274,31 @@ const OptionSelect: React.FC<{
   value: string;
   onChange: (value: string) => void;
   className?: string;
-}> = ({ ariaLabel, options, value, onChange, className }) => (
-  <Select
-    aria-label={ariaLabel}
-    className={className ?? "w-full"}
-    classNames={{ trigger: "h-9 min-h-9" }}
-    selectedKeys={[value]}
-    size="sm"
-    onSelectionChange={(keys) =>
-      onChange((Array.from(keys)[0] as string) ?? firstKey(options))
-    }
-  >
-    {options.map((option) => {
-      const [key, label] =
-        typeof option === "string" ? [option, t(option)] : option;
+}> = ({ ariaLabel, options, value, onChange, className }) => {
+  // 缓存 selectedKeys 数组，避免每次渲染都创建新数组导致 Select 闪烁
+  const selectedKeys = useMemo(() => [value], [value]);
 
-      return <SelectItem key={key}>{label}</SelectItem>;
-    })}
-  </Select>
-);
+  return (
+    <Select
+      aria-label={ariaLabel}
+      className={className ?? "w-full"}
+      classNames={{ trigger: "h-9 min-h-9" }}
+      popoverProps={selectPopoverProps}
+      selectedKeys={selectedKeys}
+      size="sm"
+      onSelectionChange={(keys) =>
+        onChange((Array.from(keys)[0] as string) ?? firstKey(options))
+      }
+    >
+      {options.map((option) => {
+        const [key, label] =
+          typeof option === "string" ? [option, t(option)] : option;
+
+        return <SelectItem key={key}>{label}</SelectItem>;
+      })}
+    </Select>
+  );
+};
 
 /**
  * 可搜索选择框：输入名字（中文或英文 id）即可筛选选中；
@@ -312,6 +322,7 @@ const SearchSelect: React.FC<{
       classNames={{ selectorButton: "h-9 min-h-9" }}
       inputValue={inputValue}
       menuTrigger="input"
+      popoverProps={selectPopoverProps}
       selectedKey={value}
       size="sm"
       onInputChange={(next) => {
@@ -346,6 +357,7 @@ const SearchSelect: React.FC<{
 const CommandGeneratorDialog: React.FC<CommandGeneratorDialogProps> = ({
   isOpen,
   onClose,
+  embedded,
 }) => {
   const [kind, setKind] = useState<CommandKind>("give");
   const [copied, setCopied] = useState(false);
@@ -458,6 +470,329 @@ const CommandGeneratorDialog: React.FC<CommandGeneratorDialogProps> = ({
     </label>
   );
 
+  const renderBody = () => (
+    <div className="flex h-full min-h-0 gap-4">
+      {/* 左：命令类型磁贴 */}
+      <div className="nya-panel-inner nya-border grid w-56 flex-none grid-cols-1 content-start gap-1.5 overflow-y-auto rounded-medium border p-2">
+        {KIND_OPTIONS.map((option) => (
+          <button
+            key={option.key}
+            className={`cursor-pointer rounded-lg border px-3 py-2 text-left transition-colors ${
+              kind === option.key
+                ? "border-primary/50 bg-primary/10"
+                : "border-transparent hover:bg-default-100 dark:hover:bg-gray-800"
+            }`}
+            type="button"
+            onClick={() => setKind(option.key)}
+          >
+            <span
+              className={`block text-[13px] font-medium ${
+                kind === option.key
+                  ? "text-primary"
+                  : "text-gray-700 dark:text-gray-200"
+              }`}
+            >
+              {option.label}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {/* 中：参数表单 */}
+      <div className="nya-panel-inner nya-border flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto rounded-medium border p-4">
+        <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
+          {t("参数")}
+        </span>
+
+        {field(
+          t("目标"),
+          <OptionSelect
+            ariaLabel={t("目标")}
+            options={TARGETS}
+            value={target}
+            onChange={setTarget}
+          />,
+        )}
+
+        {kind === "give" && (
+          <>
+            {field(
+              t("物品"),
+              <SearchSelect
+                ariaLabel={t("物品")}
+                options={ITEMS}
+                value={item}
+                onChange={setItem}
+              />,
+            )}
+            <div>
+              <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
+                <span>{t("数量")}</span>
+                <span>{count}</span>
+              </div>
+              <Slider
+                aria-label={t("数量")}
+                maxValue={64}
+                minValue={1}
+                size="sm"
+                step={1}
+                value={count}
+                onChange={(value) =>
+                  setCount(Math.round(Array.isArray(value) ? value[0] : value))
+                }
+              />
+            </div>
+          </>
+        )}
+
+        {kind === "effect" && (
+          <>
+            {field(
+              t("效果"),
+              <SearchSelect
+                ariaLabel={t("效果")}
+                options={EFFECTS}
+                value={effect}
+                onChange={setEffect}
+              />,
+            )}
+            <div>
+              <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
+                <span>{t("时长（秒）")}</span>
+                <span>{seconds}</span>
+              </div>
+              <Slider
+                aria-label={t("时长（秒）")}
+                maxValue={3600}
+                minValue={1}
+                size="sm"
+                step={1}
+                value={seconds}
+                onChange={(value) =>
+                  setSeconds(
+                    Math.round(Array.isArray(value) ? value[0] : value),
+                  )
+                }
+              />
+            </div>
+            <div>
+              <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
+                <span>{t("等级")}</span>
+                <span>{amplifier}</span>
+              </div>
+              <Slider
+                aria-label={t("等级")}
+                maxValue={10}
+                minValue={1}
+                size="sm"
+                step={1}
+                value={amplifier}
+                onChange={(value) =>
+                  setAmplifier(
+                    Math.round(Array.isArray(value) ? value[0] : value),
+                  )
+                }
+              />
+            </div>
+            <Switch
+              isSelected={hideParticles}
+              size="sm"
+              onValueChange={setHideParticles}
+            >
+              {t("隐藏粒子特效")}
+            </Switch>
+          </>
+        )}
+
+        {kind === "enchant" && (
+          <>
+            {field(
+              t("附魔"),
+              <SearchSelect
+                ariaLabel={t("附魔")}
+                options={ENCHANTS}
+                value={enchant}
+                onChange={setEnchant}
+              />,
+            )}
+            <div>
+              <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
+                <span>{t("等级")}</span>
+                <span>{enchantLevel}</span>
+              </div>
+              <Slider
+                aria-label={t("等级")}
+                maxValue={10}
+                minValue={1}
+                size="sm"
+                step={1}
+                value={enchantLevel}
+                onChange={(value) =>
+                  setEnchantLevel(
+                    Math.round(Array.isArray(value) ? value[0] : value),
+                  )
+                }
+              />
+            </div>
+          </>
+        )}
+
+        {(kind === "tp" || kind === "summon") && (
+          <div className="flex items-end gap-2">
+            {(
+              [
+                ["X", x, setX],
+                ["Y", y, setY],
+                ["Z", z, setZ],
+              ] as const
+            ).map(([axis, value, setValue]) => (
+              <Input
+                key={axis}
+                aria-label={axis}
+                classNames={{ inputWrapper: "h-9" }}
+                label={axis}
+                placeholder="0"
+                size="sm"
+                value={value}
+                onValueChange={setValue}
+              />
+            ))}
+          </div>
+        )}
+
+        {kind === "summon" &&
+          field(
+            t("实体"),
+            <SearchSelect
+              ariaLabel={t("实体")}
+              options={ENTITIES}
+              value={entity}
+              onChange={setEntity}
+            />,
+          )}
+
+        {kind === "gamemode" &&
+          field(
+            t("模式"),
+            <OptionSelect
+              ariaLabel={t("模式")}
+              options={GAMEMODES}
+              value={gamemode}
+              onChange={setGamemode}
+            />,
+          )}
+
+        {kind === "time" && (
+          <>
+            {field(
+              t("时间"),
+              <OptionSelect
+                ariaLabel={t("时间")}
+                options={[...TIMES, "custom" as const]}
+                value={time}
+                onChange={setTime}
+              />,
+            )}
+            {time === "custom" &&
+              field(
+                t("刻数（0-24000）"),
+                <Input
+                  aria-label={t("刻数")}
+                  classNames={{ inputWrapper: "h-9" }}
+                  placeholder="6000"
+                  size="sm"
+                  value={timeValue}
+                  onValueChange={setTimeValue}
+                />,
+              )}
+          </>
+        )}
+
+        {kind === "weather" &&
+          field(
+            t("天气"),
+            <OptionSelect
+              ariaLabel={t("天气")}
+              options={WEATHERS}
+              value={weather}
+              onChange={setWeather}
+            />,
+          )}
+
+        {kind === "difficulty" &&
+          field(
+            t("难度"),
+            <OptionSelect
+              ariaLabel={t("难度")}
+              options={DIFFICULTIES}
+              value={difficulty}
+              onChange={setDifficulty}
+            />,
+          )}
+
+        {kind === "xp" && (
+          <>
+            <div>
+              <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
+                <span>{t("经验量")}</span>
+                <span>{xpAmount}</span>
+              </div>
+              <Slider
+                aria-label={t("经验量")}
+                maxValue={1000}
+                minValue={1}
+                size="sm"
+                step={1}
+                value={xpAmount}
+                onChange={(value) =>
+                  setXpAmount(
+                    Math.round(Array.isArray(value) ? value[0] : value),
+                  )
+                }
+              />
+            </div>
+            <Switch isSelected={xpLevels} size="sm" onValueChange={setXpLevels}>
+              {t("按等级（否则按点数）")}
+            </Switch>
+          </>
+        )}
+      </div>
+
+      {/* 右：实时指令预览 */}
+      <div className="nya-panel-inner nya-border flex w-72 flex-none flex-col gap-2 rounded-medium border p-3">
+        <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
+          {t("指令预览")}
+        </span>
+        <code className="nya-border min-h-0 flex-1 overflow-y-auto break-all rounded-lg border bg-default-100 p-3 font-mono text-[12px] text-gray-800 dark:text-gray-100">
+          {command}
+        </code>
+        <Button
+          color="primary"
+          size="sm"
+          startContent={copied ? <Checkmark20Regular /> : <Copy20Regular />}
+          onPress={() => void copyCommand()}
+        >
+          {t("复制指令")}
+        </Button>
+        <p className="text-[10px] leading-relaxed text-gray-400">
+          {t("需要相应权限")}
+        </p>
+      </div>
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <CreatorToolShell
+        icon={<Options20Regular />}
+        title={t("指令生成器")}
+        onBack={onClose}
+      >
+        {renderBody()}
+      </CreatorToolShell>
+    );
+  }
+
   return (
     <Modal isOpen={isOpen} size="4xl" onClose={onClose} {...modalBehaviorProps}>
       <ModalContent className="h-[72vh] max-h-[72vh]">
@@ -466,322 +801,7 @@ const CommandGeneratorDialog: React.FC<CommandGeneratorDialogProps> = ({
           title={t("指令生成器")}
           onClose={onClose}
         >
-          <div className="flex h-full min-h-0 gap-4">
-            {/* 左：命令类型磁贴 */}
-            <div className="nya-panel-inner nya-border grid w-56 flex-none grid-cols-1 content-start gap-1.5 overflow-y-auto rounded-2xl border p-2">
-              {KIND_OPTIONS.map((option) => (
-                <button
-                  key={option.key}
-                  className={`cursor-pointer rounded-xl border px-3 py-2 text-left transition-colors ${
-                    kind === option.key
-                      ? "border-primary/50 bg-primary/10"
-                      : "border-transparent hover:bg-default-100 dark:hover:bg-gray-800"
-                  }`}
-                  type="button"
-                  onClick={() => setKind(option.key)}
-                >
-                  <span
-                    className={`block text-[13px] font-medium ${
-                      kind === option.key
-                        ? "text-primary"
-                        : "text-gray-700 dark:text-gray-200"
-                    }`}
-                  >
-                    {option.label}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            {/* 中：参数表单 */}
-            <div className="nya-panel-inner nya-border flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto rounded-2xl border p-4">
-              <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
-                {t("参数")}
-              </span>
-
-              {field(
-                t("目标"),
-                <OptionSelect
-                  ariaLabel={t("目标")}
-                  options={TARGETS}
-                  value={target}
-                  onChange={setTarget}
-                />,
-              )}
-
-              {kind === "give" && (
-                <>
-                  {field(
-                    t("物品"),
-                    <SearchSelect
-                      ariaLabel={t("物品")}
-                      options={ITEMS}
-                      value={item}
-                      onChange={setItem}
-                    />,
-                  )}
-                  <div>
-                    <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
-                      <span>{t("数量")}</span>
-                      <span>{count}</span>
-                    </div>
-                    <Slider
-                      aria-label={t("数量")}
-                      maxValue={64}
-                      minValue={1}
-                      size="sm"
-                      step={1}
-                      value={count}
-                      onChange={(value) =>
-                        setCount(
-                          Math.round(Array.isArray(value) ? value[0] : value),
-                        )
-                      }
-                    />
-                  </div>
-                </>
-              )}
-
-              {kind === "effect" && (
-                <>
-                  {field(
-                    t("效果"),
-                    <SearchSelect
-                      ariaLabel={t("效果")}
-                      options={EFFECTS}
-                      value={effect}
-                      onChange={setEffect}
-                    />,
-                  )}
-                  <div>
-                    <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
-                      <span>{t("时长（秒）")}</span>
-                      <span>{seconds}</span>
-                    </div>
-                    <Slider
-                      aria-label={t("时长（秒）")}
-                      maxValue={3600}
-                      minValue={1}
-                      size="sm"
-                      step={1}
-                      value={seconds}
-                      onChange={(value) =>
-                        setSeconds(
-                          Math.round(Array.isArray(value) ? value[0] : value),
-                        )
-                      }
-                    />
-                  </div>
-                  <div>
-                    <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
-                      <span>{t("等级")}</span>
-                      <span>{amplifier}</span>
-                    </div>
-                    <Slider
-                      aria-label={t("等级")}
-                      maxValue={10}
-                      minValue={1}
-                      size="sm"
-                      step={1}
-                      value={amplifier}
-                      onChange={(value) =>
-                        setAmplifier(
-                          Math.round(Array.isArray(value) ? value[0] : value),
-                        )
-                      }
-                    />
-                  </div>
-                  <Switch
-                    isSelected={hideParticles}
-                    size="sm"
-                    onValueChange={setHideParticles}
-                  >
-                    {t("隐藏粒子特效")}
-                  </Switch>
-                </>
-              )}
-
-              {kind === "enchant" && (
-                <>
-                  {field(
-                    t("附魔"),
-                    <SearchSelect
-                      ariaLabel={t("附魔")}
-                      options={ENCHANTS}
-                      value={enchant}
-                      onChange={setEnchant}
-                    />,
-                  )}
-                  <div>
-                    <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
-                      <span>{t("等级")}</span>
-                      <span>{enchantLevel}</span>
-                    </div>
-                    <Slider
-                      aria-label={t("等级")}
-                      maxValue={10}
-                      minValue={1}
-                      size="sm"
-                      step={1}
-                      value={enchantLevel}
-                      onChange={(value) =>
-                        setEnchantLevel(
-                          Math.round(Array.isArray(value) ? value[0] : value),
-                        )
-                      }
-                    />
-                  </div>
-                </>
-              )}
-
-              {(kind === "tp" || kind === "summon") && (
-                <div className="flex items-end gap-2">
-                  {(
-                    [
-                      ["X", x, setX],
-                      ["Y", y, setY],
-                      ["Z", z, setZ],
-                    ] as const
-                  ).map(([axis, value, setValue]) => (
-                    <Input
-                      key={axis}
-                      aria-label={axis}
-                      classNames={{ inputWrapper: "h-9" }}
-                      label={axis}
-                      placeholder="0"
-                      size="sm"
-                      value={value}
-                      onValueChange={setValue}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {kind === "summon" &&
-                field(
-                  t("实体"),
-                  <SearchSelect
-                    ariaLabel={t("实体")}
-                    options={ENTITIES}
-                    value={entity}
-                    onChange={setEntity}
-                  />,
-                )}
-
-              {kind === "gamemode" &&
-                field(
-                  t("模式"),
-                  <OptionSelect
-                    ariaLabel={t("模式")}
-                    options={GAMEMODES}
-                    value={gamemode}
-                    onChange={setGamemode}
-                  />,
-                )}
-
-              {kind === "time" && (
-                <>
-                  {field(
-                    t("时间"),
-                    <OptionSelect
-                      ariaLabel={t("时间")}
-                      options={[...TIMES, "custom" as const]}
-                      value={time}
-                      onChange={setTime}
-                    />,
-                  )}
-                  {time === "custom" &&
-                    field(
-                      t("刻数（0-24000）"),
-                      <Input
-                        aria-label={t("刻数")}
-                        classNames={{ inputWrapper: "h-9" }}
-                        placeholder="6000"
-                        size="sm"
-                        value={timeValue}
-                        onValueChange={setTimeValue}
-                      />,
-                    )}
-                </>
-              )}
-
-              {kind === "weather" &&
-                field(
-                  t("天气"),
-                  <OptionSelect
-                    ariaLabel={t("天气")}
-                    options={WEATHERS}
-                    value={weather}
-                    onChange={setWeather}
-                  />,
-                )}
-
-              {kind === "difficulty" &&
-                field(
-                  t("难度"),
-                  <OptionSelect
-                    ariaLabel={t("难度")}
-                    options={DIFFICULTIES}
-                    value={difficulty}
-                    onChange={setDifficulty}
-                  />,
-                )}
-
-              {kind === "xp" && (
-                <>
-                  <div>
-                    <div className="mb-1 flex justify-between text-xs text-gray-500 dark:text-gray-400">
-                      <span>{t("经验量")}</span>
-                      <span>{xpAmount}</span>
-                    </div>
-                    <Slider
-                      aria-label={t("经验量")}
-                      maxValue={1000}
-                      minValue={1}
-                      size="sm"
-                      step={1}
-                      value={xpAmount}
-                      onChange={(value) =>
-                        setXpAmount(
-                          Math.round(Array.isArray(value) ? value[0] : value),
-                        )
-                      }
-                    />
-                  </div>
-                  <Switch
-                    isSelected={xpLevels}
-                    size="sm"
-                    onValueChange={setXpLevels}
-                  >
-                    {t("按等级（否则按点数）")}
-                  </Switch>
-                </>
-              )}
-            </div>
-
-            {/* 右：实时指令预览 */}
-            <div className="nya-panel-inner nya-border flex w-72 flex-none flex-col gap-2 rounded-2xl border p-3">
-              <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
-                {t("指令预览")}
-              </span>
-              <code className="nya-border min-h-0 flex-1 overflow-y-auto break-all rounded-xl border bg-default-100 p-3 font-mono text-[12px] text-gray-800 dark:text-gray-100">
-                {command}
-              </code>
-              <Button
-                color="primary"
-                size="sm"
-                startContent={
-                  copied ? <Checkmark20Regular /> : <Copy20Regular />
-                }
-                onPress={() => void copyCommand()}
-              >
-                {t("复制指令")}
-              </Button>
-              <p className="text-[10px] leading-relaxed text-gray-400">
-                {t("需要相应权限")}
-              </p>
-            </div>
-          </div>
+          {renderBody()}
         </ModalShell>
       </ModalContent>
     </Modal>

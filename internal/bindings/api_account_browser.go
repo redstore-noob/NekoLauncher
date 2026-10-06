@@ -58,13 +58,18 @@ func (a *AccountAPI) LoginMicrosoftBrowser(returnTo string) error {
 		return err
 	}
 
-	ctx, done := a.beginMicrosoftLogin()
+	// 先查 Active 再 begin：顺序反了的话，"已有登录进行中"的拒绝路径
+	// 会先杀掉正在进行的那次登录（其错误路径还会把窗口推到 ?msoauth=error
+	// 再重载一次 SPA）——用户看到"已有登录进行中"，实际什么都没在跑。
 	a.browserMu.Lock()
 	if a.browserState.Active {
 		a.browserMu.Unlock()
-		done()
 		return errBrowserLoginAlreadyActive
 	}
+	a.browserMu.Unlock()
+
+	ctx, done := a.beginMicrosoftLogin()
+	a.browserMu.Lock()
 	a.browserReturnTo = returnBase
 	a.browserState = MicrosoftBrowserLoginState{Active: true, Percent: 5, Message: "正在准备内嵌登录…"}
 	a.browserMu.Unlock()

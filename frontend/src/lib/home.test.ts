@@ -22,6 +22,7 @@ import {
   parseWidgetColumns,
   parseWidgetLayout,
   renderMinecraftFormatting,
+  resolveInitialVersion,
   splitWidgetColumns,
   stripMinecraftFormatting,
 } from "./home";
@@ -172,11 +173,12 @@ describe("localFileUrl", () => {
 });
 
 describe("小组件列数", () => {
-  it("只接受 1~3 的整数", () => {
+  it("只接受 1~4 的整数", () => {
     expect(parseWidgetColumns("1")).toBe(1);
     expect(parseWidgetColumns("3")).toBe(3);
+    expect(parseWidgetColumns("4")).toBe(4);
     expect(parseWidgetColumns("0")).toBeNull();
-    expect(parseWidgetColumns("4")).toBeNull();
+    expect(parseWidgetColumns("5")).toBeNull();
     expect(parseWidgetColumns("1.5")).toBeNull();
     expect(parseWidgetColumns("abc")).toBeNull();
     expect(parseWidgetColumns("")).toBeNull();
@@ -198,11 +200,18 @@ describe("splitWidgetColumns", () => {
     expect(splitWidgetColumns(["a", "b"], 3)).toEqual([["a"], ["b"], []]);
   });
 
-  it("非法列数收敛到 1~3", () => {
+  it("非法列数收敛到 1~4", () => {
     expect(splitWidgetColumns(ids, 0)).toEqual([ids]);
+    expect(splitWidgetColumns(ids, 4)).toEqual([
+      ["a", "b"],
+      ["c"],
+      ["d"],
+      ["e"],
+    ]);
     expect(splitWidgetColumns(ids, 99)).toEqual([
       ["a", "b"],
-      ["c", "d"],
+      ["c"],
+      ["d"],
       ["e"],
     ]);
   });
@@ -290,5 +299,31 @@ describe("errorMessage", () => {
     expect(errorMessage(42)).toBe("42");
     expect(errorMessage(null)).toBe("");
     expect(errorMessage(undefined)).toBe("");
+  });
+});
+
+describe("resolveInitialVersion", () => {
+  it("会话内已选中的版本优先，刷新列表不被重置", () => {
+    expect(
+      resolveInitialVersion(["1.20.1", "1.19.4"], "1.19.4", "1.20.1"),
+    ).toBe("1.19.4");
+  });
+
+  it("首次进入恢复上次持久化的选中版本", () => {
+    expect(resolveInitialVersion(["a", "b", "c"], "", "b")).toBe("b");
+  });
+
+  it("持久化版本已被删除 / 换了目录时回落首个", () => {
+    expect(resolveInitialVersion(["a", "b"], "", "gone")).toBe("a");
+  });
+
+  it("匹配版本 id 忽略大小写（Windows 目录不区分大小写）", () => {
+    expect(resolveInitialVersion(["Fabric 1.20.1"], "", "fabric 1.20.1")).toBe(
+      "Fabric 1.20.1",
+    );
+  });
+
+  it("没有任何版本时返回空串", () => {
+    expect(resolveInitialVersion([], "", "x")).toBe("");
   });
 });

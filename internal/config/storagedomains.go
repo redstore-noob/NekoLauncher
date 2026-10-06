@@ -44,7 +44,7 @@ func accountsStoreFor(key string) *yamlFileManager {
 		return nil
 	}
 	if accountsYamlStore == nil {
-		store, err := newYamlFileManager(filepath.Join(storageDirectory, accountsYamlFileName))
+		store, err := newYamlFileManager(filepath.Join(resolveStorageDirectoryLocked(), accountsYamlFileName))
 		if err != nil {
 			logsWriteError("初始化账户存储失败: " + err.Error())
 			return nil

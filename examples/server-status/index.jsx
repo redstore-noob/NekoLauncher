@@ -4,8 +4,10 @@
  * 本示例演示的 API 能力（对应 docs/Extensions_Guide.md）：
  *   - dev 模式：本文件是 index.jsx 源码，宿主现场编译后加载，无工具链；
  *   - settings 种子：plugin.yaml 的默认设置在激活前已种入 api.config；
- *   - 权限：server-status / clipboard / storage 三项在 plugin.yaml 声明，
+ *   - 权限：server-status / clipboard / storage / network 在 plugin.yaml 声明，
  *     调用未声明的权限会直接抛错；
+ *   - 用户授权：插件页每个权限一个开关，关掉的权限**返回 null**（本示例对
+ *     getServerStatus 的 null 做了提示）——联网默认关闭，用户打开后才查得到；
  *   - onCleanup：轮询定时器在插件卸载/重载时自动清理；
  *   - WidgetRenderContext：isBusy 感知启动状态、onJoin 快速进服。
  *
@@ -48,9 +50,19 @@ export default function activate(api) {
         const refresh = async () => {
           try {
             const status = await api.getServerStatus(host, port);
-            if (alive) {
-              setState({ loading: false, online: true, status, error: "" });
+            if (!alive) return;
+            // 返回 null = 被用户关掉了开关（联网或服务器状态权限），不是错误：
+            // 提示用户去插件页打开，而不是显示"离线"
+            if (!status) {
+              setState({
+                loading: false,
+                online: false,
+                status: null,
+                error: "权限已关闭：请在「插件」页打开本插件的对应开关",
+              });
+              return;
             }
+            setState({ loading: false, online: true, status, error: "" });
           } catch (ex) {
             if (alive) {
               setState({

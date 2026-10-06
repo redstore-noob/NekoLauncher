@@ -1,17 +1,21 @@
 /*
- * globals.css 浮层选择器的回归测试。
+ * globals.css 不得再"够"HeroUI 槽位的回归测试。
  *
  * 为什么需要这个测试：CSS 选择器指向一个**不存在的属性值**时不会报任何错，
  * 组件照样渲染，只是样式静默失效——构建、类型检查、lint 全都绿。此前
  * `[data-slot="popover"]` 就是这样潜伏了很久：Select 把该属性传给
  * FreeSoloPopover，但 Popover 内部的 getDialogProps 会把它覆盖成
- * `[data-slot="base"]`，于是这条规则从未命中过任何元素，
- * Select 面板的毛玻璃与圆角一直是丢的。
+ * `[data-slot="base"]`，于是那条圆角规则从未命中过任何元素，
+ * Select 面板从 Pre-Beta 1 到 0.3.1 一直是直角。
  *
- * 因此这里断言的不是"CSS 长什么样"，而是**CSS 用到的槽位与 HeroUI 实际会
- * 渲染出来的槽位一致**。读取的是已安装的 HeroUI 源码，所以升级依赖导致
- * 槽位改名（例如 HeroUI v3 把 content 改成了 select-popover）时，
- * 这个测试会失败并提醒我们去改 CSS，而不是让外观悄悄坏掉。
+ * 结论不是"把选择器写对"，而是**不再从 CSS 够组件内部**：槽位名是字符串，
+ * 只能靠测试兜；而 HeroUI 的 `classNames` / `className` prop 有 TS 类型，
+ * 写错是编译错误。所以现在组件外观一律走公开 props，globals.css 里
+ * 只保留本项目自己的 `.nya-*` 类。
+ *
+ * 这个测试负责守住这条政策：一旦有人在 globals.css 里写回 `[data-slot=...]`，
+ * 它会失败并列出 HeroUI 当前真正会渲染的槽位（升级依赖后槽位会改名，
+ * 例如 HeroUI v3 把 `content` 改成了 `select-popover`）。
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -88,7 +92,7 @@ const css = readFileSync(GLOBALS_CSS, "utf8");
 const cssSlots = collectCssSlots(css);
 const renderedSlots = collectRenderedSlots(HEROUI_MODULES);
 
-describe("globals.css 的 data-slot 选择器", () => {
+describe("globals.css 不得再够 HeroUI 的槽位", () => {
   it("确实扫到了 HeroUI 渲染用的槽位（防止测试本身失效）", () => {
     // 如果 HeroUI 换了挂属性的写法，这个测试会先在这里失败，
     // 而不是伪装成"CSS 没问题"。
@@ -96,22 +100,26 @@ describe("globals.css 的 data-slot 选择器", () => {
     expect(renderedSlots.has("content")).toBe(true);
   });
 
-  it("CSS 用到的每个槽位都是 HeroUI 真的会渲染出来的", () => {
-    expect(cssSlots.size).toBeGreaterThan(0);
+  it("CSS 里没有任何 [data-slot=...] 选择器", () => {
+    // 政策：组件外观只走 HeroUI 公开 props（classNames / className / 主题变量），
+    // CSS 不再引用 data-slot。理由见本文件头与 globals.css 里的注释。
+    // 若确有必要重新引入，请连同这条断言一起讨论，别只把这个测试改绿。
+    const used = [...cssSlots];
 
-    const bogus = [...cssSlots].filter((slot) => !renderedSlots.has(slot));
-
-    // 失败信息直接给出可用的槽位，省去再翻一遍 node_modules
     expect(
-      bogus,
-      `globals.css 引用了 HeroUI 不会渲染的槽位：${bogus.join(", ")}。` +
-        `可用槽位：${[...renderedSlots].sort().join(", ")}`,
+      used,
+      `globals.css 引用了 HeroUI 的槽位：${used.join(", ")}。` +
+        `这类选择器写错不会报错、只会静默失效（历史上就这样丢过 Select 的圆角）。` +
+        `请改用 HeroUI 的 classNames / className，或在本文件里用本项目自己的类。` +
+        `HeroUI 当前会渲染的槽位：${[...renderedSlots].sort().join(", ")}`,
     ).toEqual([]);
   });
 
-  it("浮层面板不要再用已失效的 popover 槽位", () => {
-    // 回归护栏：Select 的 popover 属性会被 Popover 覆盖成 base，
-    // 这个值永远不会出现在 DOM 上。
-    expect(cssSlots.has("popover")).toBe(false);
+  it("注释里提到已失效的槽位不会被算成规则", () => {
+    // collectCssSlots 先剥注释再扫描：globals.css 的注释里会**提到**
+    // `[data-slot="popover"]` 这类名字（正是为了解释为什么不能用它），
+    // 把注释也算进来的话，这条护栏会被自己的说明文字绊倒。
+    expect(css).toContain("data-slot");
+    expect(cssSlots.size).toBe(0);
   });
 });

@@ -1,8 +1,12 @@
-# NekoSolo 安装包格式规范（v1 内嵌 / v2 在线）
+# NekoSolo 安装包格式规范（v1 内嵌 / v2 在线 / v3 Modrinth 壳）
 
 本文定义 NekoSolo 安装包（`.exe`）的二进制布局、载荷结构与首启标记。
 导出方：NekoLauncher `internal/solo`；消费方：NekoSolo.Installer（C#）。
 两端的字段与魔数必须保持一致，破坏性变更时递增版本号。
+
+> **当前导出格式为 v3（第 8 节）**：载荷 = 标准 Modrinth 整合包 + 启动器条目，
+> mod / Minecraft 本体 / Java 全部联网补全。v1/v2 仍可被安装器安装（向后兼容），
+> 但不再由新版本启动器导出。
 
 ## 1. 文件布局
 
@@ -186,3 +190,52 @@ exe**，而是发布到外部 https 地址（首选 GitHub Releases 资产）。
   然后才分发 exe；
 - 载荷 zip 内部布局与 v1 载荷完全一致（第 3、4 节），未来可平滑升级为
   按文件增量下载（v3）而无需再改分发方式。
+
+## 8. v3：Modrinth 整合包壳（当前导出格式）
+
+v3 把载荷从"自定义整合包布局"换成**标准 Modrinth 格式**：exe 只有几 MB，
+内容联网补全。尾标魔数 `"NKSOLO3\x03"`，Offset/Length/CRC32 描述载荷 zip
+（与 v1 同布局）。
+
+### 8.1 载荷 zip 条目
+
+| 条目 | 说明 |
+| --- | --- |
+| `modrinth.index.json` | 标准 Modrinth 索引：联网 mod 声明 `downloads[]` 直链 + SHA1/SHA512；dependencies 带 `minecraft` 与加载器键 |
+| `overrides/…` | 找不到 Modrinth 对应文件的 mod、`config/`、`saves/`、`options.txt`、`icon.png`（图标）等随包内容 |
+| `manifest.json` | 与第 4 节完全一致；`hasJava` 恒为 false，`iconPath` 指向 `overrides/icon.png` |
+| `files/` | 启动器本体 + `portable.flag`（同 v1） |
+
+**不再有 `minecraft/` 与 `jre/`**：Minecraft 本体、libraries/assets、加载器、
+mod 与 Java 运行时全部由启动器联网补全。
+
+### 8.2 安装流程（安装器）
+
+1. 解压 `files/` 到安装根（仅全新安装）；
+2. 把整个载荷 zip 原样复制为 `<数据目录>/pending-pack/pack.mrpack`；
+3. 写首启标记 `neko-solo.json`，新增字段 `pendingPayload` = 该 mrpack 的绝对路径。
+
+安装因此秒级完成，无需在安装器里实现任何下载逻辑。
+
+### 8.3 首启补全（启动器）
+
+启动器消费标记时（`internal/solo/marker.go` + `internal/bindings/solo_completion.go`）：
+
+1. 确保实例存在：按 index 的 dependencies 走既有 `StartDownload` /
+   `StartModLoaderDownload` 路径（**Minecraft 本体与加载器在此联网下载**）；
+2. `InstallModpack(pendingPayload, 内容目录)`：overrides 解压 +
+   **mod 按直链联网下载**（SHA1/SHA512 校验）；
+3. **Java 运行时联网下载**：按版本 json 的 `javaVersion.majorVersion`
+   （兜底按 MC 版本推算）从 Zulu 安装；用户未配置首选 Java 时注册为首选；
+4. 成功后清空 `pendingPayload`。失败保留字段，下次启动重试。
+
+更新重装会保留玩家数据：安装与解压前把内容目录的 `saves/`、`options.txt`
+搬出，装完还原（覆盖 overrides 里的同名副本）。
+
+### 8.4 提取与导入
+
+- 安装器完成页提供「提取整合包 (.mrpack)」：把载荷中除 `manifest.json`、
+  `files/` 外的全部条目另存为标准 .mrpack；
+- 启动器下载页可直接选择 .exe 导入：`ModpackAPI.ImportSoloExe` 转存为
+  临时 .mrpack 后走既有整合包导入流程；`ModpackAPI.ExtractSoloPack`
+  同样支持从 exe 提取 .mrpack。旧 v1/v2 载荷不含标准 index，不支持提取。

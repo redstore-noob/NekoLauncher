@@ -16,10 +16,24 @@ import (
 // launcher.yaml。默认目录为 %USERPROFILE%\NekoLauncher，可通过 SetStorageDirectory 切换。
 
 var (
-	configSyncRoot   sync.Mutex
-	storageDirectory = defaultStorageDirectoryValue()
-	sharedStore      *ConfigFileManager
+	configSyncRoot sync.Mutex
+	// storageDirectory 惰性解析（见 resolveStorageDirectoryLocked）：各包测试的
+	// TestMain 在包 init 之后才把 HOME/USERPROFILE 指到临时目录，若在 init 时
+	// 就算好默认目录，测试的全部读写都会泄漏进用户真实的 launcher.yaml /
+	// accounts.yaml（历史上"已保存的 Java"里冒出成串的 Test* 临时条目即此因）。
+	storageDirectory         string
+	storageDirectoryResolved bool
+	sharedStore              *ConfigFileManager
 )
+
+// resolveStorageDirectoryLocked 首次访问时计算默认存储目录；需持 configSyncRoot。
+func resolveStorageDirectoryLocked() string {
+	if !storageDirectoryResolved {
+		storageDirectory = defaultStorageDirectoryValue()
+		storageDirectoryResolved = true
+	}
+	return storageDirectory
+}
 
 // DefaultStorageDirectory 默认存储目录：便携模式下是 exe 同级的便携数据目录，
 // 否则是 %USERPROFILE%\NekoLauncher。
@@ -66,7 +80,7 @@ func UserHome() string {
 func StorageDirectory() string {
 	configSyncRoot.Lock()
 	defer configSyncRoot.Unlock()
-	return storageDirectory
+	return resolveStorageDirectoryLocked()
 }
 
 // FilePath 主配置文件路径：存储目录下的 launcher.yaml。
@@ -85,10 +99,11 @@ func SetStorageDirectory(storageDir string) error {
 	normalized := normalizeDirectory(storageDir)
 	configSyncRoot.Lock()
 	defer configSyncRoot.Unlock()
-	if PathsEqualNormalized(normalized, storageDirectory) {
+	if PathsEqualNormalized(normalized, resolveStorageDirectoryLocked()) {
 		return nil
 	}
 	storageDirectory = normalized
+	storageDirectoryResolved = true
 	sharedStore = nil   // 下次访问时用新路径重新加载
 	resetDomainStores() // 账户域存储同样用新路径重新加载
 	return nil
@@ -417,7 +432,7 @@ func UpdateInTransaction(mutation func(map[string]any) bool) bool {
 }
 
 func launcherConfigFilePath() string {
-	return filepath.Join(storageDirectory, "launcher.yaml")
+	return filepath.Join(resolveStorageDirectoryLocked(), "launcher.yaml")
 }
 
 // ensureStore 取得（或按需创建）底层 ConfigFileManager，需持 configSyncRoot 调用。

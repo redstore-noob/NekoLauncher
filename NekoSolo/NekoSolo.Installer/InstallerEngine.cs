@@ -44,6 +44,12 @@ namespace NekoSolo.Installer
         public const string LauncherFileName = "NekoLauncher.exe";
         public const string PortableFlagName = "portable.flag";
 
+        /// <summary>v3 待装 mrpack 的落盘文件名（数据目录 pending-pack/ 下）。</summary>
+        public const string PendingPackFileName = "pack.mrpack";
+
+        /// <summary>标准 Modrinth 整合包的索引条目名（v3 载荷判定依据）。</summary>
+        public const string ModrinthIndexEntry = "modrinth.index.json";
+
         public static InstallMode DetectInstallMode(string root)
         {
             if (!File.Exists(Path.Combine(root, LauncherFileName)))
@@ -104,6 +110,136 @@ namespace NekoSolo.Installer
             if (payload is RemotePayload remote)
                 remote.EnsureDownloaded(progress);
 
+            if (IsModrinthPayload(payload))
+            {
+                InstallV3(payload, manifest, mode, root, dataDirectory, markerPath, progress);
+                return;
+            }
+            InstallLegacy(payload, manifest, mode, root, dataDirectory, progress);
+        }
+
+        /// <summary>载荷是否为 v3 Modrinth 整合包结构（含 modrinth.index.json）。</summary>
+        public static bool IsModrinthPayload(IPayloadPackage payload)
+        {
+            if (payload is SoloPayload embedded) return embedded.IsV3;
+            try
+            {
+                using (var zip = payload.OpenZip())
+                {
+                    foreach (var entry in zip.Entries)
+                    {
+                        if (string.Equals(entry.FullName, ModrinthIndexEntry, StringComparison.OrdinalIgnoreCase))
+                            return true;
+                    }
+                }
+            }
+            catch
+            {
+                // 打不开按旧格式处理，由后续流程报具体错误
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// v3 安装：载荷是标准 Modrinth 整合包 + 启动器条目。只解压启动器本体，
+        /// 整包转存为待装 mrpack——mod / Minecraft 本体 / Java 全部由启动器
+        /// 首启联网补全（见 NekoLauncher 的 solo 标记消费逻辑）。
+        /// </summary>
+        private static void InstallV3(
+            IPayloadPackage payload, SoloManifest manifest, InstallMode mode,
+            string root, string dataDirectory, string markerPath, Action<InstallProgress> progress)
+        {
+            // 1. 解压启动器本体（仅全新安装；已有安装绝不覆盖）
+            if (mode == InstallMode.Fresh)
+            {
+                using (var zip = payload.OpenZip())
+                {
+                    foreach (var entry in zip.Entries)
+                    {
+                        string name = entry.FullName.Replace('\\', '/');
+                        if (!name.StartsWith("files/", StringComparison.OrdinalIgnoreCase)) continue;
+                        string relative = name.Substring("files/".Length);
+                        if (string.IsNullOrEmpty(relative) || relative.EndsWith("/", StringComparison.Ordinal)) continue;
+
+                        reportProgress(progress, name, 0, 100);
+                        string destination = SafeCombine(root, relative);
+                        Directory.CreateDirectory(Path.GetDirectoryName(destination));
+                        if (File.Exists(destination)) File.SetAttributes(destination, FileAttributes.Normal);
+                        using (var source = entry.Open())
+                        using (var target = File.Create(destination))
+                        {
+                            source.CopyTo(target);
+                        }
+                    }
+                }
+                string portableFlag = Path.Combine(root, PortableFlagName);
+                if (!File.Exists(portableFlag)) File.WriteAllBytes(portableFlag, new byte[0]);
+            }
+
+            // 2. 整包转存为待装 mrpack（启动器首启装它：解压 overrides + 联网下载 mods）
+            reportProgress(progress, "正在保存整合包内容", 40, 100);
+            string pendingDirectory = Path.Combine(dataDirectory, "pending-pack");
+            string pendingPath = Path.Combine(pendingDirectory, PendingPackFileName);
+            Directory.CreateDirectory(pendingDirectory);
+            payload.CopyPayloadTo(pendingPath);
+            reportProgress(progress, "正在写入安装标记", 90, 100);
+
+            // 3. 写首启标记
+            WriteSoloMarker(manifest, mode, markerPath, dataDirectory, javaExecutable: null, pendingPayload: pendingPath);
+
+            // 4. 全新安装：创建桌面快捷方式（失败不影响安装结果）
+            if (mode == InstallMode.Fresh)
+                TryCreateDesktopShortcut(manifest, root);
+
+            reportProgress(progress, null, 100, 100);
+        }
+
+        /// <summary>
+        /// 创建桌面快捷方式：全新安装后在桌面生成指向 NekoLauncher.exe 的快捷方式，
+        /// 名称用整合包名（文件名安全化）。用 WScript.Shell COM（无需额外依赖），
+        /// 任何失败（权限、COM 不可用等）都不影响安装成功。
+        /// </summary>
+        private static void TryCreateDesktopShortcut(SoloManifest manifest, string root)
+        {
+            try
+            {
+                string launcherPath = Path.Combine(root, "NekoLauncher.exe");
+                if (!File.Exists(launcherPath)) return;
+
+                string desktop = Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
+                if (string.IsNullOrEmpty(desktop)) return;
+
+                // 快捷方式名用整合包名，剔除非法文件名字符
+                string name = (manifest.PackName ?? "").Trim();
+                if (name.Length == 0) name = "NekoLauncher";
+                foreach (char invalid in Path.GetInvalidFileNameChars())
+                    name = name.Replace(invalid, '_');
+                string shortcutPath = Path.Combine(desktop, name + ".lnk");
+                if (File.Exists(shortcutPath)) return; // 不覆盖用户已有同名快捷方式
+
+                Type shellType = Type.GetTypeFromProgID("WScript.Shell");
+                if (shellType == null) return;
+                dynamic shell = Activator.CreateInstance(shellType);
+                dynamic shortcut = shell.CreateShortcut(shortcutPath);
+                shortcut.TargetPath = launcherPath;
+                shortcut.WorkingDirectory = root;
+                shortcut.Description = "启动 " + name + "（NekoLauncher）";
+                shortcut.Save();
+            }
+            catch (Exception)
+            {
+                // 快捷方式创建失败不影响安装成功
+            }
+        }
+
+        /// <summary>
+        /// v1/v2 旧格式安装：载荷自带版本目录与（可选）捆绑 JRE，按 top-level 布局解压。
+        /// 仅为兼容旧安装包保留。
+        /// </summary>
+        private static void InstallLegacy(
+            IPayloadPackage payload, SoloManifest manifest, InstallMode mode,
+            string root, string dataDirectory, Action<InstallProgress> progress)
+        {
             // 已有捆绑 JRE 时不覆盖（v1 已知取舍：多包共用同一 JRE，见 FORMAT.md）
             string javaExe = Path.Combine(dataDirectory, "runtime", "jre", "bin", "java.exe");
             bool keepExistingJava = manifest.HasJava && File.Exists(javaExe);
@@ -177,9 +313,22 @@ namespace NekoSolo.Installer
                 if (!File.Exists(portableFlag)) File.WriteAllBytes(portableFlag, new byte[0]);
             }
 
-            // 写首启标记：绝对路径在此刻落定。
-            // applied=false → 启动器首启应用本包（选中实例、补目录；配置只在未设置时接管）。
-            // 唯一例外：同包同版本的"修复重装"沿用原 applied，避免打扰用户当前选择。
+            // 写首启标记：绝对路径在此刻落定（applied 语义见 WriteSoloMarker 注释）。
+            string legacyMarkerPath = Path.Combine(ResolveMarkerDirectory(root, mode), MarkerFileName);
+            WriteSoloMarker(manifest, mode, legacyMarkerPath, dataDirectory,
+                manifest.HasJava && File.Exists(javaExe) ? javaExe : null, pendingPayload: null);
+            reportProgress(progress, null, totalBytes, totalBytes);
+        }
+
+        /// <summary>
+        /// 写首启标记：绝对路径在此刻落定。
+        /// applied=false → 启动器首启应用本包（选中实例、补目录；配置只在未设置时接管）。
+        /// 唯一例外：同包同版本的"修复重装"沿用原 applied，避免打扰用户当前选择。
+        /// </summary>
+        private static void WriteSoloMarker(
+            SoloManifest manifest, InstallMode mode, string markerPath, string dataDirectory,
+            string javaExecutable, string pendingPayload)
+        {
             bool applied = false;
             var previousMarker = ReadMarker(markerPath);
             if (previousMarker != null &&
@@ -187,6 +336,9 @@ namespace NekoSolo.Installer
                 string.Equals(previousMarker.VersionId, manifest.VersionId, StringComparison.Ordinal))
             {
                 applied = previousMarker.Applied;
+                // 修复重装沿用旧待装包：不打扰已补全完成的安装
+                if (applied && string.IsNullOrEmpty(previousMarker.PendingPayload))
+                    pendingPayload = null;
             }
 
             var marker = new SoloMarker
@@ -204,12 +356,38 @@ namespace NekoSolo.Installer
                 VersionId = manifest.VersionId,
                 SimpleMode = manifest.SimpleMode,
                 MinecraftDirectory = Path.Combine(dataDirectory, "minecraft"),
-                JavaExecutable = manifest.HasJava && File.Exists(javaExe) ? javaExe : null,
+                JavaExecutable = javaExecutable,
+                PendingPayload = pendingPayload,
                 UpdateLink = manifest.UpdateLink,
             };
             WriteMarker(markerPath, marker);
+        }
 
-            reportProgress(progress, null, totalBytes, totalBytes);
+        /// <summary>
+        /// 从安装包载荷中提取标准 Modrinth 整合包（.mrpack）：只保留
+        /// modrinth.index.json 与 overrides/，过滤掉启动器条目与元数据，
+        /// 产物可被任意支持 Modrinth 格式的启动器导入。
+        /// </summary>
+        public static void ExtractModpack(IPayloadPackage payload, string outputPath)
+        {
+            using (var source = payload.OpenZip())
+            using (var output = File.Create(outputPath))
+            using (var archive = new ZipArchive(output, ZipArchiveMode.Create))
+            {
+                foreach (var entry in source.Entries)
+                {
+                    string name = entry.FullName.Replace('\\', '/');
+                    if (name.EndsWith("/", StringComparison.Ordinal)) continue;
+                    if (name.Equals("manifest.json", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (name.StartsWith("files/", StringComparison.OrdinalIgnoreCase)) continue;
+                    var target = archive.CreateEntry(name, CompressionLevel.Optimal);
+                    using (var from = entry.Open())
+                    using (var to = target.Open())
+                    {
+                        from.CopyTo(to);
+                    }
+                }
+            }
         }
 
         private static void reportProgress(Action<InstallProgress> progress, string file, long written, long total)

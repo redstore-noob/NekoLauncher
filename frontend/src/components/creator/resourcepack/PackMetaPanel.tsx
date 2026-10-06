@@ -19,7 +19,7 @@
  */
 import type { PackMeta } from "./types";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Button, Input, Select, SelectItem, Switch } from "@heroui/react";
 import {
   ArrowImport20Regular,
@@ -29,7 +29,7 @@ import {
   Sparkle20Regular,
 } from "@fluentui/react-icons";
 
-import { popoverMotionProps } from "../../../lib/motion";
+import { selectPopoverProps } from "../../../lib/motion";
 import { t } from "../../../i18n";
 
 import { PACK_FORMAT_PRESETS } from "./types";
@@ -104,6 +104,12 @@ const PackMetaPanel: React.FC<PackMetaPanelProps> = ({
   // 立刻改写成 "1"（NaN || 1），后面敲的数字接在后面 —— 想输 46 会变成 146。
   const [formatText, setFormatText] = useState(String(meta.packFormat));
 
+  // 缓存 selectedKeys 数组，避免每次渲染都创建新数组导致 Select 闪烁
+  const presetKeys = useMemo(
+    () => (presetKey === "custom" ? [] : [String(presetKey)]),
+    [presetKey],
+  );
+
   useEffect(() => {
     setFormatText(String(meta.packFormat));
   }, [meta.packFormat]);
@@ -161,8 +167,8 @@ const PackMetaPanel: React.FC<PackMetaPanelProps> = ({
                 aria-label={t("目标 Minecraft 版本")}
                 className="[&_*]:min-w-0"
                 classNames={{ trigger: "h-8 min-h-8" }}
-                popoverProps={{ motionProps: popoverMotionProps }}
-                selectedKeys={presetKey === "custom" ? [] : [String(presetKey)]}
+                popoverProps={selectPopoverProps}
+                selectedKeys={presetKeys}
                 size="sm"
                 onSelectionChange={(keys) => {
                   const key = String(Array.from(keys)[0] ?? "");

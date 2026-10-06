@@ -330,12 +330,17 @@ func QueryAvailableJavaVersions(ctx context.Context, vendor JavaVendor) ([]JavaD
 }
 
 // queryZuluCandidate Zulu：Azul Metadata API，返回最新 GA 构建。
+// 过滤参数与 GitHub actions/setup-java 同款：crac_supported=false +
+// availability_types=ca 排除 CRaC 特化构建（不过滤会拿到 ca-crac-jdk，
+// 2026-10 实测），javafx_bundled=false 排除捆绑 JavaFX 的变体。
+// 列表端点不返回哈希；选定候选后再按 package_uuid 查包详情端点取权威
+// sha256_hash，下载后强校验（详情拉取失败不阻塞，退回 https + 解压兜底）。
 func queryZuluCandidate(ctx context.Context, majorVersion int, osKey, arch string) (*JavaDownloadCandidate, error) {
 	archiveType := "tar.gz"
 	if osKey == "windows" {
 		archiveType = "zip"
 	}
-	endpoint := fmt.Sprintf("%s?java_version=%d&os=%s&arch=%s&archive_type=%s&java_package_type=jdk&latest=true&release_status=ga&page_size=1",
+	endpoint := fmt.Sprintf("%s?java_version=%d&os=%s&arch=%s&archive_type=%s&java_package_type=jdk&javafx_bundled=false&crac_supported=false&availability_types=ca&latest=true&release_status=ga&page_size=1",
 		zuluMetadataAPI, majorVersion, osKey, arch, archiveType)
 
 	rawJSON, err := httpGetString(ctx, javaClient, endpoint)
@@ -345,6 +350,7 @@ func queryZuluCandidate(ctx context.Context, majorVersion int, osKey, arch strin
 	var entries []struct {
 		DownloadURL string `json:"download_url"`
 		Name        string `json:"name"`
+		PackageUUID string `json:"package_uuid"`
 	}
 	if err := jsonUnmarshalStrict([]byte(rawJSON), &entries); err != nil {
 		return nil, err
@@ -355,11 +361,27 @@ func queryZuluCandidate(ctx context.Context, majorVersion int, osKey, arch strin
 
 	// 从文件名提取实际构建版本，如 "zulu21.52.203-ca-jdk21.0.12.1-win_x64.zip" → "21.0.12.1"
 	buildVersion := extractJDKVersionFromName(entries[0].Name)
-	// Zulu Metadata API 未提供 sha256，下载后靠 https + 解压验证兜底
-	return &JavaDownloadCandidate{
+	candidate := &JavaDownloadCandidate{
 		Vendor: JavaVendorZulu, MajorVersion: majorVersion,
 		BuildVersion: buildVersion, DownloadURL: entries[0].DownloadURL,
-	}, nil
+	}
+
+	// 包详情端点的 sha256_hash 是 Azul 官方声明的校验值（setup-java 同样消费它）；
+	// 拿不到（网络抖动/字段缺失）时保持空串，安装侧自动退回 https + 解压验证。
+	if uuid := strings.TrimSpace(entries[0].PackageUUID); uuid != "" {
+		if detailJSON, detailErr := httpGetString(ctx, javaClient, zuluMetadataAPI+uuid); detailErr == nil {
+			var details struct {
+				SHA256 string `json:"sha256_hash"`
+			}
+			if jsonUnmarshalStrict([]byte(detailJSON), &details) == nil {
+				if sum := strings.TrimSpace(details.SHA256); len(sum) == 64 {
+					candidate.SHA256 = strings.ToLower(sum)
+				}
+			}
+		}
+	}
+
+	return candidate, nil
 }
 
 // queryTemurinCandidate Temurin：Adoptium API，带 SHA-256 校验。
@@ -506,7 +528,12 @@ func (i *JavaRuntimeInstaller) InstallCandidate(
 		return nil, err
 	}
 	reportJavaProgress(progress, "正在解压", candidate.SizeBytes, candidate.SizeBytes, 0)
-	if err := extractJavaArchive(temporaryArchive, extractionDirectory); err != nil {
+	if err := extractJavaArchive(ctx, temporaryArchive, extractionDirectory); err != nil {
+		return nil, err
+	}
+	// 解压完成后同样响应取消：否则下载完成后的取消会被无视，
+	// 安装照常收尾、任务假标"安装完成"
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
@@ -515,18 +542,34 @@ func (i *JavaRuntimeInstaller) InstallCandidate(
 	if extractedRoot == "" {
 		return nil, fmt.Errorf("下载的压缩包中没有找到 JDK 目录。")
 	}
+	// 升级路径：先把旧运行时改名挪开而不是直接删除——此前 RemoveAll 之后
+	// rename+copy 任一失败（磁盘满/中途崩溃），原本可用的 JDK 就没了，而且
+	// 重新下载没有断点续传。挪开失败（目录被占用）才退回旧行为直接删除。
+	previousDirectory := ""
 	if _, err := os.Stat(targetDirectory); err == nil {
-		if err := os.RemoveAll(targetDirectory); err != nil {
-			return nil, err
+		backup := filepath.Join(runtimeDirectory,
+			fmt.Sprintf(".nya-old-java-%s-%d-%d", vendorKey, candidate.MajorVersion, time.Now().UnixNano()))
+		if renameErr := os.Rename(targetDirectory, backup); renameErr != nil {
+			if removeErr := os.RemoveAll(targetDirectory); removeErr != nil {
+				return nil, removeErr
+			}
+		} else {
+			previousDirectory = backup
 		}
 	}
-	if err := os.Rename(extractedRoot, targetDirectory); err != nil {
-		// 跨卷移动回退：复制后删除。两个错误都要报出来——旧运行时在上面
-		// 已经被删掉了，只报 rename 的错误会掩盖真正的原因。
-		if copyErr := copyDirectory(extractedRoot, targetDirectory); copyErr != nil {
-			return nil, fmt.Errorf("安装 JDK 失败（rename: %v, copy: %w）", err, copyErr)
+	if err := moveExtractedJDK(extractedRoot, targetDirectory); err != nil {
+		// 新目录没就位：把旧运行时挪回去，用户手里仍有可用的 Java
+		if previousDirectory != "" {
+			if restoreErr := os.Rename(previousDirectory, targetDirectory); restoreErr == nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%w；且旧运行时恢复失败（保留在 %s，可手动移回）", err, previousDirectory)
 		}
-		tryDeleteDirectory(extractedRoot)
+		return nil, err
+	}
+	// 新运行时就位后再清掉旧备份；清不掉仅占盘，不影响使用
+	if previousDirectory != "" {
+		tryDeleteDirectory(previousDirectory)
 	}
 
 	javaPath := findJavaExecutableIn(targetDirectory)
@@ -656,7 +699,7 @@ func verifyJavaSHA256(path, expectedSHA256 string) error {
 	return nil
 }
 
-func extractJavaArchive(archivePath, destinationDirectory string) error {
+func extractJavaArchive(ctx context.Context, archivePath, destinationDirectory string) error {
 	lower := strings.ToLower(archivePath)
 	switch {
 	case strings.HasSuffix(lower, ".zip"):
@@ -666,6 +709,9 @@ func extractJavaArchive(archivePath, destinationDirectory string) error {
 		}
 		defer reader.Close()
 		for _, entry := range reader.File {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if err := extractZipEntry(entry, destinationDirectory); err != nil {
 				return err
 			}
@@ -684,6 +730,9 @@ func extractJavaArchive(archivePath, destinationDirectory string) error {
 		defer gzipReader.Close()
 		tarReader := tar.NewReader(gzipReader)
 		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			header, err := tarReader.Next()
 			if err == io.EOF {
 				return nil
@@ -740,7 +789,13 @@ func extractZipEntry(entry *zip.File, destinationDirectory string) error {
 		return err
 	}
 	defer reader.Close()
-	writer, err := os.OpenFile(target, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, entry.Mode())
+	// Windows 打包的 zip 不携带 Unix 权限位：非 Windows 平台上解出的
+	// bin/java 等可执行文件会缺执行位，JDK 装完也启动不了，这里补上。
+	mode := entry.Mode()
+	if runtime.GOOS != "windows" && mode&0o111 == 0 && isUnderBinDirectory(name) {
+		mode = 0o755
+	}
+	writer, err := os.OpenFile(target, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, mode)
 	if err != nil {
 		return err
 	}
@@ -749,9 +804,34 @@ func extractZipEntry(entry *zip.File, destinationDirectory string) error {
 	return err
 }
 
+// isUnderBinDirectory 判断压缩包内路径是否位于任意一层 bin/ 目录下
+// （JDK 的可执行文件都在 bin/ 里）。
+func isUnderBinDirectory(archiveName string) bool {
+	for _, segment := range strings.Split(archiveName, "/") {
+		if strings.EqualFold(segment, "bin") {
+			return true
+		}
+	}
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // 辅助
 // ---------------------------------------------------------------------------
+
+// moveExtractedJDK 把解压出的 JDK 根目录移动到正式位置；跨卷时回退复制+删除。
+// 两个错误都要报出来，只报 rename 的会掩盖真正原因。
+func moveExtractedJDK(extractedRoot, targetDirectory string) error {
+	renameErr := os.Rename(extractedRoot, targetDirectory)
+	if renameErr == nil {
+		return nil
+	}
+	if copyErr := copyDirectory(extractedRoot, targetDirectory); copyErr != nil {
+		return fmt.Errorf("安装 JDK 失败（rename: %v, copy: %w）", renameErr, copyErr)
+	}
+	tryDeleteDirectory(extractedRoot)
+	return nil
+}
 
 // findJDKRoot 在解压目录中定位 JDK 根目录（含 bin/java 的那一层）。
 func findJDKRoot(baseDirectory string) string {

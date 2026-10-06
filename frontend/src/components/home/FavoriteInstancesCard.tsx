@@ -176,7 +176,7 @@ const FavoriteInstancesCard: React.FC<FavoriteInstancesCardProps> = ({
               key={versionId}
               className={`nya-enter nya-stagger-${index + 1} flex items-center gap-2`}
             >
-              <span className="flex size-8 flex-none items-center justify-center rounded-xl bg-black/5 text-gray-400 dark:bg-white/10">
+              <span className="flex size-8 flex-none items-center justify-center rounded-lg bg-black/5 text-gray-400 dark:bg-white/10">
                 <Star20Regular className="h-4 w-4" />
               </span>
               <span className="min-w-0 flex-1 overflow-hidden text-xs font-medium text-ellipsis whitespace-nowrap">
@@ -218,12 +218,12 @@ const FavoriteInstancesCard: React.FC<FavoriteInstancesCardProps> = ({
           ))}
         </ul>
       ) : (
-        <div className="rounded-2xl bg-black/5 px-4 py-3 text-center text-xs leading-relaxed text-gray-400 dark:bg-white/5">
+        <div className="rounded-lg bg-black/5 px-4 py-3 text-center text-xs leading-relaxed text-gray-400 dark:bg-white/5">
           {t("点右上角 + 收藏当前实例")}
         </div>
       )}
       {launchError ? (
-        <div className="flex items-start gap-2 rounded-xl bg-danger/10 px-3 py-2 text-xs text-danger">
+        <div className="flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">
           <span className="mt-px flex-none">
             <Warning20Regular className="h-4 w-4" />
           </span>

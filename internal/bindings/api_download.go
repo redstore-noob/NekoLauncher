@@ -11,6 +11,7 @@ import (
 
 	"nekolauncher/internal/download"
 	"nekolauncher/internal/models"
+	"nekolauncher/internal/tools"
 )
 
 // ---- 下载任务 ----
@@ -184,6 +185,8 @@ func (a *DownloadAPI) DownloadFileToInstance(
 
 // DownloadFileToPath 下载文件到任意路径。
 func (a *DownloadAPI) DownloadFileToPath(downloadURL, targetPath string) error {
+	targetPath = tools.SanitizeSavePath(targetPath)
+
 	return download.RunContentDownload(callCtx(a.ctx), "content", filepath.Base(targetPath),
 		func(taskCtx context.Context, report download.ProgressBytes, setDetail func(string)) error {
 			return download.DownloadFileToPath(taskCtx, downloadURL, targetPath, report)

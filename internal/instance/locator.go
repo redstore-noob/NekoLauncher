@@ -6,6 +6,7 @@ package instance
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -76,6 +77,8 @@ func EnsureDefaultDirectory() string {
 func init() {
 	// 供 internal/config 的目录目录保护逻辑使用（C# 侧由 MinecraftDirectoryLocator 提供）。
 	config.DefaultMinecraftDirectoryLocator = EnsureDefaultDirectory
+	// 纯查询版（无建目录副作用），config 侧做排除名单比较时用
+	config.DefaultMinecraftDirectoryPath = GetDefaultDirectory
 }
 
 // ResolveInstallationPath 接受 Minecraft 根目录，或 versions/<版本号> 形式的独立实例目录。
@@ -300,10 +303,20 @@ func logsWriteScanSkip(id, reason string) {
 	logs.Write("DEBUG", fmt.Sprintf("实例扫描跳过 %s：%s", id, reason))
 }
 
+// ErrNotMinecraftRoot 目录缺少 versions 文件夹、不像 Minecraft 根目录的错误。
+// 用哨兵错误区分"只是选了个普通文件夹"与权限 / IO 等真实故障：
+// 前者由实例扫描降级为空快照（见 store.go scan），后者才作为扫描失败上报。
+var ErrNotMinecraftRoot = errors.New("该路径不是有效的 Minecraft 根目录，缺少 versions 文件夹")
+
+// IsInvalidRootDirectory 错误是否属于"路径存在但不像 Minecraft 根目录"这一类。
+func IsInvalidRootDirectory(err error) bool {
+	return errors.Is(err, ErrNotMinecraftRoot)
+}
+
 // validateRootDirectory 校验指定路径是否为有效的 Minecraft 根目录（必须包含 versions 文件夹）。
 func validateRootDirectory(root string) error {
 	if info, err := os.Stat(filepath.Join(root, "versions")); err != nil || !info.IsDir() {
-		return fmt.Errorf("该路径不是有效的 Minecraft 根目录，缺少 versions 文件夹：%s", root)
+		return fmt.Errorf("%w：%s", ErrNotMinecraftRoot, root)
 	}
 	return nil
 }

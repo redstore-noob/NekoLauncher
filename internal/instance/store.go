@@ -223,6 +223,17 @@ func scan(sourcePath string, previous GameInstanceSnapshot) (GameInstanceSnapsho
 		if external, ok := TryResolveExternalInstance(sourcePath); ok {
 			return createExternalSnapshot(sourcePath, external), nil
 		}
+		// 普通文件夹（缺 versions）不算故障：用户完全可能选到一个空的 /
+		// 非 Minecraft 的目录。降级为空快照，让实例页显示空列表而不是
+		// 红色"扫描实例失败"。权限不足、IO 等真实错误仍然照常上报。
+		if IsInvalidRootDirectory(err) {
+			logs.Write("INFO", "目录不像 Minecraft 根目录，按空目录处理："+err.Error())
+			return GameInstanceSnapshot{
+				SourcePath:         mustAbs(sourcePath),
+				MinecraftDirectory: mustAbs(sourcePath),
+				VersionIds:         []string{},
+			}, nil
+		}
 		return GameInstanceSnapshot{}, err
 	}
 

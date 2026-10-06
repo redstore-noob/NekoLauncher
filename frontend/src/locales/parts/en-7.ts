@@ -177,6 +177,10 @@ const dict: Record<string, string> = {
   自动选最快节点: "Auto-pick the fastest node",
   "自动选节点失败：{0}": "Auto-selecting a node failed: {0}",
   在线玩家: "Players online",
+  联机密钥: "Online key",
+  "节点列表保存失败：{0}": "Failed to save the node list: {0}",
+  "留空则自动生成；换新密钥后保存，下次建房生效。":
+    "Left empty, one is generated for you; save after regenerating — it applies from the next hosted room.",
 };
 
 export default dict;

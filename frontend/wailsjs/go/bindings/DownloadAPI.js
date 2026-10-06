@@ -6,12 +6,12 @@ export function ApplyVersionFilter(arg1, arg2) {
   return window['go']['bindings']['DownloadAPI']['ApplyVersionFilter'](arg1, arg2);
 }
 
-export function CancelDownload() {
-  return window['go']['bindings']['DownloadAPI']['CancelDownload']();
-}
-
 export function CancelContentTask(arg1) {
   return window['go']['bindings']['DownloadAPI']['CancelContentTask'](arg1);
+}
+
+export function CancelDownload() {
+  return window['go']['bindings']['DownloadAPI']['CancelDownload']();
 }
 
 export function CreateDefaultInstanceName(arg1, arg2, arg3) {
@@ -120,10 +120,6 @@ export function ResumeDownload() {
 
 export function SaveActiveDownloadSource(arg1) {
   return window['go']['bindings']['DownloadAPI']['SaveActiveDownloadSource'](arg1);
-}
-
-export function SaveCurseForgeAPIKey(arg1) {
-  return window['go']['bindings']['DownloadAPI']['SaveCurseForgeAPIKey'](arg1);
 }
 
 export function SaveFallbackDownloadSource(arg1) {

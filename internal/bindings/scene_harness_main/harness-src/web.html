@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>WE 网页壁纸渲染验证</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1a1a; overflow: hidden; }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  #status {
+    position: absolute; left: 8px; top: 8px; z-index: 10;
+    font: 12px/1.6 Consolas, monospace; color: #6f6; background: rgba(0,0,0,.7);
+    padding: 6px 10px; border-radius: 6px; white-space: pre; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<iframe id="wallpaper" sandbox="allow-scripts allow-modals allow-same-origin allow-forms"></iframe>
+<div id="status">加载中…</div>
+<script>
+// 与启动器背景层同款沙箱的 iframe 承载;后端已在入口 HTML 注入
+// WE polyfill + 用户属性,这里只负责打开与状态展示。
+const status = document.getElementById('status');
+const frame = document.getElementById('wallpaper');
+frame.src = '/wwwallpaper/__entry';
+let seen = false;
+frame.addEventListener('load', () => {
+  // 同源 iframe:检查 polyfill 是否安装、属性是否已应用(探针只读)
+  try {
+    const win = frame.contentWindow;
+    const installed = !!win.__wePolyfillInstalled;
+    const applied = !!win.__wePropertiesApplied;
+    const listener = !!win.wallpaperPropertyListener;
+    status.textContent = [
+      'iframe 已加载',
+      'polyfill 注入: ' + (installed ? '✓' : '✗(入口未注入?)'),
+      '属性已应用: ' + (applied ? '✓' : '…等待壁纸挂 listener'),
+      '壁纸 listener: ' + (listener ? '✓' : '✗'),
+    ].join('\n');
+    seen = true;
+  } catch (err) {
+    status.textContent = 'iframe 已加载(跨域不可探测): ' + err.message;
+  }
+});
+setTimeout(() => { if (!seen) status.textContent = 'iframe 加载超时'; }, 15000);
+</script>
+</body>
+</html>

@@ -125,7 +125,7 @@ const JavaCard: React.FC = () => {
       valueClass="bg-gradient-to-r from-orange-500 via-amber-500 to-yellow-500"
     >
       {isLoading ? (
-        <div className="rounded-2xl bg-black/5 px-4 py-3 text-center text-xs text-gray-400 dark:bg-white/5">
+        <div className="rounded-lg bg-black/5 px-4 py-3 text-center text-xs text-gray-400 dark:bg-white/5">
           {t("正在读取已保存的 Java…")}
         </div>
       ) : total > 0 ? (
@@ -135,7 +135,7 @@ const JavaCard: React.FC = () => {
               key={item.JavaPath}
               className={`nya-enter nya-stagger-${index + 1} flex items-center gap-2`}
             >
-              <span className="flex size-8 flex-none items-center justify-center rounded-xl bg-black/5 text-gray-400 dark:bg-white/10">
+              <span className="flex size-8 flex-none items-center justify-center rounded-lg bg-black/5 text-gray-400 dark:bg-white/10">
                 <DrinkCoffee20Regular className="h-4 w-4" />
               </span>
               <span className="flex min-w-0 flex-1 flex-col">

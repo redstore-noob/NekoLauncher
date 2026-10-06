@@ -26,7 +26,7 @@ func TestMinecraftLanguageCode(t *testing.T) {
 		"pt-PT":       "pt_pt",
 		"pt":          "pt_br",
 		"zh_CN.UTF-8": "zh_cn", // 宽容解析：zh_CN + 编码后缀也能识别
-		"xx-YY":       "", // 完全未知的语言
+		"xx-YY":       "",      // 完全未知的语言
 		"":            "",
 		"nds-DE":      "", // MC 没有的语言
 		"ru_RU":       "ru_ru",

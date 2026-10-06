@@ -8,13 +8,15 @@ export {
   pageById,
   registerPage,
   registerWidget,
+  setLaunchCardOverride,
   unregisterPlugin,
+  useLaunchCardOverride,
   usePages,
   useWidgets,
   widgetById,
 } from "./registry";
 export { createPluginApi, PLUGIN_API_VERSION } from "./api";
-export { PageHost, WidgetHost } from "./render";
+export { LaunchCardHost, PageActionSlot, PageHost, WidgetHost } from "./render";
 export {
   isPluginActive,
   loadPlugins,
@@ -29,7 +31,28 @@ export type {
   PluginRuntimeStatus,
 } from "./loader";
 export { registerBuiltins } from "./builtins";
+export {
+  clearPluginGrants,
+  DEFAULT_OFF_PERMISSIONS,
+  defaultPermissionGrant,
+  disabledPermissions,
+  hydratePluginGrants,
+  isPermissionGranted,
+  NETWORK_PERMISSION,
+  PLUGIN_GRANTS_CONFIG_KEY,
+  setPluginPermission,
+  usePluginGrantsVersion,
+} from "./grants";
 export type {
+  DownloadTaskKind,
+  DownloadTaskPhase,
+  DownloadTaskSummary,
+  GameExitInfo,
+  LaunchCardContext,
+  LaunchCardDefinition,
+  LogLineBatch,
+  LogLineOptions,
+  PageActionDefinition,
   PageDefinition,
   PluginApi,
   PluginActivate,

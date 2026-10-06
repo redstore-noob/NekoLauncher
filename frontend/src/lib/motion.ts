@@ -128,14 +128,52 @@ export const TRANSITION_VARIANTS = {
  * .nya-modal-enter），避免 framer 在本环境偶发的"事件丢失"导致遮罩卡透明态。
  */
 
-/** Popover / Select / Autocomplete 的内容浮层 */
-export const popoverMotionProps: HTMLMotionProps<"div"> = {
-  variants: TRANSITION_VARIANTS.scaleSpringOpacity,
+/**
+ * 浮层开合：**入场不动整层 opacity**（Dropdown / Popover / Select / Autocomplete 统一使用）。
+ *
+ * HeroUI 默认给浮层用 scaleSpringOpacity，它的 initial 是 `opacity: 0`，
+ * 于是面板打开的头几帧整层是半透明的：面板背后那一块页面会**透出来**，
+ * 观感就是"下拉面板打开时闪一下"。
+ *
+ * 注意这跟面板**表面**是否透明是两码事：表面底色再实，整层 opacity 从 0 爬到 1
+ * 的路径照样让背后内容露出来 —— 所以只改表面治不了它。这条通道自 Pre-Beta 1 起就开着，
+ * 不是哪次改动引入的。
+ *
+ * 这里 initial / enter 都显式写 opacity: 1：面板第一帧就是实的，只保留
+ * 缩放；关闭仍走 exit 的淡出，收起来依旧是柔和的。
+ * src/lib/motion.test.ts 会守住"入场不得透明"这条契约。
+ */
+const surfaceOpenVariants: Variants = {
+  initial: { opacity: 1, transform: "scale(0.96)" },
+  enter: {
+    opacity: 1,
+    transform: "scale(1)",
+    transition: { type: "spring", bounce: 0, duration: 0.2 },
+  },
+  exit: {
+    opacity: 0,
+    transform: "scale(0.96)",
+    transition: { type: "easeOut", bounce: 0, duration: 0.15 },
+  },
 };
+
+/** Popover 的内容浮层（Dropdown 见下；Select / Autocomplete 见 selectPopoverProps） */
+export const popoverMotionProps: HTMLMotionProps<"div"> = {
+  variants: surfaceOpenVariants,
+};
+
+/**
+ * Select / Autocomplete 的浮层：传给 `popoverProps`（这两个组件不收顶层
+ * motionProps，浮层动效挂在 popover 上）。与 Dropdown / Popover 共用
+ * surfaceOpenVariants，入场不再从 opacity: 0 爬起，打开不闪。
+ */
+export const selectPopoverProps = {
+  motionProps: popoverMotionProps,
+} as const;
 
 /** Dropdown 菜单浮层 */
 export const dropdownMotionProps: HTMLMotionProps<"div"> = {
-  variants: TRANSITION_VARIANTS.scaleSpringOpacity,
+  variants: surfaceOpenVariants,
 };
 
 /** Tooltip */

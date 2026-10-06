@@ -42,6 +42,10 @@ const (
 
 // DownloadFileToInstance 下载文件到实例内容目录的指定子目录（如 mods / resourcepacks / shaderpacks）。
 // 返回最终保存的文件路径。
+//
+// subDirectory 会被限制在 contentDirectory 内：这个入口同时由插件 API
+// （downloadResource）使用，"..\\.." 之类的值一旦放行就是把文件写到实例目录外。
+// 越界直接拒绝，绝不"就近落盘"。
 func DownloadFileToInstance(
 	ctx context.Context,
 	downloadURL, fileName, contentDirectory, subDirectory string,
@@ -54,7 +58,13 @@ func DownloadFileToInstance(
 		return "", fmt.Errorf("contentDirectory 不能为空")
 	}
 
-	targetPath := filepath.Join(contentDirectory, subDirectory, sanitizeFileName(fileName))
+	root := filepath.Clean(contentDirectory)
+	// 两条路径都过 Clean 再拼，绝对路径不影响判定（filepath.Join 不会因后段绝对而重置根）
+	relative := filepath.FromSlash(strings.ReplaceAll(strings.TrimSpace(subDirectory), "\\", "/"))
+	targetPath := filepath.Clean(filepath.Join(root, relative, sanitizeFileName(fileName)))
+	if !containedPath(root, targetPath) {
+		return "", fmt.Errorf("内容子目录越界：%s", subDirectory)
+	}
 	if err := DownloadFileToPath(ctx, downloadURL, targetPath, progress); err != nil {
 		return "", err
 	}
@@ -328,6 +338,9 @@ func InstallModpack(
 	//    解析与下载分离：依赖地址解析（CurseForge API 换直链，有频控）保持串行，
 	//    下载阶段交给高速小文件下载器并行跑（并发数 = 全局并行下载设置），
 	//    进度按文件聚合，与解压字节拼成整体进度。
+	// skippedOptional 清单声明为可选（required=false）的文件数：按规范跳过
+	// 不自动下载，但要让用户知道跳过了多少，而不是静默消失。
+	skippedOptional := 0
 	if index != nil && len(index.Files) > 0 {
 		type depJob struct {
 			label      string
@@ -351,6 +364,8 @@ func InstallModpack(
 				continue
 			}
 			if file.Required != nil && !*file.Required {
+				skippedOptional++
+
 				continue // 可选依赖不自动下载
 			}
 			// mrpack 的 env 声明该文件适用的运行面：client 明确为 unsupported
@@ -413,6 +428,14 @@ func InstallModpack(
 				targetPath = combined
 			}
 
+			// 重试经济学：NekoSolo 首启补全失败重试、向同一实例重复导入时都会
+			// 二次跑到这里。目标已落盘且哈希相符（清单没声明哈希则非空即认）
+			// 就跳过重下——重试只补缺口，而不是每次启动都全量重下。
+			if info, statErr := os.Stat(targetPath); statErr == nil && info.Size() > 0 &&
+				matchesDeclaredHashes(targetPath, declaredSHA1(file.Hashes), declaredSHA512(file.Hashes)) {
+				continue
+			}
+
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("下载依赖 %s 失败：%v", file.Path, err))
 				continue
@@ -431,6 +454,12 @@ func InstallModpack(
 				expectedSHA1:   declaredSHA1(file.Hashes),
 				expectedSHA512: declaredSHA512(file.Hashes),
 			})
+		}
+
+		if skippedOptional > 0 {
+			result.Warnings = append(result.Warnings, fmt.Sprintf(
+				"清单声明了 %d 个可选文件（required=false），已按规范跳过未自动下载；需要的话请手动放进实例内容目录。",
+				skippedOptional))
 		}
 
 		if len(deps) > 0 {
@@ -579,6 +608,46 @@ func verifyDeclaredHashes(path, expectedSHA1, expectedSHA512 string) error {
 		}
 	}
 	return nil
+}
+
+// matchesDeclaredHashes 已落盘文件是否与清单声明的哈希一致（重试时跳过重下用）。
+// 清单没声明任何格式正确的哈希时视为可用（调用方已保证文件存在且非空）；
+// 与 verifyDeclaredHashes 不同，这里只读不删——不符时返回 false，
+// 由下载流程原子覆盖旧文件。
+func matchesDeclaredHashes(path, expectedSHA1, expectedSHA512 string) bool {
+	wantSHA1 := isHexDigest(strings.TrimSpace(expectedSHA1), sha1.Size*2)
+	wantSHA512 := isHexDigest(strings.TrimSpace(expectedSHA512), sha512.Size*2)
+	if !wantSHA1 && !wantSHA512 {
+		return true
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	var sha1Hasher, sha512Hasher hash.Hash
+	var writers []io.Writer
+	if wantSHA1 {
+		sha1Hasher = sha1.New()
+		writers = append(writers, sha1Hasher)
+	}
+	if wantSHA512 {
+		sha512Hasher = sha512.New()
+		writers = append(writers, sha512Hasher)
+	}
+	if _, err := io.Copy(io.MultiWriter(writers...), file); err != nil {
+		return false
+	}
+	if wantSHA1 && hex.EncodeToString(sha1Hasher.Sum(nil)) != strings.ToLower(strings.TrimSpace(expectedSHA1)) {
+		return false
+	}
+	if wantSHA512 && hex.EncodeToString(sha512Hasher.Sum(nil)) != strings.ToLower(strings.TrimSpace(expectedSHA512)) {
+		return false
+	}
+
+	return true
 }
 
 // loaderInstallable 该整合包声明的加载器能否由本启动器自动安装。
@@ -855,6 +924,20 @@ func DownloadModpackFile(ctx context.Context, downloadURL, fileName, targetPath 
 	return DownloadFileToPath(ctx, downloadURL, targetPath, progress)
 }
 
+// containedPath 判定 target 是否位于 root 之内（同路径或 root 的子路径）。
+// 大小写不敏感比较是为 Windows 准备的：同一个目录的两种写法不该被当成越界。
+func containedPath(root, target string) bool {
+	rootFull := filepath.Clean(root)
+	combined := filepath.Clean(target)
+	if combined == rootFull {
+		return true
+	}
+	return strings.HasPrefix(
+		strings.ToLower(combined),
+		strings.ToLower(rootFull+string(filepath.Separator)),
+	)
+}
+
 // safeCombine 安全拼接：确保解压目标位于内容目录内，阻止路径穿越。
 // 越界时返回错误而不是 panic：条目名来自用户导入的整合包，一个畸形条目
 // 只该被跳过并记录，不该让整个导入崩掉。
@@ -864,9 +947,8 @@ func safeCombine(root, relativePath string) (string, error) {
 		return "", fmt.Errorf("非法的整合包内路径：%s", relativePath)
 	}
 
-	rootFull := filepath.Clean(root)
-	combined := filepath.Clean(filepath.Join(rootFull, filepath.FromSlash(normalized)))
-	if combined != rootFull && !strings.HasPrefix(strings.ToLower(combined), strings.ToLower(rootFull+string(filepath.Separator))) {
+	combined := filepath.Clean(filepath.Join(filepath.Clean(root), filepath.FromSlash(normalized)))
+	if !containedPath(root, combined) {
 		return "", fmt.Errorf("整合包路径越界：%s", relativePath)
 	}
 	return combined, nil

@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"errors"
+	"runtime"
 	"strconv"
 	"sync"
 	"time"
@@ -27,8 +28,8 @@ const (
 
 // ContentTaskSnapshot 单个内容下载任务的快照。
 type ContentTaskSnapshot struct {
-	ID              string           `json:"id"`
-	Name            string           `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
 	// Kind 任务类别：content（单文件）/ modpack（整合包批量）/ java（运行时）。
 	Kind            string           `json:"kind"`
 	Phase           ContentTaskPhase `json:"phase"`
@@ -70,12 +71,32 @@ var (
 	OnContentTaskProgress func(downloaded, total int64)
 )
 
+// contentProgressInterval / contentTaskListInterval 事件节流间隔。Linux 的
+// WebKitGTK 处理高频事件重渲染明显慢于 WebView2，节流放宽一倍多（进度条
+// 250ms 一跳肉眼无感），避免下载时浮标/下载中心拖垮整页。
+var (
+	contentProgressInterval = contentProgressIntervalForGOOS()
+	contentTaskListInterval = contentTaskListIntervalForGOOS()
+)
+
 const (
-	contentProgressInterval = 100 * time.Millisecond
-	contentTaskListInterval = 200 * time.Millisecond
 	// terminalTasksKeep 终态任务保留条数：完成后仍在下载中心短暂可见。
 	terminalTasksKeep = 6
 )
+
+func contentProgressIntervalForGOOS() time.Duration {
+	if runtime.GOOS == "linux" {
+		return 250 * time.Millisecond
+	}
+	return 100 * time.Millisecond
+}
+
+func contentTaskListIntervalForGOOS() time.Duration {
+	if runtime.GOOS == "linux" {
+		return 400 * time.Millisecond
+	}
+	return 200 * time.Millisecond
+}
 
 // StartContentTask 注册新任务，返回任务 ID、进度上报函数与终态标记函数。
 // cancel 用于"下载中心里点取消"：注册表只存取消函数，不感知 ctx。

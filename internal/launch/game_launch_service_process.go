@@ -30,7 +30,12 @@ func (s *GameLaunchService) TryStopGame() LaunchResult {
 		phase := s.current.Phase
 		s.gate.Unlock()
 		if phase == GameLaunchPhasePreparing {
-			return FailedLaunch("游戏仍在启动准备中，请稍候再停止。")
+			// 准备阶段没有进程可杀，但可以请求取消：置位后 launch 的各阶段
+			// 边界会检查并中止（校验补全/凭据刷新/Java 下载都可能耗时数分钟，
+			// 此前这里直接拒绝，用户只能干等或杀启动器）。
+			s.prepareStopRequested.Store(true)
+			s.appendLog("已请求取消启动，等待当前步骤结束后中止…", "LAUNCH")
+			return CompletedLaunch("已请求取消启动，正在等待当前步骤结束。")
 		}
 		return FailedLaunch("当前没有正在运行的游戏。")
 	}

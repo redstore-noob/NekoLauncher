@@ -67,16 +67,81 @@ namespace NekoSolo.Installer
             PackTitle.Text = _manifest.PackName;
             PackVersionText.Text = string.IsNullOrEmpty(_manifest.PackVersion) ? "" : "v" + _manifest.PackVersion;
             PackAuthorText.Text = string.IsNullOrEmpty(_manifest.Author) ? "" : "by " + _manifest.Author;
-            PackMcText.Text = string.IsNullOrEmpty(_manifest.McVersion) ? "" : "Minecraft " + _manifest.McVersion +
-                (string.IsNullOrEmpty(_manifest.LoaderName) ? "" : " · " + _manifest.LoaderName);
+            PackMcBadge.Text = string.IsNullOrEmpty(_manifest.McVersion)
+                ? "Minecraft"
+                : "Minecraft " + _manifest.McVersion;
+            if (!string.IsNullOrEmpty(_manifest.LoaderName))
+            {
+                PackLoaderText.Text = _manifest.LoaderName +
+                    (string.IsNullOrEmpty(_manifest.LoaderVersion) ? "" : " " + _manifest.LoaderVersion);
+                PackLoaderBadge.Visibility = Visibility.Visible;
+            }
             PackDescription.Text = string.IsNullOrEmpty(_manifest.Description)
                 ? "作者没有留下描述。"
                 : _manifest.Description;
 
             ShowIcon(_manifest);
+            RefreshPackStats();
             InstallDirBox.Text = DefaultInstallDirectory(_manifest);
             InstallDirBox.TextChanged += OnInstallDirChanged;
             RefreshModeHints();
+        }
+
+        /// <summary>
+        /// 从载荷读取内容概览：modrinth.index.json 声明的 mod 数与下载体积、
+        /// overrides/ 随包文件数与体积。读取失败一律静默（概览是加分项）。
+        /// </summary>
+        private void RefreshPackStats()
+        {
+            if (_payload == null || _payload is RemotePayload) return; // 远程载荷未下载，无概览
+            try
+            {
+                int modCount = 0;
+                long downloadBytes = 0;
+                using (var zip = _payload.OpenZip())
+                {
+                    int overrideCount = 0;
+                    long overrideBytes = 0;
+                    foreach (var entry in zip.Entries)
+                    {
+                        string name = entry.FullName.Replace('\\', '/');
+                        if (name.EndsWith("/", StringComparison.Ordinal)) continue;
+                        if (name.Equals(InstallerEngine.ModrinthIndexEntry, StringComparison.OrdinalIgnoreCase))
+                        {
+                            using (var stream = entry.Open())
+                            using (var reader = new StreamReader(stream))
+                            {
+                                var serializer = new System.Runtime.Serialization.Json.DataContractJsonSerializer(typeof(ModrinthIndex));
+                                if (serializer.ReadObject(reader.BaseStream) is ModrinthIndex index && index.Files != null)
+                                {
+                                    foreach (var file in index.Files)
+                                    {
+                                        modCount++;
+                                        downloadBytes += file.FileSize;
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        if (name.StartsWith("overrides/", StringComparison.OrdinalIgnoreCase) ||
+                            name.StartsWith("client-overrides/", StringComparison.OrdinalIgnoreCase))
+                        {
+                            overrideCount++;
+                            overrideBytes += entry.Length;
+                        }
+                    }
+                    if (modCount == 0 && overrideCount == 0) return;
+                    StatModsValue.Text = modCount.ToString();
+                    StatModsSize.Text = modCount > 0 ? string.Format("约 {0:0.#} MB（首次启动时下载）", downloadBytes / 1048576.0) : "";
+                    StatOverridesValue.Text = overrideCount.ToString();
+                    StatOverridesSize.Text = overrideCount > 0 ? string.Format("共 {0:0.#} MB", overrideBytes / 1048576.0) : "";
+                    StatsRow.Visibility = Visibility.Visible;
+                }
+            }
+            catch
+            {
+                // 概览读不出来不影响安装
+            }
         }
 
         /// <summary>安装目录变化时刷新模式判定与文案（新增整合包 / 更新 / 全新安装）。</summary>
@@ -108,9 +173,7 @@ namespace NekoSolo.Installer
                     InstallButton.Content = "更新整合包";
                     break;
                 default:
-                    SoloHint.Text = _manifest.HasJava
-                        ? "将安装 NekoLauncher 启动器、内置 Java 运行时与整合包实例；首次启动会自动补全游戏文件并进入简洁模式。"
-                        : "将安装 NekoLauncher 启动器与整合包实例；首次启动会自动补全游戏文件并进入简洁模式。";
+                    SoloHint.Text = "将安装 NekoLauncher 启动器与整合包实例，安装完成后即可打开启动器。";
                     InstallButton.Content = "安装";
                     break;
             }
@@ -218,10 +281,10 @@ namespace NekoSolo.Installer
                     });
                 });
                 DoneHint.Text = mode == InstallMode.UpdatePack
-                    ? "整合包已更新到本版本，存档与设置保持不变。"
+                    ? "整合包已更新到本版本，存档与设置保持不变；首次启动将自动补全更新内容。"
                     : mode == InstallMode.AddPack
-                        ? "整合包实例已添加到现有启动器，本体与配置保持不变；下次启动将自动选中新实例。"
-                        : "整合包与启动器已就绪，点击「完成」开始游戏。";
+                        ? "整合包实例已添加到现有启动器，本体与配置保持不变；下次启动将自动选中新实例并联网补全 mod 与游戏文件。"
+                        : "启动器与整合包已就绪；首次启动将自动联网下载 Minecraft、mod 与 Java 运行时（需要网络）。";
                 StepInstalling.Visibility = Visibility.Collapsed;
                 StepDone.Visibility = Visibility.Visible;
             }
@@ -245,6 +308,34 @@ namespace NekoSolo.Installer
             catch
             {
                 // 打不开就算了
+            }
+        }
+
+        /// <summary>把安装包内嵌的 Modrinth 整合包另存为 .mrpack（其他启动器也能导入）。</summary>
+        private void OnExtractModpack(object sender, RoutedEventArgs e)
+        {
+            if (_payload == null)
+            {
+                MessageBox.Show(this, "当前是开发诊断模式，没有可提取的整合包。", "NekoSolo",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+            var dialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Title = "提取整合包",
+                Filter = "Modrinth 整合包 (*.mrpack)|*.mrpack",
+                FileName = (string.IsNullOrEmpty(_manifest.PackId) ? "pack" : _manifest.PackId) + ".mrpack",
+            };
+            if (dialog.ShowDialog(this) != true) return;
+            try
+            {
+                InstallerEngine.ExtractModpack(_payload, dialog.FileName);
+                MessageBox.Show(this, "整合包已提取到：\n" + dialog.FileName, "NekoSolo",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "提取失败：" + ex.Message, "NekoSolo", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

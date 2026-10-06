@@ -6,6 +6,10 @@ export function AddLog(arg1, arg2) {
   return window['go']['bindings']['SystemAPI']['AddLog'](arg1, arg2);
 }
 
+export function ApplyDesktopWallpaper(arg1) {
+  return window['go']['bindings']['SystemAPI']['ApplyDesktopWallpaper'](arg1);
+}
+
 export function ClearLogs() {
   return window['go']['bindings']['SystemAPI']['ClearLogs']();
 }
@@ -24,6 +28,10 @@ export function ExportCurrentLog(arg1) {
 
 export function ExportResourcePack(arg1, arg2) {
   return window['go']['bindings']['SystemAPI']['ExportResourcePack'](arg1, arg2);
+}
+
+export function FetchRssFeed(arg1) {
+  return window['go']['bindings']['SystemAPI']['FetchRssFeed'](arg1);
 }
 
 export function GetAcrylicBackdropEnabled() {
@@ -48,6 +56,10 @@ export function GetDeviceId() {
 
 export function GetFormattedVersion() {
   return window['go']['bindings']['SystemAPI']['GetFormattedVersion']();
+}
+
+export function GetLinuxWallpaperTools() {
+  return window['go']['bindings']['SystemAPI']['GetLinuxWallpaperTools']();
 }
 
 export function GetWallpaperEngineWallpaper() {
@@ -80,6 +92,10 @@ export function OpenInExplorer(arg1) {
 
 export function OpenPath(arg1) {
   return window['go']['bindings']['SystemAPI']['OpenPath'](arg1);
+}
+
+export function ReadSecret(arg1) {
+  return window['go']['bindings']['SystemAPI']['ReadSecret'](arg1);
 }
 
 export function ReadTextFile(arg1) {
@@ -116,6 +132,10 @@ export function SetClipboard(arg1) {
 
 export function Startup(arg1) {
   return window['go']['bindings']['SystemAPI']['Startup'](arg1);
+}
+
+export function StoreSecret(arg1, arg2) {
+  return window['go']['bindings']['SystemAPI']['StoreSecret'](arg1, arg2);
 }
 
 export function WriteLog(arg1, arg2) {

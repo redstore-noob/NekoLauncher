@@ -139,24 +139,31 @@ const weWallpaperAppID = "431960"
 // 视频，可清晰展示/播放；场景/网页等无静/可播原文件时为空），Title 为壁纸标题，
 // Type 为壁纸类型，Web 为网页类壁纸的入口 HTML（相对项目根目录，其余类型为空串，
 // 前端据此拼 /wwwallpaper/<Web> 交给 iframe 播放）。
+// Scene 为场景壁纸的完整渲染载荷（多图层/动画/粒子/用户配置），非场景类型为 nil;
+// 前端拿到它就交给 SceneWallpaperRenderer 渲染,Path 同时保留作加载期兜底图。
 type WallpaperEngineWallpaper struct {
 	Path   string `json:"Path"`
 	Source string `json:"Source"`
 	Title  string `json:"Title"`
 	Type   string `json:"Type"`
 	Web    string `json:"Web"`
+	// WebConfigVersion 网页壁纸用户属性的指纹:用户在 WE 里改配置后值变化,
+	// 前端把它拼到 iframe URL 触发壁纸重载,新配置随入口注入重新生效。
+	WebConfigVersion string                `json:"WebConfigVersion"`
+	Scene            *WallpaperEngineScene `json:"Scene,omitempty"`
 	// Unsupported 当前平台不支持与 Wallpaper Engine 联动（WE 本身只有 Windows 版）。
 	// 前端据此给出"换个图源"的提示，而不是让用户对着一个永远加载不出的图源发呆。
 	Unsupported bool `json:"Unsupported"`
 }
 
 // GetWallpaperEngineWallpaper 读取 Wallpaper Engine 当前应用的壁纸，返回
-// 可用于背景的静态图片。未安装、未应用壁纸或无可用静态图时 Path 为空串。
+// 可用于背景的静态图片与(场景类型的)完整渲染载荷。
+// 未安装、未应用壁纸或无可用静态图时 Path 为空串。
 func (a *SystemAPI) GetWallpaperEngineWallpaper() (*WallpaperEngineWallpaper, error) {
 	if runtime.GOOS != "windows" {
 		return &WallpaperEngineWallpaper{Unsupported: true}, nil
 	}
-	projectDir, err := wallpaperEngineSelectedProject()
+	projectDir, selectedFile, err := wallpaperEngineSelectedProject()
 	if err != nil || projectDir == "" {
 		if err != nil {
 			return nil, err
@@ -164,29 +171,30 @@ func (a *SystemAPI) GetWallpaperEngineWallpaper() (*WallpaperEngineWallpaper, er
 		// WE 在运行但未应用任何壁纸（纯色/空白）
 		return &WallpaperEngineWallpaper{}, nil
 	}
-	return wallpaperEngineWallpaperFromProject(projectDir)
+	return wallpaperEngineWallpaperFromProject(projectDir, selectedFile)
 }
 
-// wallpaperEngineSelectedProject 从 WE config.json 解析当前壁纸所在的项目目录。
+// wallpaperEngineSelectedProject 从 WE config.json 解析当前壁纸所在的项目目录,
+// 同时返回 WE 记录的壁纸文件路径(用于 wproperties 用户配置匹配)。
 // 未安装返回错误；WE 存在但未应用壁纸返回空串。
-func wallpaperEngineSelectedProject() (string, error) {
+func wallpaperEngineSelectedProject() (string, string, error) {
 	configPath := wallpaperEngineConfigPath()
 	if configPath == "" {
-		return "", fmt.Errorf("未找到 Wallpaper Engine 安装")
+		return "", "", fmt.Errorf("未找到 Wallpaper Engine 安装")
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var root map[string]any
 	if err := json.Unmarshal(data, &root); err != nil {
-		return "", err
+		return "", "", err
 	}
 	file := findSelectedWallpaperFile(root)
 	if file == "" {
-		return "", nil
+		return "", "", nil
 	}
-	return filepath.Dir(file), nil
+	return filepath.Dir(file), file, nil
 }
 
 // wallpaperEngineConfigPath 定位 Wallpaper Engine 的 config.json：
@@ -314,7 +322,7 @@ func weDependencyProjectDirectory(projectDir, dependency string) (string, weProj
 //
 // 预设型壁纸（只有 dependency）会先跟到依赖项目去取 type/file，但标题与预览图
 // 仍用用户实际选中的那个——那是他在 WE 里看到的样子。
-func wallpaperEngineWallpaperFromProject(projectDir string) (*WallpaperEngineWallpaper, error) {
+func wallpaperEngineWallpaperFromProject(projectDir, selectedFile string) (*WallpaperEngineWallpaper, error) {
 	data, err := os.ReadFile(filepath.Join(projectDir, "project.json"))
 	if err != nil {
 		return nil, err
@@ -338,19 +346,25 @@ func wallpaperEngineWallpaperFromProject(projectDir string) (*WallpaperEngineWal
 	}
 
 	// 网页类壁纸：整个项目目录经 /wwwallpaper 路由交给背景层的 iframe 呈现，
-	// Path 取预览图作为加载期间的兜底底图（web 壁纸没有可直出的图片/视频原文件）
+	// Path 取预览图作为加载期间的兜底底图（web 壁纸没有可直出的图片/视频原文件）。
+	// 入口 HTML 由路由注入 WE API polyfill 与用户属性(预设 preset + WE wproperties,
+	// 见 webwallpaper_polyfill.go);WebConfigVersion 是属性集合指纹,前端把它拼到
+	// iframe URL 上,用户在 WE 里改配置后自动重载重应用。
 	if strings.EqualFold(renderType, "web") {
 		if entry := weWebEntryPath(renderDir, renderFile); entry != "" {
 			result.Web = entry
-			setWebWallpaperTarget(renderDir, entry)
+			// 对于预设型壁纸（有 dependency），renderDir 是依赖项目目录（HTML/JS），
+			// projectDir 是用户选择的项目目录（配置文件）。传入两个目录让路由能服务两边。
+			setWebWallpaperTarget(renderDir, entry, projectDir, selectedFile)
+			result.WebConfigVersion = weWebPropertiesVersion(currentWebWallpaperTarget().UserProperties)
 		} else {
-			setWebWallpaperTarget("", "")
+			setWebWallpaperTarget("", "", "", "")
 		}
 		result.Path, _ = weBestPreview(projectDir, project.Preview)
 
 		return result, nil
 	}
-	setWebWallpaperTarget("", "")
+	setWebWallpaperTarget("", "", "", "")
 
 	if renderFile != "" {
 		original := filepath.Join(renderDir, filepath.FromSlash(renderFile))
@@ -361,13 +375,43 @@ func wallpaperEngineWallpaperFromProject(projectDir string) (*WallpaperEngineWal
 	// 图片本体即静态图，直接作为回退图（Source/Path 同为原图）
 	if result.Source != "" && isImagePath(result.Source) {
 		result.Path = result.Source
+		fmt.Printf("[WE Debug] 图片壁纸: Type=%s, Path=%s\n", renderType, result.Path)
 		return result, nil
 	}
-	// 场景壁纸：project.json 声明的多是 scene.json——它被打包在 scene.pkg 里，磁盘上并不
-	// 单独存在，只找预览图会落到 192×192 级别的缩略图上，铺满屏就是"糊"。pkg 里通常存着
-	// 原画贴图，取像素面积更大的那张作为静态背景。
+	// 视频壁纸：Source 是视频文件，Path 取预览图作为视频解码失败时的回退底图
+	if result.Source != "" && isVideoPath(result.Source) {
+		result.Path, _ = weBestPreview(projectDir, project.Preview)
+		fmt.Printf("[WE Debug] 视频壁纸: Source=%s, Path=%s\n", result.Source, result.Path)
+		return result, nil
+	}
+	// 场景壁纸：完整渲染 + 静态兜底图。
+	// project.json 声明的多是 scene.json——它被打包在 scene.pkg 里，磁盘上并不
+	// 单独存在，只找预览图会落到 192×192 级别的缩略图上，铺满屏就是"糊"。
+	// 这里先尝试组装完整渲染载荷(多层/动画/粒子/用户配置,经 /wescene 路由提供资源),
+	// 组装失败(包损坏/无 scene.json)自动回落到"提取静态图"的旧行为。
+	if strings.EqualFold(renderType, "scene") {
+		if scene := weBuildScenePayload(renderDir, projectDir, selectedFile); scene != nil {
+			setSceneTarget(renderDir, projectDir)
+			result.Scene = scene
+		} else {
+			setSceneTarget("", "")
+		}
+		// 兜底图:pkg 原画贴图(注意预设型壁纸要从渲染目录取包)优先于预览图,
+		// 作为场景资源加载期间与 WebGL 不可用时的底图
+		previewPath, previewArea := weBestPreview(projectDir, project.Preview)
+		if pkgPath, pkgArea := weScenePackageImage(renderDir); pkgPath != "" && pkgArea > previewArea {
+			result.Path = pkgPath
+			fmt.Printf("[WE Debug] 场景壁纸(pkg): Type=%s, Path=%s, Area=%d, Scene=%v\n", renderType, pkgPath, pkgArea, result.Scene != nil)
+			return result, nil
+		}
+		result.Path = previewPath
+		fmt.Printf("[WE Debug] 场景/其他壁纸(preview): Type=%s, Path=%s, Area=%d, Scene=%v\n", renderType, previewPath, previewArea, result.Scene != nil)
+		return result, nil
+	}
+	setSceneTarget("", "")
+	// 其他未知类型:清空场景目标后按旧行为给预览图
 	previewPath, previewArea := weBestPreview(projectDir, project.Preview)
-	if pkgPath, pkgArea := weScenePackageImage(projectDir); pkgPath != "" && pkgArea > previewArea {
+	if pkgPath, pkgArea := weScenePackageImage(renderDir); pkgPath != "" && pkgArea > previewArea {
 		result.Path = pkgPath
 		return result, nil
 	}

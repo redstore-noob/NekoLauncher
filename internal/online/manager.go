@@ -117,6 +117,11 @@ func saveSettings(store settingStore, settings Settings) error {
 	}
 
 	settings = normalizeSettings(settings)
+	// 红石联机密钥在保存时就校验形态：等到建房时才报错，用户只会看到
+	// "注册联机密钥失败"，不知道是自己粘贴密钥时带进了空格。
+	if err := validateAPIKey(settings.RedstoneKey); err != nil {
+		return err
+	}
 	pairs := []struct{ key, value string }{
 		{keyProvider, settings.Provider},
 		{keyPlayer, settings.Player},

@@ -62,7 +62,8 @@ func writePkgString(buffer *bytes.Buffer, value string) {
 }
 
 // buildPkg 按 PKGV 布局拼出一个 pkg：magic + 条目总数 + 条目表 + 数据区。
-// 数据偏移依赖条目表长度，故先以 0 偏移排版量出表长，再回填真实偏移重排一次。
+// 条目偏移为**相对数据区**的偏移（真实包即如此，见 wallpaper_engine_pkg.go 的
+// 格式说明），夹具先以 0 偏移排版量出表长，再回填真实偏移重排一次。
 func buildPkg(t *testing.T, entries []pkgFixtureEntry) []byte {
 	t.Helper()
 
@@ -97,8 +98,8 @@ func buildPkg(t *testing.T, entries []pkgFixtureEntry) []byte {
 	}
 
 	toc := serialize(map[string]int64{})
-	dataOffset := int64(len(toc))
 	offsets := make(map[string]int64)
+	dataOffset := int64(0) // 相对数据区，从 0 起算
 	var assign func(items []pkgFixtureEntry, prefix string)
 	assign = func(items []pkgFixtureEntry, prefix string) {
 		for _, item := range items {
@@ -208,9 +209,11 @@ func TestExtractWEPkgWallpaperImagePrefersLargestArtwork(t *testing.T) {
 	}
 }
 
-// TestExtractWEPkgWallpaperImageSkipsLayeredScene 分层场景里各层面积相当，
-// 任取一张都只是画面的一角，应放弃提取而不是拿一角铺满屏。
-func TestExtractWEPkgWallpaperImageSkipsLayeredScene(t *testing.T) {
+// TestExtractWEPkgWallpaperImagePicksLargestLayer 分层场景里各层面积相当。
+// 完整场景渲染落地后,静态提取只作加载期/失败兜底,此时取面积最大的一层
+// 比空屏更好——占优判定(wePkgDominanceRatio)已按此语义停用,这里锁定该行为:
+// 永远返回最大的一层,而不是放弃提取。
+func TestExtractWEPkgWallpaperImagePicksLargestLayer(t *testing.T) {
 	pkg := buildPkg(t, []pkgFixtureEntry{
 		{Path: "materials/角色_本体.tex", Data: padEntry(encodePNG(t, 100, 100))},
 		{Path: "materials/角色_左翅膀.tex", Data: padEntry(encodePNG(t, 98, 100))},
@@ -228,8 +231,11 @@ func TestExtractWEPkgWallpaperImageSkipsLayeredScene(t *testing.T) {
 	if err != nil {
 		t.Fatalf("提取失败：%v", err)
 	}
-	if result != nil {
-		t.Errorf("分层场景不应提取单层贴图，实际选中 %d×%d", result.Width, result.Height)
+	if result == nil {
+		t.Fatal("兜底语义下应返回面积最大的一层,实际为 nil")
+	}
+	if result.Width != 100 || result.Height != 100 {
+		t.Errorf("应选中 100×100 的本体层,实际 %d×%d", result.Width, result.Height)
 	}
 }
 

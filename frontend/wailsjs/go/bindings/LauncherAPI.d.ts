@@ -10,6 +10,10 @@ export function DetectJavaMajorVersion(arg1:string):Promise<any>;
 
 export function DiagnoseCrash():Promise<launch.CrashDiagnosis>;
 
+export function GetLaunchProvenance():Promise<launch.LaunchProvenanceReport>;
+
+export function GetLaunchProvenanceVersionId():Promise<string>;
+
 export function GetLaunchSnapshot():Promise<launch.GameLaunchSnapshot>;
 
 export function GetLogText():Promise<string>;
@@ -24,9 +28,9 @@ export function GetSystemMemory():Promise<launch.SystemMemorySnapshot>;
 
 export function IsAutomaticMemoryAdjustmentEnabled():Promise<boolean>;
 
-export function Launch(arg1:string,arg2:any):Promise<launch.LaunchResult>;
+export function Launch(arg1:string,arg2:any,arg3:string):Promise<launch.LaunchResult>;
 
-export function LaunchVersion(arg1:string,arg2:string,arg3:any):Promise<launch.LaunchResult>;
+export function LaunchVersion(arg1:string,arg2:string,arg3:any,arg4:string):Promise<launch.LaunchResult>;
 
 export function SaveManualMaximumMemoryMb(arg1:number):Promise<boolean>;
 

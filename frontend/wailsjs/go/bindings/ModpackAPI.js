@@ -22,8 +22,16 @@ export function ExportSoloPack(arg1, arg2) {
   return window['go']['bindings']['ModpackAPI']['ExportSoloPack'](arg1, arg2);
 }
 
+export function ExtractSoloPack(arg1, arg2) {
+  return window['go']['bindings']['ModpackAPI']['ExtractSoloPack'](arg1, arg2);
+}
+
 export function GetSoloStubStatus() {
   return window['go']['bindings']['ModpackAPI']['GetSoloStubStatus']();
+}
+
+export function ImportSoloExe(arg1) {
+  return window['go']['bindings']['ModpackAPI']['ImportSoloExe'](arg1);
 }
 
 export function LoadExportProfile(arg1) {

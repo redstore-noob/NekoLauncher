@@ -232,7 +232,6 @@ const dict: Record<string, string> = {
   待添加: "To be added",
   单曲循环: "Repeat one",
   当前: "Current",
-  "当前：": "Current: ",
   "正在取消导出…": "Canceling export…",
   "导出已取消。": "Export canceled.",
   "当前壁纸：{title}{suffix}": "Current wallpaper: {title}{suffix}",

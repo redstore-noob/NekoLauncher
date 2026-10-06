@@ -19,6 +19,7 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 	"nekolauncher/internal/instance"
+	"nekolauncher/internal/tools"
 )
 
 // ---- PNG 写盘 ----
@@ -29,7 +30,7 @@ var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
 // WritePngFile 把前端（如皮肤编辑器 canvas）导出的 base64 PNG 写入目标路径。
 // 接受裸 base64 或 data URI（data:image/png;base64,...）；仅接受 PNG。
 func (a *SystemAPI) WritePngFile(path, base64Png string) error {
-	target := filepath.Clean(strings.TrimSpace(path))
+	target := tools.SanitizeSavePath(filepath.Clean(strings.TrimSpace(path)))
 	if target == "" {
 		return errors.New("目标路径为空")
 	}
@@ -50,7 +51,7 @@ func (a *SystemAPI) WritePngFile(path, base64Png string) error {
 
 // WriteTextFile 把文本内容写入目标路径（UTF-8，覆盖）。供创作工具的"导出输出"等使用。
 func (a *SystemAPI) WriteTextFile(path, content string) error {
-	target := filepath.Clean(strings.TrimSpace(path))
+	target := tools.SanitizeSavePath(filepath.Clean(strings.TrimSpace(path)))
 	if target == "" {
 		return errors.New("目标路径为空")
 	}
@@ -162,16 +163,23 @@ func (a *SystemAPI) SelectFile(title, filterName, pattern string) (string, error
 }
 
 // SaveFile 打开保存文件对话框；defaultName 为默认文件名。取消返回空串。
+// 默认名与最终路径都过一遍 tools.SanitizeSavePath：整合包名/版本号等用户输入
+// 带 '?' 时系统会拒绝这个名字，先换成 '0' 才不会"点了保存什么都没存下来"。
 func (a *SystemAPI) SaveFile(title, defaultName, filterName, pattern string) (string, error) {
+	defaultName = tools.SanitizeSaveName(defaultName)
 	opts := wailsruntime.OpenDialogOptions{Title: title, DefaultFilename: defaultName}
 	if pattern != "" {
 		opts.Filters = []wailsruntime.FileFilter{{DisplayName: filterName, Pattern: pattern}}
 	}
-	return wailsruntime.SaveFileDialog(callCtx(a.ctx), wailsruntime.SaveDialogOptions{
+	destination, err := wailsruntime.SaveFileDialog(callCtx(a.ctx), wailsruntime.SaveDialogOptions{
 		Title:           opts.Title,
 		DefaultFilename: defaultName,
 		Filters:         opts.Filters,
 	})
+	if err != nil {
+		return "", err
+	}
+	return tools.SanitizeSavePath(destination), nil
 }
 
 // ---- 打开资源管理器 / 外部程序 ----
@@ -298,7 +306,7 @@ func (a *SystemAPI) SaveFileAs(sourcePath, defaultName, filterName, pattern stri
 
 	opts := wailsruntime.SaveDialogOptions{
 		Title:           "图片另存为",
-		DefaultFilename: defaultName,
+		DefaultFilename: tools.SanitizeSaveName(defaultName),
 	}
 	if pattern != "" {
 		opts.Filters = []wailsruntime.FileFilter{{DisplayName: filterName, Pattern: pattern}}
@@ -310,6 +318,7 @@ func (a *SystemAPI) SaveFileAs(sourcePath, defaultName, filterName, pattern stri
 	if destination == "" {
 		return "", nil
 	}
+	destination = tools.SanitizeSavePath(destination)
 
 	if err := copyFileContents(source, destination); err != nil {
 		return "", err

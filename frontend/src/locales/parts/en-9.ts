@@ -176,8 +176,15 @@ const dict: Record<string, string> = {
   "NekoSolo 安装包": "NekoSolo installer",
   "把启动器、Java 与整合包打进单个 exe，玩家双击即玩（仅 Windows）":
     "Packs the launcher, Java and the modpack into a single exe — players just double-click to play (Windows only).",
-  "NekoSolo 安装包（仅 Windows）：把启动器、整合包与可选的 Java 打进单个 exe，玩家双击即玩；安装的启动器默认开启 NekoLauncher-S 简洁模式。Minecraft 客户端本体不随包分发，玩家首次启动联网补全。":
-    "NekoSolo installer (Windows only): packs the launcher, the modpack and optionally Java into a single exe — players just double-click to play. The installed launcher defaults to NekoLauncher-S simple mode. The Minecraft client itself is not redistributed; it is downloaded on the player's first launch.",
+  "NekoSolo 安装包（仅 Windows）：以 Modrinth 整合包格式打包，exe 只有几 MB，玩家双击安装即得启动器与整合包（默认开启 NekoLauncher-S 简洁模式）。在 Modrinth 上找不到的 mod 与配置会随包安装；其余 mod、Minecraft 本体与 Java 运行时由玩家首次启动启动器时联网下载。":
+    "NekoSolo installer (Windows only): packaged in the Modrinth modpack format, the exe is only a few MB — players double-click to install the launcher plus the modpack (NekoLauncher-S simple mode on by default). Mods without a Modrinth match and configs ship inside the package; all other mods, the Minecraft client and the Java runtime are downloaded on the player's first launch.",
+  "同时导出一份 .mrpack 整合包（可导入 Prism / HMCL 等其他启动器）":
+    "Also export a .mrpack modpack (importable into Prism, HMCL and other launchers)",
+  "已同时导出 .mrpack：{0}": "Also exported .mrpack: {0}",
+  "正在导出 .mrpack 整合包…": "Exporting .mrpack modpack…",
+  "已保存：{0}（声明直链 {1} 个、随包内容 {2} 个）":
+    "Saved: {0} ({1} direct-link files, {2} packaged files)",
+  "解析 NekoSolo 安装包失败": "Failed to parse the NekoSolo installer",
   "打包的模组、资源包等第三方内容会随安装包一起分发：请确认你有权再分发它们（CurseForge 上标记为「不允许第三方分发」的模组尤其需要注意）。":
     'Third-party content such as mods and resource packs is redistributed inside this installer. Make sure you have the right to redistribute them — mods marked as "no third-party distribution" on CurseForge deserve particular care.',
   "未找到 NekoSolo 安装器模板（NekoSolo/build/NekoSolo.Installer.exe），请先构建 NekoSolo 安装器，否则导出会失败。":
@@ -314,7 +321,6 @@ const dict: Record<string, string> = {
   "默认皮肤：{0}": "Default skin: {0}",
   "创建离线账号失败：{0}": "Failed to create offline account: {0}",
   "皮肤上传失败：{0}": "Skin upload failed: {0}",
-  "当前：": "Current: ",
   "皮肤站账号请到对应皮肤站的网页端更换皮肤。":
     "For skin-server accounts, please change skins on the server's website.",
   "披风 {0}": "Cape {0}",
@@ -377,5 +383,51 @@ const dict: Record<string, string> = {
     "Opens the Microsoft sign-in page in this window and returns automatically after authorization — no external browser needed.",
   使用设备码登录: "Sign in with device code",
 };
+
+const musicDict: Record<string, string> = {
+  // ---- 音乐播放器（三栏重绘版） ----
+  曲库: "Library",
+  收藏: "Favorite",
+  取消收藏: "Unfavorite",
+  最近播放: "Recent",
+  播放队列: "Queue",
+  暂无歌曲: "No songs yet",
+  "还没有收藏，点击曲目右侧的心心加入收藏":
+    "No favorites yet — tap the heart next to a track to add one",
+  暂无播放记录: "No listening history yet",
+  "队列为空，从曲库点播歌曲加入":
+    "Queue is empty — play a song from the library to fill it",
+  载入全部曲目: "Load all tracks",
+  清空队列: "Clear queue",
+  从队列移除: "Remove from queue",
+  "{0} 前播放": "Played {0} ago",
+  很久: "a while ago",
+  分钟: "min",
+  小时: "h",
+  天: "d",
+  个月: "mo",
+  迷你模式: "Mini mode",
+  退出迷你模式: "Exit mini mode",
+  "快退 10 秒": "Back 10s",
+  "快进 10 秒": "Forward 10s",
+  倍速播放: "Playback speed",
+  点击切换: "click to cycle",
+  均衡器: "Equalizer",
+  预设: "Preset",
+  流行: "Pop",
+  摇滚: "Rock",
+  古典: "Classical",
+  人声: "Vocal",
+  "均衡器由 Web Audio 实时处理，预设与增益自动保存。":
+    "Processed in real time via Web Audio. Presets and gains are saved automatically.",
+  歌词全屏: "Lyrics fullscreen",
+  从曲库选一首开始听吧: "Pick a song from the library to start listening",
+  "整合包（.mrpack / .zip / .exe）进导入流程，模组 / 资源包 / 光影 / 存档装进当前实例":
+    "Modpacks (.mrpack / .zip / .exe) go to the import flow; mods, resource packs, shaders and saves install into the current instance",
+  存档已导入当前实例: "World save imported into the current instance",
+  "导入存档失败：{0}": "Failed to import world save: {0}",
+};
+
+Object.assign(dict, musicDict);
 
 export default dict;

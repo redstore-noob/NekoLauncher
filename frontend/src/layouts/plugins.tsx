@@ -1,5 +1,9 @@
 /*
- * 插件页：顶栏（添加插件 / 重新加载 / 打开插件目录）+ 左侧插件列表 + 右侧插件详情。
+ * 插件页（指挥中心单页流重设计）：
+ *   顶部状态横幅（安装/启用/停用/异常计数 + 全部管理动作）
+ *   + 过滤 tab（全部 / 已启用 / 已停用 / 异常）+ 搜索
+ *   + 单列插件流：点击行在**行内展开**详情（描述/权限/清单字段/编辑/卸载），
+ *     不再有左右双栏。窄窗口天然适配，列表滚动与详情查看在同一列里完成。
  *
  * 数据来自两处，按插件 id 拼起来：
  *   - 磁盘与清单：Go 侧 PluginAPI（ListPlugins / InstallPlugin / UninstallPlugin / SetPluginDisabled）
@@ -27,7 +31,9 @@ import {
   Add20Regular,
   ArrowClockwise20Regular,
   Box20Regular,
+  ChevronRight20Regular,
   Delete20Regular,
+  Edit20Regular,
   Folder20Regular,
   FolderOpen20Regular,
   PuzzleCube20Regular,
@@ -54,6 +60,12 @@ import {
 import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
 import { listItemVariants } from "../lib/motion";
 import {
+  clearPluginGrants,
+  disabledPermissions,
+  isPermissionGranted,
+  NETWORK_PERMISSION,
+  setPluginPermission,
+  usePluginGrantsVersion,
   isPluginActive,
   reloadPlugins,
   setPluginEnabled,
@@ -94,6 +106,20 @@ function describeStatus(
   return { label: t("未加载"), color: "warning" };
 }
 
+/** 过滤 tab 的分桶：与 describeStatus 同源，但按原始数据判定，不依赖译文 */
+type PluginBucket = "enabled" | "disabled" | "problem";
+
+function bucketOf(
+  info: bindings.PluginInfo,
+  runtime: PluginRuntimeState | undefined,
+): PluginBucket {
+  if (info.ManifestError || runtime?.status === "failed") return "problem";
+  if (info.Disabled || runtime?.status === "disabled") return "disabled";
+  if (runtime?.status === "loaded") return "enabled";
+
+  return "problem"; // 未加载也算异常：横幅里点进去就能看到原因
+}
+
 function formatBytes(bytes: number): string {
   if (!bytes) return "0 B";
   if (bytes < 1024) return `${bytes} B`;
@@ -131,6 +157,8 @@ const PERMISSION_LABELS: Record<string, string> = {
   launch: "启动游戏",
   instances: "实例（只读）",
   "instances-write": "实例（写入）",
+  downloads: "下载（只读）",
+  "downloads-write": "下载与安装（写入）",
   accounts: "账号",
   "launcher-config": "启动器设置（只读）",
   "launcher-config-write": "启动器设置（写入）",
@@ -139,7 +167,38 @@ const PERMISSION_LABELS: Record<string, string> = {
   "open-url": "打开链接",
   "open-path": "打开文件",
   "server-status": "服务器状态",
+  "system-status": "系统占用",
+  music: "音乐库（只读）",
+  logs: "运行日志（只读）",
+  ipc: "插件间通信",
+  [NETWORK_PERMISSION]: "联网",
 };
+
+/** 权限开关的一行说明：关掉之后这一项会怎样 */
+const PERMISSION_HINTS: Record<string, string> = {
+  [NETWORK_PERMISSION]:
+    "宿主代插件发起的网络请求（版本清单 / 服务器状态 / 资源与整合包下载）。默认关闭。",
+  logs: "读取启动器运行日志（含路径、账号名、服务器地址）。默认关闭。",
+  accounts: "读取已登录账号的展示摘要（凭据不出宿主）。默认关闭。",
+  music: "读取音乐库曲目列表。默认关闭。",
+  "downloads-write": "下载并安装内容到你的实例（每次动作还会单独弹确认框）。",
+  "instances-write": "改写实例档案 / 启停实例内容。",
+  "launcher-config-write": "改写启动器全局设置（含 Java 路径与启动参数）。",
+  launch: "直接启动游戏（每次动作还会单独弹确认框）。",
+  ipc: "向其它插件收发消息（负载限 JSON 且 ≤ 256 KB，5 秒最多 100 条）。",
+};
+
+/** permissionKeys 该插件要展示的开关：声明过的 + 联网（用户独占的横切开关） */
+function permissionKeys(info: bindings.PluginInfo): string[] {
+  const declared = info.Capabilities ?? [];
+  const keys = [...declared];
+
+  if (!keys.includes(NETWORK_PERMISSION)) keys.push(NETWORK_PERMISSION);
+
+  return keys;
+}
+
+type FilterKey = "all" | "enabled" | "disabled" | "problem";
 
 const PluginsPage: React.FC = () => {
   const [plugins, setPlugins] = useState<bindings.PluginInfo[]>([]);
@@ -147,6 +206,8 @@ const PluginsPage: React.FC = () => {
   const [busy, setBusy] = useState("");
   const [status, setStatus] = useState("");
   const [selectedId, setSelectedId] = useState("");
+  const [expandedId, setExpandedId] = useState("");
+  const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [pendingUninstall, setPendingUninstall] =
     useState<bindings.PluginInfo | null>(null);
@@ -157,6 +218,9 @@ const PluginsPage: React.FC = () => {
   const [draftAuthor, setDraftAuthor] = useState("");
   const [draftDescription, setDraftDescription] = useState("");
   const runtimeStates = usePluginRuntimeStates();
+
+  // 订阅授权表变更：开关一动整页重渲染（每行 Switch 直接读 isPermissionGranted）
+  usePluginGrantsVersion();
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -185,18 +249,34 @@ const PluginsPage: React.FC = () => {
     [plugins, selectedId],
   );
 
-  // 列表搜索：按名称 / id / 作者过滤（大小写不敏感）
+  // 横幅计数：全量插件按桶统计，搜索不影响计数
+  const bucketCounts = useMemo(() => {
+    const counts = { enabled: 0, disabled: 0, problem: 0 };
+
+    for (const info of plugins) {
+      counts[bucketOf(info, runtimeStates[info.ID])] += 1;
+    }
+
+    return counts;
+  }, [plugins, runtimeStates]);
+
+  // 列表过滤：tab 分桶 + 名称/id/作者搜索（大小写不敏感）
   const filteredPlugins = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
 
-    if (!query) return plugins;
+    return plugins.filter((item) => {
+      if (
+        activeFilter !== "all" &&
+        bucketOf(item, runtimeStates[item.ID]) !== activeFilter
+      )
+        return false;
+      if (!query) return true;
 
-    return plugins.filter((item) =>
-      `${item.Name ?? ""} ${item.ID} ${item.Author ?? ""}`
+      return `${item.Name ?? ""} ${item.ID} ${item.Author ?? ""}`
         .toLowerCase()
-        .includes(query),
-    );
-  }, [plugins, searchQuery]);
+        .includes(query);
+    });
+  }, [plugins, runtimeStates, activeFilter, searchQuery]);
 
   // 选中项变化时把清单字段填进表单（用户改动在下次切换时才被覆盖）
   useEffect(() => {
@@ -206,6 +286,11 @@ const PluginsPage: React.FC = () => {
     setDraftAuthor(selected.Author ?? "");
     setDraftDescription(selected.Description ?? "");
   }, [selected]);
+
+  const toggleExpand = (id: string) => {
+    setSelectedId(id);
+    setExpandedId((prev) => (prev === id ? "" : id));
+  };
 
   const install = async () => {
     let archive = "";
@@ -229,7 +314,9 @@ const PluginsPage: React.FC = () => {
       setStatus(t("已安装插件「{0}」", { "0": id }));
       await reloadPlugins();
       await refresh();
+      // 新装的插件直接展开给你看详情，省一次点击
       setSelectedId(id);
+      setExpandedId(id);
     } catch (error) {
       setStatus(t("安装失败：{0}", { "0": messageOf(error) }));
     } finally {
@@ -325,6 +412,7 @@ const PluginsPage: React.FC = () => {
       await reloadPlugins();
       await refresh();
       setSelectedId(id);
+      setExpandedId(id);
     } catch (error) {
       setStatus(t("安装失败：{0}", { "0": messageOf(error) }));
     } finally {
@@ -412,12 +500,15 @@ const PluginsPage: React.FC = () => {
 
     if (!target) return;
     setPendingUninstall(null);
+    setExpandedId((prev) => (prev === target.ID ? "" : prev));
     setBusy(target.ID);
     try {
       // 先摘掉前端运行时再删磁盘：中间窗口里插件的事件订阅不再响应，
       // 不会去 fetch 已被删除的资源
       if (isPluginActive(target.ID)) unloadPluginRuntime(target.ID);
       await UninstallPlugin(target.ID);
+      // 卸载后顺手清掉它的权限开关记录：残留条目只会在配置里越积越多
+      await clearPluginGrants(target.ID);
       await reloadPlugins();
       await refresh();
       setStatus(t("已卸载「{0}」", { "0": target.Name || target.ID }));
@@ -431,321 +522,414 @@ const PluginsPage: React.FC = () => {
     }
   };
 
-  const selectedStatus = selected
-    ? describeStatus(selected, runtimeStates[selected.ID])
-    : null;
-  const detailIcon = selected ? pluginIconUrl(selected) : "";
-
   return (
     <div className="relative h-full w-full flex flex-col overflow-hidden">
-      {/* 标题区：顶栏放插件管理动作 */}
-      <div className="px-6 pt-5 pb-3 flex flex-col gap-2 flex-shrink-0">
-        <h1 className="text-xl font-semibold text-gray-800 dark:text-gray-200">
-          {t("插件")}
-        </h1>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            color="primary"
-            isDisabled={busy !== ""}
-            size="sm"
-            startContent={<Add20Regular />}
-            variant="flat"
-            onPress={() => void install()}
-          >
-            {t("添加插件")}
-          </Button>
-          <Button
-            isDisabled={busy !== ""}
-            size="sm"
-            startContent={<FolderOpen20Regular />}
-            variant="flat"
-            onPress={() => void installFromFolder()}
-          >
-            {t("从文件夹安装")}
-          </Button>
-          <Divider className="h-6 w-px mx-1" orientation="vertical" />
-          <Button
-            isDisabled={busy !== "" || !selected}
-            size="sm"
-            startContent={<PuzzleCube20Regular />}
-            variant="flat"
-            onPress={() => setManifestOpen(true)}
-          >
-            {t("编辑清单")}
-          </Button>
-          <Button
-            isDisabled={busy !== ""}
-            size="sm"
-            startContent={<Box20Regular />}
-            variant="flat"
-            onPress={() => void packagePlugin()}
-          >
-            {t("打包插件")}
-          </Button>
-          <Divider className="h-6 w-px mx-1" orientation="vertical" />
-          <Button
-            isDisabled={busy !== ""}
-            size="sm"
-            startContent={<ArrowClockwise20Regular />}
-            variant="flat"
-            onPress={() => void reload()}
-          >
-            {t("重新加载")}
-          </Button>
-          <Button
-            size="sm"
-            startContent={<Folder20Regular />}
-            variant="flat"
-            onPress={() => void openDirectory()}
-          >
-            {t("打开插件目录")}
-          </Button>
-          {busy !== "" ? <Spinner size="sm" /> : null}
+      {/* ---- 指挥横幅：计数 + 全部管理动作一屏收纳 ---- */}
+      <div className="px-6 pt-5 pb-2 flex-shrink-0 flex flex-col gap-2">
+        <div className="rounded-large border nya-border nya-panel px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+          {/* 状态计数徽章即筛选器：点一下切过去，再点取消回「全部」 */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Chip
+              className="cursor-pointer"
+              color={activeFilter === "enabled" ? "success" : "default"}
+              size="sm"
+              variant={activeFilter === "enabled" ? "solid" : "flat"}
+              onClick={() =>
+                setActiveFilter(activeFilter === "enabled" ? "all" : "enabled")
+              }
+            >
+              {t("已启用 {0}", { "0": bucketCounts.enabled })}
+            </Chip>
+            <Chip
+              className="cursor-pointer"
+              color={activeFilter === "disabled" ? "default" : "default"}
+              size="sm"
+              variant={activeFilter === "disabled" ? "solid" : "flat"}
+              onClick={() =>
+                setActiveFilter(
+                  activeFilter === "disabled" ? "all" : "disabled",
+                )
+              }
+            >
+              {t("已停用 {0}", { "0": bucketCounts.disabled })}
+            </Chip>
+            <Chip
+              className="cursor-pointer"
+              color={activeFilter === "problem" ? "danger" : "warning"}
+              size="sm"
+              variant={activeFilter === "problem" ? "solid" : "flat"}
+              onClick={() =>
+                setActiveFilter(activeFilter === "problem" ? "all" : "problem")
+              }
+            >
+              {t("异常 {0}", { "0": bucketCounts.problem })}
+            </Chip>
+            {busy !== "" ? <Spinner size="sm" /> : null}
+          </div>
+
+          <div className="flex-1" />
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              color="primary"
+              isDisabled={busy !== ""}
+              size="sm"
+              startContent={<Add20Regular />}
+              variant="flat"
+              onPress={() => void install()}
+            >
+              {t("添加插件")}
+            </Button>
+            <Button
+              isDisabled={busy !== ""}
+              size="sm"
+              startContent={<FolderOpen20Regular />}
+              variant="light"
+              onPress={() => void installFromFolder()}
+            >
+              {t("从文件夹安装")}
+            </Button>
+            <Divider className="h-6 w-px mx-0.5" orientation="vertical" />
+            <Button
+              isDisabled={busy !== ""}
+              size="sm"
+              startContent={<Box20Regular />}
+              variant="light"
+              onPress={() => void packagePlugin()}
+            >
+              {t("打包插件")}
+            </Button>
+            <Button
+              isDisabled={busy !== ""}
+              size="sm"
+              startContent={<ArrowClockwise20Regular />}
+              variant="light"
+              onPress={() => void reload()}
+            >
+              {t("重新加载")}
+            </Button>
+            <Button
+              size="sm"
+              startContent={<Folder20Regular />}
+              variant="light"
+              onPress={() => void openDirectory()}
+            >
+              {t("打开目录")}
+            </Button>
+          </div>
         </div>
+
+        {status ? (
+          <div className="px-1 break-all text-[11px] text-gray-400">
+            {status}
+          </div>
+        ) : null}
       </div>
 
-      {/* 左列表 + 右详情（窄窗口改为上下堆叠：并排时右侧详情会被压成几十像素） */}
-      <div className="flex-1 min-h-0 flex flex-col gap-4 px-6 pb-3 md:flex-row">
-        {/* 左：插件列表（顶层面板用 nya-panel；nya-panel-inner 是给面板内
-            嵌套小面板用的，底色更实会盖住毛玻璃） */}
-        <div className="flex max-h-44 w-full flex-shrink-0 flex-col rounded-xl border nya-border nya-panel p-2 md:max-h-none md:w-56">
-          <div className="px-1 pb-1.5 pt-1 flex items-center justify-between gap-2">
-            <span className="text-[13px] font-semibold text-gray-600 dark:text-gray-300">
-              {t("已安装（")}
-              {plugins.length}）
-            </span>
+      {/* ---- 单列插件流：行内展开详情；搜索放在面板标题行 ---- */}
+      <div className="flex-1 min-h-0 px-6 pb-3">
+        <div className="h-full min-h-0 rounded-large border nya-border nya-panel p-2 flex flex-col">
+          <div className="flex flex-none items-center gap-2 px-1 pb-1.5 pt-0.5">
+            <Input
+              aria-label={t("搜索插件")}
+              className="w-64 max-w-full"
+              size="sm"
+              startContent={<Search20Regular className="h-4 w-4" />}
+              value={searchQuery}
+              variant="flat"
+              onValueChange={setSearchQuery}
+            />
+            {activeFilter !== "all" || searchQuery.trim() ? (
+              <button
+                className="text-[11px] text-blue-500 hover:underline cursor-pointer"
+                onClick={() => {
+                  setActiveFilter("all");
+                  setSearchQuery("");
+                }}
+              >
+                {t("清除筛选")}
+              </button>
+            ) : null}
           </div>
-          <Input
-            aria-label={t("搜索插件")}
-            className="mb-1.5"
-            size="sm"
-            startContent={<Search20Regular className="h-4 w-4" />}
-            value={searchQuery}
-            variant="flat"
-            onValueChange={setSearchQuery}
-          />
-          <div className="flex-1 overflow-y-auto flex flex-col gap-0.5">
+          <div className="min-h-0 flex-1 overflow-y-auto flex flex-col gap-1">
             <AnimatePresence initial={false}>
               {filteredPlugins.map((info) => {
                 const itemStatus = describeStatus(info, runtimeStates[info.ID]);
-                const isActive = info.ID === selectedId;
+                const isExpanded = info.ID === expandedId;
                 const icon = pluginIconUrl(info);
+                // 本插件当前被关掉的权限项（标题右侧给个总数，不用逐行数）
+                const closedCount = disabledPermissions(
+                  info.ID,
+                  permissionKeys(info),
+                ).length;
 
                 return (
                   <motion.div
                     key={info.ID}
                     layout
                     animate="center"
-                    className="overflow-hidden"
+                    className="overflow-hidden rounded-lg"
                     exit="exit"
                     initial="enter"
                     variants={listItemVariants}
                   >
-                    <button
-                      className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors cursor-pointer ${
-                        isActive
-                          ? "bg-blue-100 dark:bg-blue-900/40 font-semibold text-blue-600 dark:text-blue-300"
-                          : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
+                    {/* 行：图标 + 名称/版本 + 作者 + 状态 + 开关 + 展开箭头。
+                      点开关（label 内部）不触发展开，键盘 Enter/空格可展开 */}
+                    <div
+                      className={`flex w-full items-center gap-3 rounded-lg px-2.5 py-2 transition-colors cursor-pointer ${
+                        isExpanded
+                          ? "bg-blue-50/70 dark:bg-blue-900/25"
+                          : "hover:bg-gray-100 dark:hover:bg-gray-800"
                       }`}
-                      onClick={() => setSelectedId(info.ID)}
+                      role="button"
+                      tabIndex={0}
+                      onClick={(event) => {
+                        if (
+                          (event.target as HTMLElement).closest(
+                            "label,button,[role='switch']",
+                          )
+                        )
+                          return;
+                        toggleExpand(info.ID);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          toggleExpand(info.ID);
+                        }
+                      }}
                     >
+                      <motion.span
+                        animate={{ rotate: isExpanded ? 90 : 0 }}
+                        className="text-gray-400 flex-shrink-0"
+                        transition={{ duration: 0.15 }}
+                      >
+                        <ChevronRight20Regular />
+                      </motion.span>
                       {icon ? (
                         <img
                           alt=""
-                          className="h-6 w-6 flex-shrink-0 rounded-md object-cover"
+                          className="h-7 w-7 flex-shrink-0 rounded-md object-cover"
                           src={icon}
                         />
                       ) : (
-                        <span className="w-6 h-6 flex-shrink-0 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                        <span className="w-7 h-7 flex-shrink-0 flex items-center justify-center rounded-md bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300">
                           <PuzzleCube20Regular />
                         </span>
                       )}
                       <span className="min-w-0 flex-1 leading-tight">
-                        <span className="block truncate text-[13px]">
+                        <span className="block truncate text-[13px] font-medium text-gray-700 dark:text-gray-200">
                           {info.Name || info.ID}
                         </span>
                         <span className="block truncate text-[10px] text-gray-400">
-                          {info.Version || info.ID}
+                          {info.ID} · {info.Version || "—"} ·{" "}
+                          {info.Author || t("佚名")}
                         </span>
                       </span>
-                      <span
-                        className={`h-1.5 w-1.5 flex-shrink-0 rounded-full ${
-                          itemStatus.color === "success"
-                            ? "bg-emerald-500"
-                            : itemStatus.color === "danger"
-                              ? "bg-red-500"
-                              : itemStatus.color === "warning"
-                                ? "bg-amber-500"
-                                : "bg-gray-300 dark:bg-gray-600"
-                        }`}
-                      />
-                    </button>
+                      <Chip color={itemStatus.color} size="sm" variant="flat">
+                        {itemStatus.label}
+                      </Chip>
+                      <span className="flex-shrink-0">
+                        <Switch
+                          aria-label={t("启用插件")}
+                          color="primary"
+                          isDisabled={busy !== "" || !!info.ManifestError}
+                          isSelected={!info.Disabled}
+                          size="sm"
+                          onValueChange={(enabled) =>
+                            void toggleEnabled(info, enabled)
+                          }
+                        />
+                      </span>
+                    </div>
+
+                    {/* 行内展开区：原右栏详情全部搬到这里 */}
+                    <AnimatePresence initial={false}>
+                      {isExpanded ? (
+                        <motion.div
+                          key="plugin-detail"
+                          animate={{ height: "auto", opacity: 1 }}
+                          className="overflow-hidden"
+                          exit={{ height: 0, opacity: 0 }}
+                          initial={{ height: 0, opacity: 0 }}
+                          transition={{ duration: 0.18, ease: "easeOut" }}
+                        >
+                          <div className="px-3 pb-3 pt-1 ml-9 border-l-2 border-blue-200/60 dark:border-blue-800/40">
+                            {itemStatus.detail ? (
+                              <div className="mb-3 rounded-lg border border-red-200/70 bg-red-50/70 px-3 py-2 text-[11px] leading-relaxed text-red-600 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
+                                {itemStatus.detail}
+                              </div>
+                            ) : null}
+
+                            {info.Description ? (
+                              <p className="mb-3 text-[13px] leading-relaxed text-gray-600 dark:text-gray-300">
+                                {info.Description}
+                              </p>
+                            ) : null}
+
+                            {/* 信任模型警示：插件系统没有沙箱，权限列表只是用途声明 */}
+                            <div className="mb-3 rounded-lg border border-amber-200/70 bg-amber-50/70 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300">
+                              {t(
+                                "插件以与启动器相同的权限运行（无沙箱），可访问本机文件与网络。请只安装信任来源的插件。",
+                              )}
+                            </div>
+
+                            {/* 权限开关：每个权限一行，关掉当场失效（相关 API 返回 null）。
+                                联网是用户独占的横切开关，一律列出且默认关闭。 */}
+                            <div className="mb-3">
+                              <div className="mb-1.5 flex items-center gap-2">
+                                <span className="text-[11px] font-semibold text-gray-500 dark:text-gray-400">
+                                  {t("权限开关")}
+                                </span>
+                                <span className="flex-1 border-t border-default-200/60 dark:border-default-100/10" />
+                                <span className="text-[10px] text-gray-400">
+                                  {closedCount > 0
+                                    ? t("{0} 项已关闭", {
+                                        "0": String(closedCount),
+                                      })
+                                    : t("全部开启")}
+                                </span>
+                              </div>
+                              <div className="flex flex-col">
+                                {permissionKeys(info).map((permission) => {
+                                  const granted = isPermissionGranted(
+                                    info.ID,
+                                    permission,
+                                  );
+
+                                  return (
+                                    <div
+                                      key={permission}
+                                      className="flex items-center gap-2 border-b border-default-200/40 py-1.5 last:border-b-0 dark:border-default-100/10"
+                                    >
+                                      <span className="min-w-0 flex-1">
+                                        <span className="block truncate text-[12px] text-gray-700 dark:text-gray-200">
+                                          {t(
+                                            PERMISSION_LABELS[permission] ??
+                                              permission,
+                                          )}
+                                          {granted ? null : (
+                                            <span className="ml-1.5 text-[10px] text-amber-600 dark:text-amber-400">
+                                              {t("已关闭")}
+                                            </span>
+                                          )}
+                                        </span>
+                                        {PERMISSION_HINTS[permission] ? (
+                                          <span className="block text-[10px] leading-4 text-gray-400">
+                                            {t(PERMISSION_HINTS[permission])}
+                                          </span>
+                                        ) : null}
+                                      </span>
+                                      <Switch
+                                        aria-label={t("允许权限：{0}", {
+                                          "0": t(
+                                            PERMISSION_LABELS[permission] ??
+                                              permission,
+                                          ),
+                                        })}
+                                        color="primary"
+                                        isDisabled={busy !== ""}
+                                        isSelected={granted}
+                                        size="sm"
+                                        onValueChange={(next) =>
+                                          void setPluginPermission(
+                                            info.ID,
+                                            permission,
+                                            next,
+                                          )
+                                        }
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              {info.Capabilities &&
+                              info.Capabilities.length === 0 ? (
+                                <p className="mt-1 text-[10px] text-gray-400">
+                                  {t(
+                                    "未声明任何权限（受限 API 调用会直接报错）",
+                                  )}
+                                </p>
+                              ) : null}
+                            </div>
+
+                            <dl className="grid grid-cols-[92px_1fr] gap-x-4 gap-y-2 text-[12px]">
+                              {[
+                                [t("版本"), info.Version || "—"],
+                                [t("作者"), info.Author || "—"],
+                                [t("API 版本"), info.APIVersion || "—"],
+                                [
+                                  t("体积"),
+                                  t("{0} · {1} 个文件", {
+                                    "0": formatBytes(info.SizeBytes),
+                                    "1": info.FileCount,
+                                  }),
+                                ],
+                                [t("最近修改"), formatTime(info.ModifiedAt)],
+                                [t("目录"), info.Directory],
+                              ].map(([label, value]) => (
+                                <React.Fragment key={label}>
+                                  <dt className="text-gray-400">{label}</dt>
+                                  <dd className="min-w-0 break-all text-gray-700 dark:text-gray-200">
+                                    {value}
+                                  </dd>
+                                </React.Fragment>
+                              ))}
+                            </dl>
+
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <Button
+                                isDisabled={busy !== ""}
+                                size="sm"
+                                startContent={<Edit20Regular />}
+                                variant="flat"
+                                onPress={() => setManifestOpen(true)}
+                              >
+                                {t("编辑清单")}
+                              </Button>
+                              <Button
+                                color="danger"
+                                isDisabled={busy !== ""}
+                                size="sm"
+                                startContent={<Delete20Regular />}
+                                variant="flat"
+                                onPress={() => setPendingUninstall(info)}
+                              >
+                                {t("卸载")}
+                              </Button>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
                   </motion.div>
                 );
               })}
             </AnimatePresence>
 
             {!loading && plugins.length === 0 ? (
-              <div className="px-2 py-6 text-center text-[11px] leading-relaxed text-gray-400">
-                {t("暂无插件")}
+              <div className="flex-1 flex flex-col items-center justify-center gap-1.5 text-[13px] text-gray-400 py-16">
+                <span className="font-semibold">{t("暂无插件")}</span>
+                <span className="text-xs">
+                  {t("点击右上角「添加插件」安装 .nekoex 插件包")}
+                </span>
               </div>
             ) : null}
             {!loading && plugins.length > 0 && filteredPlugins.length === 0 ? (
-              <div className="px-2 py-6 text-center text-[11px] leading-relaxed text-gray-400">
+              <div className="px-2 py-12 text-center text-[11px] leading-relaxed text-gray-400">
                 {t("没有匹配的插件")}
+              </div>
+            ) : null}
+            {loading && plugins.length === 0 ? (
+              <div className="px-2 py-12 text-center text-[11px] text-gray-400">
+                {t("正在读取插件…")}
               </div>
             ) : null}
           </div>
         </div>
-
-        {/* 右：插件详情（同上，顶层面板用 nya-panel 保证毛玻璃观感） */}
-        <div className="flex-1 min-w-0 flex flex-col rounded-xl border nya-border nya-panel">
-          {selected ? (
-            <div className="min-h-0 flex-1 overflow-y-auto p-5">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex min-w-0 items-start gap-3">
-                  {detailIcon ? (
-                    <img
-                      alt=""
-                      className="h-10 w-10 flex-shrink-0 rounded-lg object-cover"
-                      src={detailIcon}
-                    />
-                  ) : null}
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-lg font-semibold text-gray-800 dark:text-gray-200">
-                        {selected.Name || selected.ID}
-                      </span>
-                      {selectedStatus ? (
-                        <Chip
-                          color={selectedStatus.color}
-                          size="sm"
-                          variant="flat"
-                        >
-                          {selectedStatus.label}
-                        </Chip>
-                      ) : null}
-                    </div>
-                    <div className="mt-0.5 truncate text-[11px] text-gray-400">
-                      {selected.ID}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex flex-shrink-0 items-center gap-3">
-                  <Switch
-                    aria-label={t("启用插件")}
-                    color="primary"
-                    isDisabled={busy !== "" || !!selected.ManifestError}
-                    isSelected={!selected.Disabled}
-                    size="sm"
-                    onValueChange={(enabled) =>
-                      void toggleEnabled(selected, enabled)
-                    }
-                  />
-                  <Button
-                    color="danger"
-                    isDisabled={busy !== ""}
-                    size="sm"
-                    startContent={<Delete20Regular />}
-                    variant="flat"
-                    onPress={() => setPendingUninstall(selected)}
-                  >
-                    {t("卸载")}
-                  </Button>
-                </div>
-              </div>
-
-              {selectedStatus?.detail ? (
-                <div className="mt-4 rounded-lg border border-red-200/70 bg-red-50/70 px-3 py-2 text-[11px] leading-relaxed text-red-600 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-300">
-                  {selectedStatus.detail}
-                </div>
-              ) : null}
-
-              {selected.Description ? (
-                <p className="mt-4 text-[13px] leading-relaxed text-gray-600 dark:text-gray-300">
-                  {selected.Description}
-                </p>
-              ) : null}
-
-              {/* 信任模型一级警示：插件系统没有沙箱，权限列表只是用途声明 */}
-              <div className="mt-3 rounded-lg border border-amber-200/70 bg-amber-50/70 px-3 py-2 text-[11px] leading-relaxed text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/40 dark:text-amber-300">
-                {t(
-                  "插件以与启动器相同的权限运行（无沙箱），可访问本机文件与网络。请只安装信任来源的插件。",
-                )}
-              </div>
-
-              {selected.Capabilities && selected.Capabilities.length > 0 ? (
-                <div className="mt-3 flex flex-wrap items-center gap-1.5">
-                  <span className="text-[11px] text-gray-400">{t("权限")}</span>
-                  {selected.Capabilities.map((permission) => (
-                    <Chip
-                      key={permission}
-                      className="text-[11px]"
-                      color="default"
-                      size="sm"
-                      variant="flat"
-                    >
-                      {t(PERMISSION_LABELS[permission] ?? permission)}
-                    </Chip>
-                  ))}
-                </div>
-              ) : (
-                <p className="mt-3 text-[11px] text-gray-400">
-                  {t("未声明（受限 API 调用会直接报错）")}
-                </p>
-              )}
-
-              <Divider className="my-4" />
-
-              <dl className="grid grid-cols-[92px_1fr] gap-x-4 gap-y-2 text-[12px]">
-                {[
-                  [t("版本"), selected.Version || "—"],
-                  [t("作者"), selected.Author || "—"],
-                  [t("API 版本"), selected.APIVersion || "—"],
-                  [t("入口"), selected.Entry || "index.js"],
-                  [
-                    t("体积"),
-                    t("{0} · {1} 个文件", {
-                      "0": formatBytes(selected.SizeBytes),
-                      "1": selected.FileCount,
-                    }),
-                  ],
-                  [t("最近修改"), formatTime(selected.ModifiedAt)],
-                  [t("目录"), selected.Directory],
-                ].map(([label, value]) => (
-                  <React.Fragment key={label}>
-                    <dt className="text-gray-400">{label}</dt>
-                    <dd className="min-w-0 break-all text-gray-700 dark:text-gray-200">
-                      {value}
-                    </dd>
-                  </React.Fragment>
-                ))}
-              </dl>
-            </div>
-          ) : (
-            <div className="flex flex-1 flex-col items-center justify-center gap-1.5 text-[13px] text-gray-400">
-              {loading ? (
-                t("正在读取插件…")
-              ) : (
-                <>
-                  <span className="font-semibold">{t("未选择插件")}</span>
-                  <span className="text-xs">
-                    {t("从左侧选择一个插件，查看它的详情")}
-                  </span>
-                </>
-              )}
-            </div>
-          )}
-        </div>
       </div>
 
-      {status ? (
-        <div className="px-6 pb-3 break-all text-[11px] text-gray-400 flex-shrink-0">
-          {status}
-        </div>
-      ) : null}
-
-      {/* 插件制作：新建骨架 + 编辑当前选中插件的清单
+      {/* 插件制作：编辑当前展开插件的清单
           （Wails WebView2 没有原生 prompt，全部走应用内弹层） */}
       <Modal
         isOpen={manifestOpen}
@@ -766,7 +950,7 @@ const PluginsPage: React.FC = () => {
                         "0": selected.Name || selected.ID,
                         "1": selected.ID,
                       })
-                    : t("请先在左侧选择一个插件。")}
+                    : t("请先展开一个插件。")}
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <span className="text-[12px] font-medium text-gray-600 dark:text-gray-300">
@@ -819,7 +1003,7 @@ const PluginsPage: React.FC = () => {
 
                 <div className="text-[11px] leading-relaxed text-gray-400">
                   {t(
-                    "保存只改当前选中插件的清单元数据，id 与入口文件不可修改；要新建插件请到「创作中心 → 插件制作」。",
+                    "保存只改当前展开插件的清单元数据，id 与入口文件不可修改；要新建插件请到「创作中心 → 插件制作」。",
                   )}
                 </div>
 

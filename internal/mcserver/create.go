@@ -84,10 +84,16 @@ func CreateServer(ctx context.Context, opts CreateOptions) (string, error) {
 		return "", err
 	}
 
+	// 核心已装好之后的失败同样回滚：不回滚的话会留下一个没有 server.json 的
+	// 目录——列表不可见、删不掉、同名校验还让下次创建的名字带 -1。
 	if err := writeEula(dir); err != nil {
+		_ = os.RemoveAll(dir)
+
 		return "", err
 	}
 	if err := writeInitialProperties(dir, cfg.Port, cfg.MaxPlayers, cfg.Name); err != nil {
+		_ = os.RemoveAll(dir)
+
 		return "", err
 	}
 	// 顺手配好 RCON（随机密码 + 默认端口）：在线人数与停止指令优先走它，
@@ -96,6 +102,8 @@ func CreateServer(ctx context.Context, opts CreateOptions) (string, error) {
 		logsWriteCreate("为服务器 %s 写入 RCON 配置失败：%v（将退回 stdin 控制台路径）", id, err)
 	}
 	if err := saveServerConfig(dir, cfg); err != nil {
+		_ = os.RemoveAll(dir)
+
 		return "", err
 	}
 

@@ -98,5 +98,23 @@ func ApplyStartupDefaults() error {
 		return fmt.Errorf("NekoSolo 标记回写失败：%w", err)
 	}
 	logs.Write("INFO", "NekoSolo：已应用安装标记（"+marker.PackName+" "+marker.PackVersion+"）")
+
+	// v3 格式：mod / MC 本体 / Java 都不在安装包里，安装器把待装 mrpack 落盘
+	// 后由这里触发首启补全（异步进行，不阻塞启动）。失败不清字段——下次启动重试。
+	if strings.TrimSpace(marker.PendingPayload) != "" && PendingPayloadHook != nil {
+		go func(pending Marker) {
+			if err := PendingPayloadHook(pending); err != nil {
+				logs.Write("WARN", "NekoSolo：整合包内容补全失败（下次启动将重试）："+err.Error())
+				return
+			}
+			if fresh, err := LoadMarker(storage); err == nil && fresh != nil && fresh.PendingPayload != "" {
+				fresh.PendingPayload = ""
+				if err := SaveMarker(storage, fresh); err != nil {
+					logs.Write("WARN", "NekoSolo：补全标记清理失败："+err.Error())
+				}
+			}
+			logs.Write("INFO", "NekoSolo：整合包内容补全完成（"+pending.PackName+"）")
+		}(*marker)
+	}
 	return nil
 }

@@ -13,6 +13,7 @@ import p6 from "./parts/en-6";
 import p7 from "./parts/en-7";
 import p8 from "./parts/en-8";
 import p9 from "./parts/en-9";
+import p10 from "./parts/en-10";
 
 const enUS: Record<string, string> = {
   ...p0,
@@ -25,6 +26,7 @@ const enUS: Record<string, string> = {
   ...p7,
   ...p8,
   ...p9,
+  ...p10,
 };
 
 export default enUS;

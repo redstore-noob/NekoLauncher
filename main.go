@@ -48,6 +48,13 @@ func main() {
 		// WindowReveal）。此前窗口是"可见但空白"——用户会先看到透明/亚克力
 		// 空窗，再看到 UI 弹出、透明度突变，全程都在闪。
 		StartHidden: true,
+		// 文件拖放：WebView2 的 HTML5 拖放拿不到磁盘路径（File.path 恒为空），
+		// 必须走 Wails 原生 OnFileDrop 通道；EnableFileDrop 打开该通道，
+		// DisableWebViewDrop 阻止 WebView 默认"打开拖入文件"的导航行为。
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop:     true,
+			DisableWebViewDrop: true,
+		},
 		OnStartup: func(ctx context.Context) {
 			// NekoSolo 安装标记必须在实例扫描（api.Startup）之前消费：
 			// 它会接管游戏目录 / 捆绑 Java / 选中实例，首启扫描要看到这些配置

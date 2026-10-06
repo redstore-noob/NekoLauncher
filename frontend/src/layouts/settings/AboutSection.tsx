@@ -208,12 +208,7 @@ const AboutSection: React.FC = () => {
           </span>
         </SettingRow>
 
-        <SettingRow
-          hint={t(
-            "启动时自动检查 GitHub Releases，有新版本时弹窗询问（不会静默替换）",
-          )}
-          label={t("自动检查更新")}
-        >
+        <SettingRow label={t("自动检查更新")}>
           <Switch
             isSelected={autoCheck}
             size="sm"
@@ -221,12 +216,7 @@ const AboutSection: React.FC = () => {
           />
         </SettingRow>
 
-        <SettingRow
-          hint={t(
-            "更新通道：预览版最先拿到新功能，稳定版只收正式发布（预览版较少时可能长期无更新）",
-          )}
-          label={t("更新通道")}
-        >
+        <SettingRow label={t("更新通道")}>
           <div className="flex items-center gap-1">
             {channelOptions.map((option) => (
               <Chip
@@ -280,7 +270,7 @@ const AboutSection: React.FC = () => {
         </SettingRow>
 
         {latest?.UpdateAvailable ? (
-          <div className="flex flex-col gap-1 rounded-xl border border-primary/30 bg-primary/5 px-3 py-2 text-[11px] leading-relaxed text-gray-600 dark:text-gray-300">
+          <div className="flex flex-col gap-1 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-[11px] leading-relaxed text-gray-600 dark:text-gray-300">
             <span className="font-medium text-primary">
               {t("发现新版本 {0}", { "0": latest.LatestVersion })}
               {latest.Prerelease ? ` · ${t("预发布版")}` : ""}
@@ -387,11 +377,6 @@ const AboutSection: React.FC = () => {
             >
               www.mcmod.cn
             </a>
-            <p className="mt-1 opacity-70">
-              {t(
-                "实现方式参考了 PCL2 的同名功能与 SCL 启动器的译名数据集，特此致谢。",
-              )}
-            </p>
           </div>
         </SettingRow>
       </Section>

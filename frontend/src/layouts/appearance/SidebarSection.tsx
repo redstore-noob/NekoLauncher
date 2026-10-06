@@ -8,8 +8,15 @@
  */
 import React, { useState } from "react";
 import { Switch } from "@heroui/react";
-import { ReOrderDotsVertical20Regular } from "@fluentui/react-icons";
+import {
+  ArrowUp20Regular,
+  ArrowDown20Regular,
+  ArrowLeft20Regular,
+  ArrowRight20Regular,
+  ReOrderDotsVertical20Regular,
+} from "@fluentui/react-icons";
 
+import { SegmentedTabs } from "../../components/segmented-tabs";
 import { usePages, type PageDefinition } from "../../plugin";
 import { useI18n } from "../../i18n";
 import { useSimpleMode } from "../simple-mode";
@@ -17,6 +24,8 @@ import {
   PROTECTED_SIDEBAR_PAGES,
   orderPages,
   useSidebarSettings,
+  type SidebarPlacement,
+  type SidebarStyle,
 } from "../sidebar-settings";
 import Section, { SettingRow } from "../settings/Section";
 
@@ -33,8 +42,17 @@ const SidebarSection: React.FC = () => {
   const { t } = useI18n();
   // 插件页注册晚于首帧也没关系：usePages 订阅注册表，列表会自动跟上
   const pages = usePages();
-  const { hiddenPages, pageOrder, autoHide, applySidebarLayout, setAutoHide } =
-    useSidebarSettings();
+  const {
+    hiddenPages,
+    pageOrder,
+    autoHide,
+    placement,
+    style,
+    applySidebarLayout,
+    setAutoHide,
+    setPlacement,
+    setStyle,
+  } = useSidebarSettings();
   const { simpleMode } = useSimpleMode();
 
   // 按"保存顺序 → 注册表 order"排好后拆成两盒的基础列表
@@ -168,7 +186,7 @@ const SidebarSection: React.FC = () => {
         <div
           draggable
           aria-label={t("拖动调整「{label}」", { label: t(page.label) })}
-          className={`nya-panel-inner nya-border flex cursor-grab select-none items-center gap-1.5 rounded-lg border px-2 py-1.5 text-sm text-gray-800 active:cursor-grabbing dark:text-gray-200 ${
+          className={`nya-panel-inner nya-border flex cursor-grab select-none items-center gap-1.5 rounded-medium border px-2 py-1.5 text-sm text-gray-800 active:cursor-grabbing dark:text-gray-200 ${
             dragId === id ? "opacity-50 ring-1 ring-primary/40" : ""
           }`}
           onDragEnd={endDrag}
@@ -190,7 +208,7 @@ const SidebarSection: React.FC = () => {
     emptyText: string,
   ) => (
     <div
-      className={`nya-panel nya-border min-w-[200px] flex-1 rounded-xl border p-2 transition-shadow ${
+      className={`nya-panel nya-border min-w-[200px] flex-1 rounded-large border p-2 transition-shadow ${
         dragId && preview?.to === box ? "ring-2 ring-primary/40" : ""
       }`}
       onDragOver={(event) => handleBoxDragOver(event, box)}
@@ -225,17 +243,50 @@ const SidebarSection: React.FC = () => {
         t("排序"),
         t("隐藏"),
         t("自动隐藏"),
+        t("停靠"),
+        t("位置"),
+        t("形态"),
+        t("岛式"),
+        t("陆式"),
         "sidebar",
       ]}
       title={t("侧边栏")}
     >
-      <SettingRow hint={t("鼠标移到窗口左缘时弹出")} label={t("自动隐藏")}>
+      <SettingRow hint={t("鼠标移到窗口对应边缘时弹出")} label={t("自动隐藏")}>
         <Switch
           aria-label={t("自动隐藏侧边栏")}
           color="primary"
           isSelected={autoHide}
           size="sm"
           onValueChange={setAutoHide}
+        />
+      </SettingRow>
+
+      <SettingRow label={t("停靠位置")}>
+        <SegmentedTabs
+          items={[
+            { key: "left", label: <ArrowLeft20Regular /> },
+            { key: "top", label: <ArrowUp20Regular /> },
+            { key: "right", label: <ArrowRight20Regular /> },
+            { key: "bottom", label: <ArrowDown20Regular /> },
+          ]}
+          layoutId="nya-sidebar-placement"
+          value={placement}
+          onChange={(value) => setPlacement(value as SidebarPlacement)}
+        />
+      </SettingRow>
+
+      {/* 岛式 = 悬浮面板（圆角 + 边距 + 投影）；陆式 = 贴着停靠边与窗口连成
+          一体（无圆角投影，只留朝内容区的一条边线） */}
+      <SettingRow hint={t("岛式悬浮于窗口内，陆式贴边连成一体")} label={t("形态")}>
+        <SegmentedTabs
+          items={[
+            { key: "island", label: t("岛式") },
+            { key: "land", label: t("陆式") },
+          ]}
+          layoutId="nya-sidebar-style"
+          value={style}
+          onChange={(value) => setStyle(value as SidebarStyle)}
         />
       </SettingRow>
 

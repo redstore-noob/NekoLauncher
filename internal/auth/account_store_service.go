@@ -416,7 +416,11 @@ func (s *AccountStoreService) Save() {
 			"请检查存储目录权限与 account.secret.key（Windows 为 DPAPI 可用性）后重新登录账号。")
 		stored = string(data)
 	}
-	config.SetValue(AccountsConfigKey, stored)
+	// 写盘失败必须喊出来：磁盘满/文件被占用时内存与磁盘从此分叉——
+	// 界面照常显示"添加成功"，重启后账号消失（或删除的账号复活）。
+	if !config.SetValue(AccountsConfigKey, stored) {
+		logs.Write("ERROR", "账号数据写入磁盘失败，本次变更在重启后会丢失；请检查磁盘空间与存储目录权限")
+	}
 }
 
 // raiseChanged 触发 OnChanged 回调；回调异常通过 recover 隔离，
@@ -462,11 +466,21 @@ func (s *AccountStoreService) loadFromDisk() []*LaunchAccount {
 		if err := json.Unmarshal([]byte(jsonBody), &dtos); err == nil {
 			return s.buildAccounts(dtos)
 		}
-		// 配置损坏时忽略，走下面的默认账号逻辑；留下日志便于排查。
-		logs.Write("WARN", "账号配置解析失败，按未配置处理")
+		// 值层损坏（能读到内容但解析失败）：备份原始值供人工恢复，按空列表
+		// 处理而不是假装全新安装——此前静默回落默认离线账号 Player_01，
+		// 用户的所有账号"凭空消失"且毫无提示，后续 Save 还会覆盖掉损坏
+		// 原值，彻底无法恢复。备份的是加密原文（stored），不落明文凭据。
+		backupKey := AccountsConfigKey + ".corrupted"
+		if backupErr := config.SetValue(backupKey, stored); backupErr {
+			logs.Write("ERROR", "账号数据损坏（无法解析），原值已备份到配置键 "+backupKey+
+				"；本次按空账号列表启动，需要重新登录账号。可凭备份尝试恢复。")
+		} else {
+			logs.Write("ERROR", "账号数据损坏（无法解析），且备份写入失败；本次按空账号列表启动，需要重新登录账号。")
+		}
+		return accounts
 	}
 
-	// 全新安装：提供一个默认离线账号，保证首次打开即可启动。
+	// 全新安装（从未保存过账号）：提供一个默认离线账号，保证首次打开即可启动。
 	accounts = append(accounts, &LaunchAccount{
 		Type:          "offline",
 		DisplayName:   "Player_01",

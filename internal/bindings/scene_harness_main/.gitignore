@@ -1,0 +1,3 @@
+# harness 运行时生成的产物(payload 由服务端写入,renderer.js 由 esbuild 生成)
+harness/
+harness.log

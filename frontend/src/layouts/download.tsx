@@ -26,15 +26,7 @@
 import type { download, models } from "../../wailsjs/go/models";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Button,
-  Input,
-  Progress,
-  Select,
-  SelectItem,
-  Spinner,
-} from "@heroui/react";
-// 图标统一用 Fluent UI System Icons（20px 系）
+import { Button, Input, Select, SelectItem } from "@heroui/react";
 import {
   Cube20Regular,
   PuzzleCube20Regular,
@@ -45,52 +37,48 @@ import {
   ArrowDownload20Regular,
   Heart20Regular,
   Search20Regular,
-  Dismiss20Regular,
-  FolderOpen20Regular,
-  CheckmarkCircle20Regular,
   ArrowImport20Regular,
   ArrowClockwise20Regular as RefreshIcon,
   Warning20Regular,
 } from "@fluentui/react-icons";
 
-import SegmentedTabs from "../components/segmented-tabs";
+// 图标统一用 Fluent UI System Icons（20px 系）
+
 import Pager from "../components/pager";
+import SegmentedTabs from "../components/segmented-tabs";
 import EmptyState from "../components/empty-state";
 import LoadingRow from "../components/loading-row";
+import { selectPopoverProps } from "../lib/motion";
 import { asArray } from "../lib/guards";
 import { consumePendingDetail, onNavigate } from "../lib/navigation";
-import { popoverMotionProps } from "../lib/motion";
 import {
   ApplyVersionFilter,
-  CancelDownload,
   GetResourceSources,
-  GetCurrentDownloadSnapshot,
   GetVersions,
-  SaveCurseForgeAPIKey,
   SearchResources,
   StartDownload,
   StartModLoaderDownload,
 } from "../../wailsjs/go/bindings/DownloadAPI";
-import { GetGameDirectory } from "../../wailsjs/go/bindings/ConfigAPI";
 import {
   LookupModNameTranslations,
   RefreshModNameTranslations,
 } from "../../wailsjs/go/bindings/ContentAPI";
-import {
-  OpenInExplorer,
-  SelectFile,
-} from "../../wailsjs/go/bindings/SystemAPI";
+import { SelectFile } from "../../wailsjs/go/bindings/SystemAPI";
+import { ImportSoloExe } from "../../wailsjs/go/bindings/ModpackAPI";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
+import { notify } from "../components/overlay/dialog";
 import MinecraftDownloadOverlay from "../components/download/MinecraftDownloadOverlay";
 import ContentDownloadOverlay, {
   type ContentKind,
   type ProjectLike,
 } from "../components/download/ContentDownloadOverlay";
 import JavaDownloadTab from "../components/download/JavaDownloadTab";
+import DownloadTaskPanel from "../components/download/DownloadTaskPanel";
 // X-3 资源搜索已并入标签页大列表（版本/实例选择见 ContentDownloadOverlay）
 import SwitchTransition, {
   useSwitchDirection,
 } from "../components/screen-transition";
+import { PageActionSlot } from "../plugin";
 import { t } from "../i18n";
 
 const PAGE_SIZE = 50;
@@ -182,11 +170,6 @@ function localVersionFilter(
   return predicate ? list.filter(predicate) : list;
 }
 
-function joinPath(dir: string | undefined | null, name: string): string {
-  if (!dir) return name;
-
-  return dir.replace(/[\\/]+$/, "") + "\\" + name;
-}
 function formatCount(n?: number | null): string {
   const v = n ?? 0;
 
@@ -194,19 +177,6 @@ function formatCount(n?: number | null): string {
   if (v >= 1e3) return (v / 1e3).toFixed(1) + "k";
 
   return String(v);
-}
-function formatBytes(n?: number | null): string {
-  if (!n) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  let i = 0;
-  let v = n;
-
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-
-  return `${v.toFixed(1)} ${units[i]}`;
 }
 function formatDate(value: unknown): string {
   const date = value ? new Date(value as string) : null;
@@ -271,6 +241,8 @@ const DownloadPage: React.FC = () => {
     models.MinecraftVersion[]
   >([]);
   const [versionLoading, setVersionLoading] = useState(false);
+  // 清单拉取失败与"筛完没结果"是两回事：混用空态文案会让断网被当成筛选问题
+  const [versionLoadError, setVersionLoadError] = useState("");
   const versionQueryRef = useRef(versionQuery);
 
   versionQueryRef.current = versionQuery;
@@ -297,7 +269,6 @@ const DownloadPage: React.FC = () => {
   >({});
   // 数据源元信息（CurseForge 是否已配置 Key、申请地址等）
   const [sources, setSources] = useState<models.ResourceSourceInfo[]>([]);
-  const [apiKeyDraft, setApiKeyDraft] = useState("");
 
   // ---------- 弹层与下载进度 ----------
   // Modrinth 列表筛选（原资源搜索弹层的两项）：游戏版本 + 加载器（仅 Mod）
@@ -310,8 +281,8 @@ const DownloadPage: React.FC = () => {
   } | null>(null);
   const [mcOverlayVersion, setMcOverlayVersion] =
     useState<models.MinecraftVersion | null>(null);
-  const [downloadActive, setDownloadActive] = useState(false);
-  const [progressPercent, setProgressPercent] = useState(0);
+  // 游戏本体是否有任务在跑（详情看右下角下载中心，页面内只放一条摘要条）
+  const [gameRunning, setGameRunning] = useState(false);
   const [taskStatusText, setTaskStatusText] = useState("");
   const [finishedVersion, setFinishedVersion] = useState("");
 
@@ -344,12 +315,16 @@ const DownloadPage: React.FC = () => {
 
   const loadVersions = async () => {
     setVersionLoading(true);
+    setVersionLoadError("");
     try {
       // 优先走后端清单（跟随下载源镜像），失败回退空列表
       setAllVersions(asArray(await GetVersions()));
     } catch (ex) {
       console.error(t("获取版本清单失败"), ex);
       setAllVersions([]);
+      setVersionLoadError(
+        t("版本清单获取失败，请检查网络或稍后在设置中切换下载源重试。"),
+      );
     } finally {
       setVersionLoading(false);
     }
@@ -366,20 +341,35 @@ const DownloadPage: React.FC = () => {
 
     setMcOverlayVersion(null);
     if (!version) return;
+    let started = false;
+
     try {
       setTaskStatusText(
         t("开始下载 {0}", { "0": options.instanceName || version.id }),
       );
       if (options.loaderType === 0) {
-        await StartDownload(version);
+        // 必须 await 后判断：Promise 恒真会让"任务被拒"（已有下载在跑）也弹成功
+        started = await StartDownload(version).catch(() => false);
       } else {
-        await StartModLoaderDownload(
+        started = await StartModLoaderDownload(
           version,
           options.loaderVersion!,
           options.instanceName,
           options.skipFabricApi,
-        );
+        ).catch(() => false);
       }
+      if (!started) {
+        setTaskStatusText(
+          t(
+            "下载任务未能启动（可能有正在进行的下载），请到右下角下载中心确认。",
+          ),
+        );
+        notify.warning(t("下载任务未能启动，可能已有任务正在进行。"));
+
+        return;
+      }
+      // 任务已入列：轻提示 + 进度统一在右下角下载中心跟踪
+      notify.success(t("已加入下载任务，进度见右下角的下载中心"));
     } catch (ex) {
       console.error(t("启动版本下载失败"), ex);
       setTaskStatusText(
@@ -467,34 +457,6 @@ const DownloadPage: React.FC = () => {
     setContentPage(1);
   };
 
-  // 就地保存 CurseForge API Key（成功后刷新数据源状态并重查当前标签页）
-  const saveContentKey = async () => {
-    const key = apiKeyDraft.trim();
-
-    if (!key) {
-      setTaskStatusText(t("请先粘贴 CurseForge API Key。"));
-
-      return;
-    }
-    try {
-      const ok = await SaveCurseForgeAPIKey(key);
-
-      if (!ok) {
-        setTaskStatusText(t("保存失败：配置文件不可写。"));
-
-        return;
-      }
-      setApiKeyDraft("");
-      setSources(asArray(await GetResourceSources()));
-      setTaskStatusText("");
-      void searchModrinth(activeTab, contentQuery.trim());
-    } catch (ex) {
-      setTaskStatusText(
-        t("保存失败：{0}", { "0": (ex as Error)?.message ?? ex }),
-      );
-    }
-  };
-
   // 搜索词 / 筛选 / 平台变化：重置页码 + 对资源标签页做 300ms 防抖重查
   const firstQueryRender = useRef(true);
 
@@ -521,9 +483,6 @@ const DownloadPage: React.FC = () => {
   // 固定成一个常量作为空态
   const contentState =
     contentCache[`${contentSource}:${activeTab}`] ?? EMPTY_CONTENT_STATE;
-  const activeSourceInfo =
-    sources.find((item) => item.id === contentSource) ?? null;
-  const apiKeyApplyUrl = activeSourceInfo?.apiKeyApplyUrl ?? "";
 
   // ---------- 资源中文名（MC百科） ----------
   // 下载大厅的资源标题是英文原名；复用实例页同一套 MC百科（mcmod.cn）译名服务：
@@ -620,77 +579,75 @@ const DownloadPage: React.FC = () => {
     });
   }
 
-  // 整合包标签页：导入本地整合包（.mrpack / CurseForge .zip）→ ContentDownloadOverlay 安装流程
+  // 整合包标签页：导入本地整合包（.mrpack / CurseForge .zip / NekoSolo .exe）→ ContentDownloadOverlay 安装流程
   const importLocalModpack = async () => {
     try {
       const path = await SelectFile(
         t("选择整合包文件"),
         t("整合包"),
-        "*.mrpack;*.zip",
+        "*.mrpack;*.zip;*.exe",
       );
 
       if (!path) return;
-      setContentOverlay({ project: null, kind: "modpack", localPath: path });
+      let packPath = path;
+
+      // NekoSolo 安装包：先转存为临时 .mrpack 再走统一导入流程
+      if (/\.exe$/i.test(path)) {
+        try {
+          packPath = await ImportSoloExe(path);
+        } catch (ex) {
+          console.error(t("解析 NekoSolo 安装包失败"), ex);
+
+          return;
+        }
+      }
+      setContentOverlay({
+        project: null,
+        kind: "modpack",
+        localPath: packPath,
+      });
     } catch (ex) {
       console.error(t("选择整合包文件失败"), ex);
     }
   };
 
-  // ---------- 下载进度（download:progress 快照驱动） ----------
+  // ---------- 下载状态（download:progress 快照，只取摘要；进度看右下角下载中心） ----------
+  // GameDownloadPhase（与 internal/download/game_download_service.go 一致）
+  const GAME_PHASE_PREPARING = 1;
+  const GAME_PHASE_DOWNLOADING = 2;
+  const GAME_PHASE_COMPLETED = 3;
+  const GAME_PHASE_FAILED = 4;
+  const GAME_PHASE_CANCELLED = 5;
+
   function applyDownloadSnapshot(snap: download.GameDownloadSnapshot | null) {
     if (!snap) return;
-    const percent = Math.min(100, snap.Percentage ?? 0);
-    const running = !!snap.VersionID && percent > 0 && percent < 100;
+    // 运行判定以 Phase 为准：按 percent 猜的话，失败/取消的任务（percent
+    // 停在 0-100 之间）会让横幅永远显示"任务运行中"，Preparing（percent=0）
+    // 反而不显示——两种方向都会骗人
+    const running =
+      !!snap.VersionID &&
+      (snap.Phase === GAME_PHASE_PREPARING ||
+        snap.Phase === GAME_PHASE_DOWNLOADING);
 
-    setDownloadActive(running);
-    if (running) {
-      setProgressPercent(percent);
-      setTaskStatusText(
-        `${snap.VersionID} · ${snap.StageName ?? ""} ${snap.Detail ?? ""} ` +
-          `${formatBytes(snap.CompletedBytes)}/${formatBytes(snap.TotalBytes)} · ${formatBytes(snap.BytesPerSecond)}/s`,
-      );
-    } else if (snap.VersionID && percent >= 100) {
+    setGameRunning(running);
+    if (!snap.VersionID) return;
+    if (snap.Phase === GAME_PHASE_COMPLETED) {
       // 下载完成：记录版本号，展示「打开文件夹」入口
       setFinishedVersion(snap.VersionID);
       setTaskStatusText(t("{0} 下载完成", { "0": snap.VersionID }));
+    } else if (snap.Phase === GAME_PHASE_FAILED) {
+      setTaskStatusText(
+        t("{0} 下载失败：{1}", {
+          "0": snap.VersionID,
+          "1": snap.Detail || "未知原因",
+        }),
+      );
+    } else if (snap.Phase === GAME_PHASE_CANCELLED) {
+      setTaskStatusText(t("{0} 下载已取消", { "0": snap.VersionID }));
     }
   }
 
-  const openDownloadFolder = async () => {
-    const version = finishedVersion;
-
-    if (!version) return;
-    try {
-      const gameDir = (await GetGameDirectory()) || "";
-      // 优先定位到版本目录；不存在时退回打开游戏根目录
-      const candidates = [
-        joinPath(joinPath(gameDir, "versions"), version),
-        gameDir,
-      ].filter(Boolean);
-
-      for (const dir of candidates) {
-        try {
-          await OpenInExplorer(dir);
-
-          return;
-        } catch {
-          /* 尝试下一个 */
-        }
-      }
-    } catch (ex) {
-      console.error(t("打开下载目录失败"), ex);
-    }
-  };
-
-  const onCancelDownload = async () => {
-    try {
-      await CancelDownload();
-      setTaskStatusText(t("已取消"));
-      setDownloadActive(false);
-    } catch (ex) {
-      console.error(t("取消下载失败"), ex);
-    }
-  };
+  // 下载中时不再提供页内取消：统一到页内任务面板 / 右下角下载中心操作
 
   // ---------- 通用 ----------
   function onRefresh() {
@@ -701,19 +658,12 @@ const DownloadPage: React.FC = () => {
 
   // ---------- 生命周期：初始化 + 事件订阅（无阻塞遮罩，失败不锁界面） ----------
   useEffect(() => {
-    void (async () => {
-      await loadVersions();
-      try {
-        applyDownloadSnapshot(await GetCurrentDownloadSnapshot());
-      } catch (ex) {
-        console.error(t("读取下载快照失败"), ex);
-      }
-    })();
+    void loadVersions();
     // 资源平台元信息（CurseForge Key 是否已配置、申请地址），失败不阻塞页面
     void GetResourceSources()
       .then((list) => setSources(asArray<models.ResourceSourceInfo>(list)))
       .catch(() => {});
-    // 逐个退订：EventsOff 会连下载浮标 / 主页下载卡片的订阅一起清掉
+    // 逐个退订：EventsOff 会连右下角下载中心 / 主页下载卡片的订阅一起清掉
     const offProgress = EventsOn("download:progress", applyDownloadSnapshot);
 
     return () => {
@@ -721,31 +671,57 @@ const DownloadPage: React.FC = () => {
     };
   }, []);
 
-  // 主页 Java 卡片等请求打开 Java 标签页。
+  // 主页 Java 卡片等请求打开 Java 标签页；全局拖放的整合包请求打开导入流程。
   // 两个来源：页面已挂载 → 走导航总线实时事件；跨页跳过来 → 读挂载时暂存的 detail
   useEffect(() => {
     const openJavaTab = () => switchTab("Java");
+    const openImportedModpack = (detail: string) => {
+      setContentOverlay({
+        project: null,
+        kind: "modpack",
+        localPath: detail.slice("import-modpack:".length),
+      });
+    };
 
-    if (consumePendingDetail("download") === "java") openJavaTab();
+    const pending = consumePendingDetail("download");
+
+    if (pending === "java") openJavaTab();
+    else if (pending?.startsWith("import-modpack:"))
+      openImportedModpack(pending);
 
     return onNavigate((request) => {
-      if (request.pageId === "download" && request.detail === "java") {
-        openJavaTab();
+      if (request.pageId !== "download") return;
+      if (request.detail === "java") openJavaTab();
+      else if (request.detail?.startsWith("import-modpack:")) {
+        openImportedModpack(request.detail);
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 翻页后把当前标签的列表滚回顶部（列表有自己的滚动区，翻页不会自动复位）
+  const pageRootRef = useRef<HTMLDivElement>(null);
+  const resetListScroll = () => {
+    pageRootRef.current
+      ?.querySelectorAll<HTMLElement>(".nya-scroll-area")
+      .forEach((el) => {
+        el.scrollTop = 0;
+      });
+  };
+
   // 分页条 / 空态 / 加载行统一走共享组件（components/pager | empty-state | loading-row）
   return (
-    <div className="relative flex h-full min-h-0 w-full flex-col gap-4 overflow-hidden px-6 py-5">
+    <div
+      ref={pageRootRef}
+      className="relative flex h-full min-h-0 w-full flex-col gap-4 overflow-hidden px-6 py-5"
+    >
       {/* 标题区 */}
       <div className="flex flex-none items-center gap-3">
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <h1 className="overflow-hidden text-xl font-bold tracking-tight text-ellipsis whitespace-nowrap">
             {t("下载大厅")}
           </h1>
-          {taskStatusText && !downloadActive && !finishedVersion ? (
+          {taskStatusText && !gameRunning && !finishedVersion ? (
             <span className="truncate text-[11px] text-gray-400">
               {taskStatusText}
             </span>
@@ -760,81 +736,40 @@ const DownloadPage: React.FC = () => {
         >
           {t("刷新")}
         </Button>
+        {/* 插件页面按钮插槽：没有插件注册时组件直接返回 null，不占位 */}
+        <PageActionSlot pageId="download" />
       </div>
 
-      {/* 下载状态卡（下载中 / 刚完成时显示） */}
-      {(downloadActive || finishedVersion) && (
-        <div className="flex flex-none items-center gap-3 rounded-2xl border nya-border nya-panel px-4 py-2.5 shadow-sm backdrop-blur-md">
-          {downloadActive ? (
-            <Spinner className="flex-none" color="primary" size="sm" />
-          ) : (
-            <span className="flex-none text-success-500">
-              <CheckmarkCircle20Regular />
-            </span>
-          )}
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
-            <span className="truncate text-[12px] text-gray-600 dark:text-gray-300">
-              {taskStatusText}
-            </span>
-            {downloadActive && (
-              <Progress
-                aria-label={t("下载进度")}
-                className="max-w-full"
-                size="sm"
-                value={progressPercent}
-              />
-            )}
-          </div>
-          {downloadActive && (
-            <Button
-              className="flex-none"
-              color="danger"
-              radius="full"
-              size="sm"
-              startContent={<Dismiss20Regular />}
-              variant="flat"
-              onPress={() => void onCancelDownload()}
-            >
-              {t("取消")}
-            </Button>
-          )}
-          {finishedVersion && !downloadActive && (
-            <Button
-              className="flex-none"
-              radius="full"
-              size="sm"
-              startContent={<FolderOpen20Regular />}
-              variant="flat"
-              onPress={() => void openDownloadFolder()}
-            >
-              {t("打开文件夹")}
-            </Button>
-          )}
-        </div>
-      )}
+      {/* 页内任务面板：全部下载任务的实时进度 / 速度 / 暂停取消 / 清除已完成
+          （与右下角下载中心同源；没有任何任务时整块不占位） */}
+      <DownloadTaskPanel />
 
-      {/* 胶囊分段标签栏（主色滑块随选中项滑动） */}
-      <SegmentedTabs
-        className="flex flex-none items-center gap-1 self-start rounded-full border nya-border nya-panel p-1 shadow-sm backdrop-blur-md"
-        items={TAB_NAMES.map((tab) => ({
-          key: tab,
-          label: (
-            <>
-              {TAB_ICONS[tab]}
-              <span>{t(tab)}</span>
-            </>
-          ),
-        }))}
-        layoutId="download-main-tab"
-        value={activeTab}
-        onChange={switchTab}
-      />
+      {/* 标签栏（无卡：下划线标签 + 一条基线细线，不再铺胶囊外壳与滑块） */}
+      <div className="nya-border nya-scroll flex flex-none items-center gap-5 overflow-x-auto border-b">
+        {TAB_NAMES.map((tab) => (
+          <button
+            key={tab}
+            className={`flex flex-none cursor-pointer items-center gap-1.5 border-b-2 px-0.5 pt-1 pb-2 text-[13px] transition-colors ${
+              tab === activeTab
+                ? "border-primary font-semibold text-primary"
+                : "border-transparent text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
+            }`}
+            type="button"
+            onClick={() => switchTab(tab)}
+          >
+            {TAB_ICONS[tab]}
+            <span>{t(tab)}</span>
+          </button>
+        ))}
+      </div>
 
-      {/* 内容区 */}
-      <div className="nya-scroll flex min-h-0 flex-1 flex-col gap-3 overflow-x-hidden overflow-y-auto pr-1">
+      {/* 内容区：工具栏与分页条固定，只有列表本身滚动（Java 标签整页滚动） */}
+      <div className="flex min-h-0 flex-1 flex-col">
         <SwitchTransition
           activeKey={activeTab}
-          className="flex flex-col gap-3"
+          className={`flex min-h-0 flex-1 flex-col gap-3 ${
+            activeTab === "Java" ? "nya-scroll nya-scroll-area pr-1" : ""
+          }`}
           direction={tabDirection}
         >
           {/* ===== Minecraft 本体 ===== */}
@@ -858,7 +793,7 @@ const DownloadPage: React.FC = () => {
                 <Select
                   aria-label={t("版本类型")}
                   className="w-32 min-w-0 max-w-full flex-shrink-0 [&_*]:min-w-0"
-                  popoverProps={{ motionProps: popoverMotionProps }}
+                  popoverProps={selectPopoverProps}
                   radius="full"
                   selectedKeys={[versionTypeFilter]}
                   size="sm"
@@ -875,24 +810,28 @@ const DownloadPage: React.FC = () => {
                 </Select>
               </div>
               {versionLoading ? (
-                <LoadingRow text={t("正在获取版本清单…")} />
+                <div className="min-h-0 flex-1">
+                  <LoadingRow text={t("正在获取版本清单…")} />
+                </div>
               ) : versionPageItems.length === 0 ? (
-                <EmptyState
-                  icon={<Cube20Regular className="h-8 w-8" />}
-                  text={t("没有找到匹配的版本")}
-                />
+                <div className="min-h-0 flex-1">
+                  <EmptyState
+                    icon={<Cube20Regular className="h-8 w-8" />}
+                    text={versionLoadError || t("没有找到匹配的版本")}
+                  />
+                </div>
               ) : (
-                <div className="flex flex-col gap-2">
+                <div className="nya-scroll nya-scroll-area flex min-h-0 flex-1 flex-col gap-1.5 pr-1">
                   {versionPageItems.map((v) => {
                     const meta = versionTypeMeta(v.type);
 
                     return (
                       <button
                         key={v.id}
-                        className="group flex cursor-pointer items-center gap-3 rounded-2xl border border-transparent nya-panel px-3.5 py-3 text-left backdrop-blur-md transition-all hover:translate-x-0.5 hover:border-primary/30 hover:bg-primary/[0.06]"
+                        className="group flex flex-none cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-primary/[0.08]"
                         onClick={() => setMcOverlayVersion(v)}
                       >
-                        <span className="flex size-10 flex-none items-center justify-center rounded-xl bg-default-100 text-primary shadow-inner dark:bg-default-100/60">
+                        <span className="flex size-9 flex-none items-center justify-center rounded-md bg-default-100 text-primary dark:bg-default-100/60">
                           <VersionTypeIcon type={v.type} />
                         </span>
                         <div className="flex min-w-0 flex-1 items-center gap-2.5">
@@ -916,48 +855,53 @@ const DownloadPage: React.FC = () => {
                   })}
                 </div>
               )}
-              <div className="text-center text-xs text-gray-400">
-                {t("共")} {versionFiltered.length} {t("个版本")}
+              <div className="flex flex-none items-center justify-between gap-3">
+                <span className="text-xs text-gray-400">
+                  {t("共")} {versionFiltered.length} {t("个版本")}
+                </span>
+                <Pager
+                  page={versionPage}
+                  totalPages={versionTotalPages}
+                  onChange={(page) => {
+                    setVersionPage(page);
+                    resetListScroll();
+                  }}
+                />
               </div>
-              <Pager
-                page={versionPage}
-                totalPages={versionTotalPages}
-                onChange={setVersionPage}
-              />
             </>
           )}
 
           {/* ===== Modrinth / CurseForge 内容类 ===== */}
           {MODRINTH_TABS.includes(activeTab) && (
             <>
-              <div className="flex flex-none items-center gap-3">
-                {/* 资源平台筛选：Modrinth / CurseForge 双平台切换 */}
+              <div className="flex flex-none flex-wrap items-center gap-2">
+                {/* 资源平台筛选：胶囊滑块切换（滑动指示条），未配置 Key 直接标在名字后 */}
                 <SegmentedTabs
-                  className="flex flex-none items-center gap-0.5 self-stretch rounded-full border nya-border nya-panel p-0.5"
+                  className="flex flex-none flex-shrink-0 items-center gap-1 rounded-full border nya-border p-1"
                   items={CONTENT_SOURCES.map((item) => {
                     const info = sources.find((s) => s.id === item.id);
 
                     return {
                       key: item.id,
                       label: (
-                        <>
-                          <span>{item.label}</span>
+                        <span className="flex items-center">
+                          {item.label}
                           {info?.requiresApiKey && !info.apiKeyConfigured ? (
-                            <span className="text-[10px] opacity-80">
+                            <span className="ml-1 text-[10px] opacity-80">
                               {t("（未配置 Key）")}
                             </span>
                           ) : null}
-                        </>
+                        </span>
                       ),
                     };
                   })}
-                  layoutId="download-source-tab"
+                  layoutId="nya-download-source"
                   value={contentSource}
-                  onChange={switchContentSource}
+                  onChange={(next) => switchContentSource(next)}
                 />
                 <Input
                   aria-label={t("搜索{0}", { "0": t(activeTab) })}
-                  className="min-w-0 flex-1"
+                  className="min-w-[180px] flex-1"
                   classNames={{
                     inputWrapper:
                       "bg-default-100/80 data-[hover=true]:bg-default-200",
@@ -992,7 +936,7 @@ const DownloadPage: React.FC = () => {
                       key: value || "__all__",
                       label: loaderOptionLabel(value),
                     }))}
-                    popoverProps={{ motionProps: popoverMotionProps }}
+                    popoverProps={selectPopoverProps}
                     selectedKeys={[contentLoader || "__all__"]}
                     size="sm"
                     onSelectionChange={(keys) => {
@@ -1019,45 +963,24 @@ const DownloadPage: React.FC = () => {
                   </Button>
                 )}
               </div>
-              {/* CurseForge 未配置 Key：就地引导，不报错 */}
+              {/* 内置 Key 未生效：提示而不是报错（Key 唯一来源是后端编译期内置值） */}
               {contentState.needsApiKey ? (
-                <div className="flex flex-col gap-2 rounded-2xl border border-warning-200 nya-panel-inner px-3.5 py-3">
+                <div className="flex flex-col gap-2 border-l-2 border-warning-400 pl-3.5">
                   <span className="flex items-center gap-2 text-xs text-warning-600 dark:text-warning-400">
                     <Warning20Regular />
                     {contentState.message ||
-                      t("需要先在设置里填写 CurseForge API Key。")}
+                      t(
+                        "CurseForge 搜索需要内置 API Key，当前构建未包含，请使用官方发布版。",
+                      )}
                   </span>
-                  <div className="flex items-center gap-2">
-                    <Input
-                      aria-label={t("CurseForge API Key")}
-                      className="min-w-0 flex-1"
-                      placeholder={t("粘贴 CurseForge API Key")}
-                      radius="full"
-                      size="sm"
-                      value={apiKeyDraft}
-                      onValueChange={setApiKeyDraft}
-                    />
-                    <Button
-                      className="flex-none"
-                      radius="full"
-                      size="sm"
-                      variant="flat"
-                      onPress={() => void saveContentKey()}
-                    >
-                      {t("保存 Key")}
-                    </Button>
-                  </div>
-                  {apiKeyApplyUrl ? (
-                    <span className="break-all text-[11px] text-gray-400">
-                      {t("申请地址：{0}", { "0": apiKeyApplyUrl })}
-                    </span>
-                  ) : null}
                 </div>
               ) : null}
               {contentState.loading ? (
-                <LoadingRow text={`${t("正在搜索")} ${t(activeTab)}…`} />
+                <div className="min-h-0 flex-1">
+                  <LoadingRow text={`${t("正在搜索")} ${t(activeTab)}…`} />
+                </div>
               ) : contentState.error ? (
-                <div className="my-10 flex flex-col items-center gap-3 text-center">
+                <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-center">
                   <div className="flex items-center gap-2 text-xs text-danger">
                     <Warning20Regular />
                     {t("搜索失败：{0}", { "0": contentState.error })}
@@ -1079,26 +1002,30 @@ const DownloadPage: React.FC = () => {
                   </Button>
                 </div>
               ) : contentPageItems.length === 0 ? (
-                <EmptyState
-                  icon={TAB_ICONS[activeTab]}
-                  text={t("没有找到匹配的{0}", { "0": t(activeTab) })}
-                />
+                <div className="min-h-0 flex-1">
+                  <EmptyState
+                    icon={TAB_ICONS[activeTab]}
+                    text={t("没有找到匹配的{0}", { "0": t(activeTab) })}
+                  />
+                </div>
               ) : (
-                <div className="flex flex-col gap-2">
+                <div className="nya-scroll nya-scroll-area flex min-h-0 flex-1 flex-col gap-1.5 pr-1">
                   {contentPageItems.map((p) => (
                     <button
                       key={String(p.project_id)}
-                      className="group flex cursor-pointer items-center gap-3 rounded-2xl border border-transparent nya-panel px-3.5 py-3 text-left backdrop-blur-md transition-all hover:translate-x-0.5 hover:border-primary/30 hover:bg-primary/[0.06]"
+                      className="group flex flex-none cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-primary/[0.08]"
                       onClick={() => downloadContent(p)}
                     >
                       {p.icon_url ? (
                         <img
                           alt=""
-                          className="size-11 flex-none rounded-xl object-cover shadow-sm"
+                          className="size-10 flex-none rounded-md object-cover"
+                          decoding="async"
+                          loading="lazy"
                           src={String(p.icon_url)}
                         />
                       ) : (
-                        <span className="flex size-11 flex-none items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md shadow-primary/25">
+                        <span className="flex size-10 flex-none items-center justify-center rounded-md bg-primary/15 text-primary">
                           {TAB_ICONS[activeTab]}
                         </span>
                       )}
@@ -1134,19 +1061,24 @@ const DownloadPage: React.FC = () => {
                   ))}
                 </div>
               )}
-              <div className="text-center text-xs text-gray-400">
-                {t("来自 {0} · 共", {
-                  "0":
-                    CONTENT_SOURCES.find((item) => item.id === contentSource)
-                      ?.label ?? "Modrinth",
-                })}{" "}
-                {contentFiltered.length} {t("个结果")}
+              <div className="flex flex-none items-center justify-between gap-3">
+                <span className="text-xs text-gray-400">
+                  {t("来自 {0} · 共", {
+                    "0":
+                      CONTENT_SOURCES.find((item) => item.id === contentSource)
+                        ?.label ?? "Modrinth",
+                  })}{" "}
+                  {contentFiltered.length} {t("个结果")}
+                </span>
+                <Pager
+                  page={contentPage}
+                  totalPages={contentTotalPages}
+                  onChange={(page) => {
+                    setContentPage(page);
+                    resetListScroll();
+                  }}
+                />
               </div>
-              <Pager
-                page={contentPage}
-                totalPages={contentTotalPages}
-                onChange={setContentPage}
-              />
             </>
           )}
 

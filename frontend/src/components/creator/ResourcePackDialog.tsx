@@ -62,10 +62,11 @@ import {
   Search20Regular,
 } from "@fluentui/react-icons";
 
+import { selectPopoverProps } from "../../lib/motion";
 import { ModalShell, modalBehaviorProps } from "../modal-shell";
 import SegmentedTabs from "../segmented-tabs";
 import { confirm } from "../overlay/dialog";
-import { popoverMotionProps } from "../../lib/motion";
+import { dropdownMotionProps } from "../../lib/motion";
 import {
   ClearResourcePackDraft,
   ExportResourcePack,
@@ -78,6 +79,7 @@ import {
 } from "../../../wailsjs/go/bindings/SystemAPI";
 import { t } from "../../i18n";
 
+import CreatorToolShell from "./CreatorToolShell";
 import AssetFinderModal from "./resourcepack/AssetFinderModal";
 import PackFileTree from "./resourcepack/PackFileTree";
 import PackMetaPanel from "./resourcepack/PackMetaPanel";
@@ -176,11 +178,13 @@ function createDefaultFiles(): PackFile[] {
 interface ResourcePackDialogProps {
   isOpen: boolean;
   onClose: () => void;
+  embedded?: boolean;
 }
 
 const ResourcePackDialog: React.FC<ResourcePackDialogProps> = ({
   isOpen,
   onClose,
+  embedded,
 }) => {
   const [files, setFiles] = useState<PackFile[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -209,6 +213,9 @@ const ResourcePackDialog: React.FC<ResourcePackDialogProps> = ({
   const historiesRef = useRef<Map<string, TextureHistory>>(new Map());
   const initializedRef = useRef(false);
   const autosaveTimerRef = useRef<number | null>(null);
+
+  // 缓存 selectedKeys 数组，避免每次渲染都创建新数组导致 Select 闪烁
+  const newSizeKeys = useMemo(() => [String(newSize)], [newSize]);
 
   const selected = useMemo(
     () => files.find((file) => file.id === selectedId) ?? null,
@@ -787,8 +794,8 @@ const ResourcePackDialog: React.FC<ResourcePackDialogProps> = ({
               aria-label={t("贴图尺寸")}
               className="flex-1 [&_*]:min-w-0"
               classNames={{ trigger: "h-8 min-h-8" }}
-              popoverProps={{ motionProps: popoverMotionProps }}
-              selectedKeys={[String(newSize)]}
+              popoverProps={selectPopoverProps}
+              selectedKeys={newSizeKeys}
               size="sm"
               onSelectionChange={(keys) =>
                 setNewSize(Number(Array.from(keys)[0] ?? 16))
@@ -828,6 +835,328 @@ const ResourcePackDialog: React.FC<ResourcePackDialogProps> = ({
     );
   };
 
+  const renderBody = () => (
+    <div className="flex h-full min-h-0 flex-col gap-2.5">
+      {/* 顶栏：新建 / 导入 / 资源库（紧凑） */}
+      <div className="flex flex-shrink-0 flex-wrap items-center gap-2">
+        <Dropdown motionProps={dropdownMotionProps}>
+          <DropdownTrigger>
+            <Button size="sm" startContent={<Add20Regular />} variant="flat">
+              {t("添加")}
+            </Button>
+          </DropdownTrigger>
+          <DropdownMenu
+            aria-label={t("添加文件")}
+            onAction={(key) => {
+              const action = String(key);
+
+              if (action === "reset") {
+                void resetProject();
+
+                return;
+              }
+              if (action.startsWith("tpl:")) {
+                void applyTemplate(action.slice(4));
+
+                return;
+              }
+              setCreating(action as "png" | "text");
+              setNewPath("");
+              setError("");
+            }}
+          >
+            <DropdownSection title={t("新建")}>
+              <DropdownItem key="png" description={t("绘制或导入一张贴图")}>
+                {t("贴图 PNG")}
+              </DropdownItem>
+              <DropdownItem
+                key="text"
+                description={t("模型 / lang / 清单等文本")}
+              >
+                {t("文本文件")}
+              </DropdownItem>
+            </DropdownSection>
+            <DropdownSection title={t("模板")}>
+              {RESOURCE_PACK_TEMPLATES.map((template) => (
+                <DropdownItem
+                  key={`tpl:${template.id}`}
+                  description={template.description}
+                >
+                  {template.name}
+                </DropdownItem>
+              ))}
+            </DropdownSection>
+            <DropdownSection title={t("其它")}>
+              <DropdownItem
+                key="reset"
+                description={t("清空工程并删除已保存的草稿")}
+              >
+                {t("重置工程")}
+              </DropdownItem>
+            </DropdownSection>
+          </DropdownMenu>
+        </Dropdown>
+
+        <Dropdown motionProps={dropdownMotionProps}>
+          <DropdownTrigger>
+            <Button
+              isDisabled={busy}
+              size="sm"
+              startContent={<ArrowImport20Regular />}
+              variant="flat"
+            >
+              {t("导入")}
+            </Button>
+          </DropdownTrigger>
+          <DropdownMenu
+            aria-label={t("导入资源包")}
+            onAction={(key) => {
+              if (key === "zip") void importZip();
+              else if (key === "png") void importPng();
+              else void importFolder();
+            }}
+          >
+            <DropdownItem key="zip" description={t("选择 .zip 资源包")}>
+              {t("从 .zip 导入")}
+            </DropdownItem>
+            <DropdownItem
+              key="folder"
+              description={t("选择已解压的资源包目录")}
+            >
+              {t("从文件夹导入")}
+            </DropdownItem>
+            <DropdownItem key="png" description={t("仅追加一张本地贴图")}>
+              {t("导入单张 PNG")}
+            </DropdownItem>
+          </DropdownMenu>
+        </Dropdown>
+
+        <Button
+          size="sm"
+          startContent={<Search20Regular />}
+          variant="flat"
+          onPress={() => setFinderOpen(true)}
+        >
+          {t("资源库")}
+        </Button>
+      </div>
+
+      <div className="flex min-h-0 flex-1 gap-2.5">
+        {/* 左：文件 / 包信息（标签切换） */}
+        <div className="flex w-64 flex-shrink-0 flex-col rounded-medium nya-panel-inner p-2">
+          <SegmentedTabs
+            className="mb-2 flex gap-0.5 rounded-full bg-default-100/70 p-0.5"
+            itemClassName="flex-1 px-2 py-1 text-[12px]"
+            items={[
+              {
+                key: "files",
+                label: t("文件 {0}", { "0": files.length }),
+              },
+              { key: "meta", label: t("包信息") },
+            ]}
+            layoutId="respack-sidebar"
+            value={sidebarTab}
+            onChange={(value) => setSidebarTab(value as "files" | "meta")}
+          />
+          {sidebarTab === "files" ? (
+            <div className="flex min-h-0 flex-1 flex-col gap-2">
+              <Input
+                aria-label={t("搜索文件")}
+                classNames={{ inputWrapper: "h-8" }}
+                placeholder={t("搜索文件")}
+                size="sm"
+                startContent={<Search20Regular className="text-gray-400" />}
+                value={filter}
+                onValueChange={setFilter}
+              />
+              {creating ? renderCreateForm() : null}
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <PackFileTree
+                  files={files}
+                  filter={filter}
+                  selectedId={selectedId}
+                  onDelete={deleteFile}
+                  onSelect={setSelectedId}
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="min-h-0 flex-1 overflow-y-auto pt-1">
+              <PackMetaPanel
+                fileCount={files.length}
+                hasIcon={!!packIcon}
+                iconUri={packIconUri}
+                meta={meta}
+                packName={packName}
+                textureCount={textureCount}
+                onGenerateIcon={generateIcon}
+                onImportIcon={() => void importIcon()}
+                onMetaChange={writeMeta}
+                onOpenIcon={openIcon}
+                onPackNameChange={setPackName}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* 中：编辑器 */}
+        <div className="flex min-w-0 flex-1 flex-col rounded-medium nya-panel-inner">
+          {selected ? (
+            <>
+              <div className="flex items-center gap-2 px-3 pt-3">
+                <Input
+                  aria-label={t("文件路径")}
+                  classNames={{ inputWrapper: "h-8" }}
+                  placeholder={t("包内路径")}
+                  size="sm"
+                  value={selected.path}
+                  onValueChange={(value) => {
+                    setFilePath(selected.id, value);
+                    const invalid = pathError(
+                      normalizePath(value),
+                      selected.id,
+                    );
+
+                    setError(invalid);
+                  }}
+                />
+                <span className="flex-none text-[11px] text-gray-400">
+                  {selected.kind === "png"
+                    ? selected.canvas
+                      ? `${selected.canvas.width}×${selected.canvas.height}`
+                      : "PNG"
+                    : selected.kind === "text"
+                      ? t("文本")
+                      : t("二进制")}
+                </span>
+              </div>
+              {selected.kind === "png" ? (
+                <TextureEditor
+                  key={selected.id}
+                  color={color}
+                  file={selected}
+                  history={getHistory(selected.id)}
+                  recentColors={recentColors}
+                  tool={tool}
+                  onColorChange={changeColor}
+                  onContentChange={scheduleDraft}
+                  onToolChange={setTool}
+                />
+              ) : selected.kind === "text" ? (
+                <TextFileEditor
+                  file={selected}
+                  onChange={(text) => updateText(selected.id, text)}
+                />
+              ) : (
+                <div className="flex flex-1 flex-col items-center justify-center gap-2 text-gray-400">
+                  <Document20Regular className="text-3xl" />
+                  <span className="text-sm">
+                    {t("二进制文件（导出时原样保留）")}
+                  </span>
+                  <span className="text-[11px]">
+                    {t("约")}{" "}
+                    {formatBytes(
+                      Math.floor(
+                        ((selected.binaryBase64?.length ?? 0) * 3) / 4,
+                      ),
+                    )}
+                  </span>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-gray-400">
+              {/* 手绘插画：文件树 + 选中高亮的预览窗 */}
+              <div aria-hidden className="flex items-stretch gap-2.5">
+                <div className="flex flex-col justify-center gap-2 rounded-lg border nya-border bg-default-100/50 p-3">
+                  <div className="flex items-center gap-1.5">
+                    <span className="h-1.5 w-1.5 flex-none rotate-45 border-r-2 border-b-2 border-default-400" />
+                    <span className="size-2.5 flex-none rounded-sm bg-primary/60" />
+                    <span className="h-1.5 w-10 rounded-full bg-default-300" />
+                  </div>
+                  <div className="ml-1 flex items-center gap-1.5 border-l-2 border-default-300 pl-2">
+                    <span className="size-2.5 flex-none rounded-sm bg-default-300" />
+                    <span className="h-1.5 w-8 rounded-full bg-default-200" />
+                  </div>
+                  <div className="ml-1 flex items-center gap-1.5 border-l-2 border-default-300 pl-2">
+                    <span className="size-2.5 flex-none rounded-sm bg-default-300" />
+                    <span className="h-1.5 w-12 rounded-full bg-default-200" />
+                  </div>
+                </div>
+                <div className="flex w-20 flex-col justify-center gap-2 rounded-lg border-2 border-dashed border-default-300 bg-default-50/60 p-2.5">
+                  <div className="h-1.5 w-8 rounded-full bg-default-200" />
+                  <div className="h-1.5 w-12 rounded-full bg-default-200" />
+                  <div className="h-1.5 w-6 rounded-full bg-default-200" />
+                </div>
+              </div>
+              <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                {t("未选择文件")}
+              </span>
+              <span className="-mt-2 text-[11px]">
+                {t("从左侧文件树选择一个文件，在这里查看和编辑")}
+              </span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 底部状态行 */}
+      <div className="flex flex-shrink-0 items-center gap-3">
+        <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
+          {error ? (
+            <span className="text-danger">{error}</span>
+          ) : status ? (
+            <span className="text-success">{status}</span>
+          ) : (
+            t("估算体积约 {0} · {1}", {
+              "0": formatBytes(bytes),
+              "1":
+                draftState === "saving"
+                  ? "自动保存中…"
+                  : draftState === "error"
+                    ? "自动保存失败（可直接导出）"
+                    : draftSavedAt
+                      ? `草稿已保存 ${formatClock(draftSavedAt)}`
+                      : "已开启自动保存",
+            })
+          )}
+        </span>
+        <Button
+          color="primary"
+          isDisabled={files.length === 0 || !!error}
+          isLoading={busy}
+          radius="full"
+          size="sm"
+          startContent={<Save20Regular />}
+          onPress={() => void exportPack()}
+        >
+          {t("导出 .zip")}
+        </Button>
+      </div>
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <>
+        <CreatorToolShell
+          icon={<FolderZip20Regular />}
+          title={t("资源包制作")}
+          onBack={handleClose}
+        >
+          {renderBody()}
+        </CreatorToolShell>
+
+        <AssetFinderModal
+          existingPaths={existingPaths}
+          isOpen={finderOpen}
+          onClose={() => setFinderOpen(false)}
+          onPick={openCatalogEntry}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <Modal
@@ -842,291 +1171,7 @@ const ResourcePackDialog: React.FC<ResourcePackDialogProps> = ({
             title={t("资源包制作")}
             onClose={handleClose}
           >
-            <div className="flex h-full min-h-0 flex-col gap-2.5">
-              {/* 顶栏：新建 / 导入 / 资源库（紧凑） */}
-              <div className="flex flex-shrink-0 flex-wrap items-center gap-2">
-                <Dropdown>
-                  <DropdownTrigger>
-                    <Button
-                      size="sm"
-                      startContent={<Add20Regular />}
-                      variant="flat"
-                    >
-                      {t("添加")}
-                    </Button>
-                  </DropdownTrigger>
-                  <DropdownMenu
-                    aria-label={t("添加文件")}
-                    onAction={(key) => {
-                      const action = String(key);
-
-                      if (action === "reset") {
-                        void resetProject();
-
-                        return;
-                      }
-                      if (action.startsWith("tpl:")) {
-                        void applyTemplate(action.slice(4));
-
-                        return;
-                      }
-                      setCreating(action as "png" | "text");
-                      setNewPath("");
-                      setError("");
-                    }}
-                  >
-                    <DropdownSection title={t("新建")}>
-                      <DropdownItem
-                        key="png"
-                        description={t("绘制或导入一张贴图")}
-                      >
-                        {t("贴图 PNG")}
-                      </DropdownItem>
-                      <DropdownItem
-                        key="text"
-                        description={t("模型 / lang / 清单等文本")}
-                      >
-                        {t("文本文件")}
-                      </DropdownItem>
-                    </DropdownSection>
-                    <DropdownSection title={t("模板")}>
-                      {RESOURCE_PACK_TEMPLATES.map((template) => (
-                        <DropdownItem
-                          key={`tpl:${template.id}`}
-                          description={template.description}
-                        >
-                          {template.name}
-                        </DropdownItem>
-                      ))}
-                    </DropdownSection>
-                    <DropdownSection title={t("其它")}>
-                      <DropdownItem
-                        key="reset"
-                        description={t("清空工程并删除已保存的草稿")}
-                      >
-                        {t("重置工程")}
-                      </DropdownItem>
-                    </DropdownSection>
-                  </DropdownMenu>
-                </Dropdown>
-
-                <Dropdown>
-                  <DropdownTrigger>
-                    <Button
-                      isDisabled={busy}
-                      size="sm"
-                      startContent={<ArrowImport20Regular />}
-                      variant="flat"
-                    >
-                      {t("导入")}
-                    </Button>
-                  </DropdownTrigger>
-                  <DropdownMenu
-                    aria-label={t("导入资源包")}
-                    onAction={(key) => {
-                      if (key === "zip") void importZip();
-                      else if (key === "png") void importPng();
-                      else void importFolder();
-                    }}
-                  >
-                    <DropdownItem key="zip" description={t("选择 .zip 资源包")}>
-                      {t("从 .zip 导入")}
-                    </DropdownItem>
-                    <DropdownItem
-                      key="folder"
-                      description={t("选择已解压的资源包目录")}
-                    >
-                      {t("从文件夹导入")}
-                    </DropdownItem>
-                    <DropdownItem
-                      key="png"
-                      description={t("仅追加一张本地贴图")}
-                    >
-                      {t("导入单张 PNG")}
-                    </DropdownItem>
-                  </DropdownMenu>
-                </Dropdown>
-
-                <Button
-                  size="sm"
-                  startContent={<Search20Regular />}
-                  variant="flat"
-                  onPress={() => setFinderOpen(true)}
-                >
-                  {t("资源库")}
-                </Button>
-              </div>
-
-              <div className="flex min-h-0 flex-1 gap-2.5">
-                {/* 左：文件 / 包信息（标签切换） */}
-                <div className="flex w-64 flex-shrink-0 flex-col rounded-xl nya-panel-inner p-2">
-                  <SegmentedTabs
-                    className="mb-2 flex gap-0.5 rounded-full bg-default-100/70 p-0.5"
-                    itemClassName="flex-1 px-2 py-1 text-[12px]"
-                    items={[
-                      {
-                        key: "files",
-                        label: t("文件 {0}", { "0": files.length }),
-                      },
-                      { key: "meta", label: t("包信息") },
-                    ]}
-                    layoutId="respack-sidebar"
-                    value={sidebarTab}
-                    onChange={(value) =>
-                      setSidebarTab(value as "files" | "meta")
-                    }
-                  />
-                  {sidebarTab === "files" ? (
-                    <div className="flex min-h-0 flex-1 flex-col gap-2">
-                      <Input
-                        aria-label={t("搜索文件")}
-                        classNames={{ inputWrapper: "h-8" }}
-                        placeholder={t("搜索文件")}
-                        size="sm"
-                        startContent={
-                          <Search20Regular className="text-gray-400" />
-                        }
-                        value={filter}
-                        onValueChange={setFilter}
-                      />
-                      {creating ? renderCreateForm() : null}
-                      <div className="min-h-0 flex-1 overflow-y-auto">
-                        <PackFileTree
-                          files={files}
-                          filter={filter}
-                          selectedId={selectedId}
-                          onDelete={deleteFile}
-                          onSelect={setSelectedId}
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="min-h-0 flex-1 overflow-y-auto pt-1">
-                      <PackMetaPanel
-                        fileCount={files.length}
-                        hasIcon={!!packIcon}
-                        iconUri={packIconUri}
-                        meta={meta}
-                        packName={packName}
-                        textureCount={textureCount}
-                        onGenerateIcon={generateIcon}
-                        onImportIcon={() => void importIcon()}
-                        onMetaChange={writeMeta}
-                        onOpenIcon={openIcon}
-                        onPackNameChange={setPackName}
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {/* 中：编辑器 */}
-                <div className="flex min-w-0 flex-1 flex-col rounded-xl nya-panel-inner">
-                  {selected ? (
-                    <>
-                      <div className="flex items-center gap-2 px-3 pt-3">
-                        <Input
-                          aria-label={t("文件路径")}
-                          classNames={{ inputWrapper: "h-8" }}
-                          placeholder={t("包内路径")}
-                          size="sm"
-                          value={selected.path}
-                          onValueChange={(value) => {
-                            setFilePath(selected.id, value);
-                            const invalid = pathError(
-                              normalizePath(value),
-                              selected.id,
-                            );
-
-                            setError(invalid);
-                          }}
-                        />
-                        <span className="flex-none text-[11px] text-gray-400">
-                          {selected.kind === "png"
-                            ? selected.canvas
-                              ? `${selected.canvas.width}×${selected.canvas.height}`
-                              : "PNG"
-                            : selected.kind === "text"
-                              ? t("文本")
-                              : t("二进制")}
-                        </span>
-                      </div>
-                      {selected.kind === "png" ? (
-                        <TextureEditor
-                          key={selected.id}
-                          color={color}
-                          file={selected}
-                          history={getHistory(selected.id)}
-                          recentColors={recentColors}
-                          tool={tool}
-                          onColorChange={changeColor}
-                          onContentChange={scheduleDraft}
-                          onToolChange={setTool}
-                        />
-                      ) : selected.kind === "text" ? (
-                        <TextFileEditor
-                          file={selected}
-                          onChange={(text) => updateText(selected.id, text)}
-                        />
-                      ) : (
-                        <div className="flex flex-1 flex-col items-center justify-center gap-2 text-gray-400">
-                          <Document20Regular className="text-3xl" />
-                          <span className="text-sm">
-                            {t("二进制文件（导出时原样保留）")}
-                          </span>
-                          <span className="text-[11px]">
-                            {t("约")}{" "}
-                            {formatBytes(
-                              Math.floor(
-                                ((selected.binaryBase64?.length ?? 0) * 3) / 4,
-                              ),
-                            )}
-                          </span>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <div className="flex flex-1 flex-col items-center justify-center gap-2 text-gray-400">
-                      <span className="text-4xl">▦</span>
-                      <span className="text-sm">{t("未选择文件")}</span>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* 底部状态行 */}
-              <div className="flex flex-shrink-0 items-center gap-3">
-                <span className="min-w-0 flex-1 truncate text-[11px] text-gray-400">
-                  {error ? (
-                    <span className="text-danger">{error}</span>
-                  ) : status ? (
-                    <span className="text-success">{status}</span>
-                  ) : (
-                    t("估算体积约 {0} · {1}", {
-                      "0": formatBytes(bytes),
-                      "1":
-                        draftState === "saving"
-                          ? "自动保存中…"
-                          : draftState === "error"
-                            ? "自动保存失败（可直接导出）"
-                            : draftSavedAt
-                              ? `草稿已保存 ${formatClock(draftSavedAt)}`
-                              : "已开启自动保存",
-                    })
-                  )}
-                </span>
-                <Button
-                  color="primary"
-                  isDisabled={files.length === 0 || !!error}
-                  isLoading={busy}
-                  radius="full"
-                  size="sm"
-                  startContent={<Save20Regular />}
-                  onPress={() => void exportPack()}
-                >
-                  {t("导出 .zip")}
-                </Button>
-              </div>
-            </div>
+            {renderBody()}
           </ModalShell>
         </ModalContent>
       </Modal>

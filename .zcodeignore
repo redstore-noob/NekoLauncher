@@ -1,0 +1,96 @@
+# Go
+*.exe
+*.exe~
+*.test
+*.out
+
+# 前端
+frontend/node_modules/
+frontend/dist/
+frontend-react/node_modules/
+frontend-react/dist/
+
+# Wails 构建产物
+build/bin/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本地调试
+*.log
+debug/
+
+# 旧版前端备份（node_modules 体积过大，不入库）
+frontend-vue-backup/node_modules/
+frontend-vue-backup/dist/
+frontend-vue-backup/package.json.md5
+# 注意：不要整目录忽略 /build/ —— 里面的 appicon.png 与 windows/ 清单是
+# wails build 的必需输入，忽略掉会让 CI/新克隆构建出默认图标。
+# frontend/wailsjs 是 wails generate 的生成物，但刻意入库：CI 的前端检查
+# （tsc/eslint）与无 wails CLI 的本地开发都依赖它，否则类型检查直接失败。
+
+# 本地 Go 构建缓存（沙箱/CI 用 GOCACHE 指到工作区时产生）
+/.gocache/
+/.gomodcache/
+
+# 临时脚本 / 验证产物（本地排查 CI 之类时用，不入库）
+/.tmp/
+# 沙箱 ACL 修复产生的本地产物（诊断工具的输出，与仓库内容无关）
+/.acl-recovery/
+
+# NekoSolo 安装器构建产物
+NekoSolo/NekoSolo.Installer/bin/
+NekoSolo/NekoSolo.Installer/obj/
+# 其它 .NET 风格构建目录（bin/obj）与临时输出
+**/bin/
+**/obj/
+/out/
+
+# 宣传素材（大体积视频/音频/渲染产物，本地制作不入库）
+/promo/
+
+# AI 工具的本地目录（各家编码助手的工作区文件，因人而异不入库）
+.claude/
+.cursor/
+.continue/
+.codeium/
+.windsurf/
+.trae/
+.aider*
+.copilot*
+.zcode/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+__pycache__/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.egg-info/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

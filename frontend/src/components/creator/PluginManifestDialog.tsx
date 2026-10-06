@@ -35,6 +35,8 @@ import {
 import { ModalShell, modalBehaviorProps } from "../modal-shell";
 import { t } from "../../i18n";
 
+import CreatorToolShell from "./CreatorToolShell";
+
 /** 宿主插件 API 版本（与 plugin/api.ts 的 PLUGIN_API_VERSION 一致） */
 const HOST_API_VERSION = "1";
 
@@ -75,7 +77,8 @@ type DialogPhase = "edit" | "created";
 const PluginManifestDialog: React.FC<{
   isOpen: boolean;
   onClose: () => void;
-}> = ({ isOpen, onClose }) => {
+  embedded?: boolean;
+}> = ({ isOpen, onClose, embedded }) => {
   const [phase, setPhase] = useState<DialogPhase>("edit");
   const [form, setForm] = useState<ManifestForm>({
     id: "",
@@ -206,6 +209,108 @@ const PluginManifestDialog: React.FC<{
       hint,
     );
 
+  const renderBody = () => (
+    <div className="mx-auto max-w-xl">
+      {phase === "created" ? (
+        <div className="space-y-3 py-2">
+          <div className="text-sm text-gray-800 dark:text-gray-200">
+            {t("插件骨架创建成功 🎉")}
+          </div>
+          <div className="nya-panel-inner nya-border rounded-medium border p-3 text-xs text-gray-500 dark:text-gray-400">
+            <div className="truncate">{createdDir}</div>
+            <div className="mt-1">
+              {t("已生成 plugin.yaml、入口文件与 assets 目录。")}
+            </div>
+          </div>
+          {packedPath && (
+            <div className="nya-panel-inner nya-border rounded-medium border p-3 text-xs text-gray-500 dark:text-gray-400">
+              <div className="truncate">
+                {t("已打包：")}
+                {packedPath}
+              </div>
+              <Button
+                className="mt-2"
+                size="sm"
+                variant="flat"
+                onPress={() => void OpenInExplorer(packedPath)}
+              >
+                {t("打开所在文件夹")}
+              </Button>
+            </div>
+          )}
+          {error && <div className="text-xs text-danger">{error}</div>}
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="light" onPress={onClose}>
+              {t("关闭")}
+            </Button>
+            <Button size="sm" variant="flat" onPress={reset}>
+              {t("再做一个")}
+            </Button>
+            <Button
+              color="primary"
+              isLoading={packaging}
+              size="sm"
+              onPress={() => void packagePlugin()}
+            >
+              {t("打包 .nekoex")}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-1 py-1">
+          {textField(
+            "id",
+            t("插件 id"),
+            "my-plugin",
+            idError || t("创建后不可修改"),
+          )}
+          {textField("name", t("名称"), t("我的插件"))}
+          {textField("version", t("版本号"), "1.0.0")}
+          {textField("apiVersion", t("API 版本"), HOST_API_VERSION)}
+          {textField("author", t("作者"))}
+          {textField("description", t("简介"))}
+          {textField("entry", t("入口文件"), "index.js")}
+          {textField("icon", t("图标文件"), "icon.png")}
+          {textField(
+            "styles",
+            t("样式文件"),
+            "theme.css",
+            t("逗号分隔，加载时自动注入为全局 CSS，可自定义控件样式"),
+          )}
+
+          {error && <div className="mt-3 text-xs text-danger">{error}</div>}
+
+          <div className="mt-3 flex justify-end gap-2 border-t border-gray-100 pt-3 dark:border-gray-800/60">
+            <Button size="sm" variant="light" onPress={onClose}>
+              {t("关闭")}
+            </Button>
+            <Button
+              color="primary"
+              isDisabled={!canCreate}
+              isLoading={creating}
+              size="sm"
+              onPress={() => void createPlugin()}
+            >
+              {t("创建插件")}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <CreatorToolShell
+        icon={<PuzzleCube20Regular />}
+        title={t("插件制作")}
+        onBack={onClose}
+      >
+        <div className="h-full w-full overflow-y-auto p-4">{renderBody()}</div>
+      </CreatorToolShell>
+    );
+  }
+
   return (
     <Modal isOpen={isOpen} size="2xl" onClose={onClose} {...modalBehaviorProps}>
       <ModalContent className="max-h-[85vh]">
@@ -214,91 +319,7 @@ const PluginManifestDialog: React.FC<{
           title={t("插件制作")}
           onClose={onClose}
         >
-          {phase === "created" ? (
-            <div className="space-y-3 py-2">
-              <div className="text-sm text-gray-800 dark:text-gray-200">
-                {t("插件骨架创建成功 🎉")}
-              </div>
-              <div className="nya-panel-inner nya-border rounded-lg border p-3 text-xs text-gray-500 dark:text-gray-400">
-                <div className="truncate">{createdDir}</div>
-                <div className="mt-1">
-                  {t("已生成 plugin.yaml、入口文件与 assets 目录。")}
-                </div>
-              </div>
-              {packedPath && (
-                <div className="nya-panel-inner nya-border rounded-lg border p-3 text-xs text-gray-500 dark:text-gray-400">
-                  <div className="truncate">
-                    {t("已打包：")}
-                    {packedPath}
-                  </div>
-                  <Button
-                    className="mt-2"
-                    size="sm"
-                    variant="flat"
-                    onPress={() => void OpenInExplorer(packedPath)}
-                  >
-                    {t("打开所在文件夹")}
-                  </Button>
-                </div>
-              )}
-              {error && <div className="text-xs text-danger">{error}</div>}
-              <div className="flex justify-end gap-2">
-                <Button size="sm" variant="light" onPress={onClose}>
-                  {t("关闭")}
-                </Button>
-                <Button size="sm" variant="flat" onPress={reset}>
-                  {t("再做一个")}
-                </Button>
-                <Button
-                  color="primary"
-                  isLoading={packaging}
-                  size="sm"
-                  onPress={() => void packagePlugin()}
-                >
-                  {t("打包 .nekoex")}
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <div className="space-y-1 py-1">
-              {textField(
-                "id",
-                t("插件 id"),
-                "my-plugin",
-                idError || t("创建后不可修改"),
-              )}
-              {textField("name", t("名称"), t("我的插件"))}
-              {textField("version", t("版本号"), "1.0.0")}
-              {textField("apiVersion", t("API 版本"), HOST_API_VERSION)}
-              {textField("author", t("作者"))}
-              {textField("description", t("简介"))}
-              {textField("entry", t("入口文件"), "index.js")}
-              {textField("icon", t("图标文件"), "icon.png")}
-              {textField(
-                "styles",
-                t("样式文件"),
-                "theme.css",
-                t("逗号分隔，加载时自动注入为全局 CSS，可自定义控件样式"),
-              )}
-
-              {error && <div className="mt-3 text-xs text-danger">{error}</div>}
-
-              <div className="mt-3 flex justify-end gap-2 border-t border-gray-100 pt-3 dark:border-gray-800/60">
-                <Button size="sm" variant="light" onPress={onClose}>
-                  {t("关闭")}
-                </Button>
-                <Button
-                  color="primary"
-                  isDisabled={!canCreate}
-                  isLoading={creating}
-                  size="sm"
-                  onPress={() => void createPlugin()}
-                >
-                  {t("创建插件")}
-                </Button>
-              </div>
-            </div>
-          )}
+          {renderBody()}
         </ModalShell>
       </ModalContent>
     </Modal>

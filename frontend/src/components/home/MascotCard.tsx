@@ -108,7 +108,7 @@ const MascotCard: React.FC = () => {
     >
       <Button
         aria-label={t("和看板娘打个招呼")}
-        className="block h-auto min-w-0 w-full cursor-pointer rounded-xl bg-transparent p-0 data-[hover=true]:bg-transparent"
+        className="block h-auto min-w-0 w-full cursor-pointer rounded-lg bg-transparent p-0 data-[hover=true]:bg-transparent"
         variant="light"
         onClick={react}
       >
@@ -117,7 +117,7 @@ const MascotCard: React.FC = () => {
           style={{ containerType: "inline-size" }}
         >
           {imageFailed ? (
-            <div className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-gray-300/80 text-gray-400 dark:border-gray-700">
+            <div className="flex h-full w-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-gray-300/80 text-gray-400 dark:border-gray-700">
               <AnimalCat20Regular className="h-8 w-8" />
             </div>
           ) : (
@@ -130,19 +130,23 @@ const MascotCard: React.FC = () => {
             />
           )}
 
-          {/* 台词：覆盖在立绘里气泡的位置上（key 变化即重播弹出动画） */}
+          {/* 台词：覆盖在立绘里气泡的位置上（key 变化即重播弹出动画）。
+              外层 HeroUI Button 自带 whitespace-nowrap，这里必须显式恢复换行 */}
           {line ? (
             <span
               key={line}
-              className="nya-bubble-pop pointer-events-none absolute flex items-center justify-center text-center font-bold"
+              className="nya-bubble-pop pointer-events-none absolute flex items-center justify-center overflow-hidden text-center font-bold"
               style={{
                 left: "4%",
                 top: "3%",
                 width: "53%",
                 minHeight: "29%",
+                maxHeight: "38%",
                 padding: "0 6%",
                 fontSize: "clamp(11px, 4.6cqw, 18px)",
-                lineHeight: 1.3,
+                lineHeight: 1.25,
+                whiteSpace: "normal",
+                wordBreak: "break-word",
                 overflowWrap: "anywhere",
                 color: "#17331b",
               }}

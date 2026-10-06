@@ -22,6 +22,9 @@ type GlobalLaunchSettings struct {
 	AdditionalEnvironmentVariables []string
 	// LaunchFullscreen 以全屏启动游戏（追加 --fullscreen 游戏参数）。
 	LaunchFullscreen bool
+	// SnapshotBeforeLaunch 启动前自动给存档留还原点（时间机器）。
+	// 默认关闭：这是"替你写磁盘"的行为，必须用户明确开启。
+	SnapshotBeforeLaunch bool
 }
 
 // GlobalLaunchSettingsStore 的配置键：所有字段写入 launcher.yaml 的独立键，
@@ -37,6 +40,9 @@ const (
 	wrapperCommandKey   = "globalLaunchWrapperCommand"
 	envVariablesKey     = "globalLaunchEnvVars"
 	fullscreenLaunchKey = "globalLaunchFullscreen"
+	// snapshotBeforeLaunchKey 启动前自动留存档还原点（时间机器）。
+	// 默认关闭：静默写磁盘的行为必须由用户主动开启。
+	snapshotBeforeLaunchKey = "globalLaunchSnapshotBeforeLaunch"
 
 	// automaticJavaValue Java 路径的"自动选择"占位值
 	// （空路径在保存时写成它，避免与未配置混淆）。
@@ -70,7 +76,24 @@ func LoadGlobalLaunchSettings() GlobalLaunchSettings {
 		WrapperCommand:                 strings.TrimSpace(GetValue(wrapperCommandKey)),
 		AdditionalEnvironmentVariables: readArguments(envVariablesKey),
 		LaunchFullscreen:               readBoolFlag(fullscreenLaunchKey),
+		SnapshotBeforeLaunch:           readBoolFlag(snapshotBeforeLaunchKey),
 	}
+}
+
+// SnapshotBeforeLaunchEnabled 启动前自动留存档还原点的开关（默认关闭）。
+func SnapshotBeforeLaunchEnabled() bool { return readBoolFlag(snapshotBeforeLaunchKey) }
+
+// SaveSnapshotBeforeLaunchEnabled 保存上述开关。
+func SaveSnapshotBeforeLaunchEnabled(enabled bool) bool {
+	return SetValue(snapshotBeforeLaunchKey, boolFlagValue(enabled))
+}
+
+// boolFlagValue 布尔配置的统一写法（与其它全局启动设置一致）。
+func boolFlagValue(enabled bool) string {
+	if enabled {
+		return "True"
+	}
+	return "False"
 }
 
 // normalizeProcessPriority 归一化进程优先级取值；非法值（含空串）归一为不调整。

@@ -37,11 +37,15 @@ func (a *ConfigAPI) GetGameDirectory() string { return config.GameDirectory() }
 //
 // 光写配置不重扫会让主页按新目录列出"已安装版本"，而启动用的还是旧目录的实例
 // 快照（选中动作会被快照校验拒绝），点启动等于启动上一个目录的游戏。
+//
+// 保存动作本身允许任何存在的目录（空的 / 暂无版本的目录是合法状态），
+// 但保存后若没发现任何版本，会推送 instance:emptyDirectory 事件提示用户。
 func (a *ConfigAPI) SaveGameDirectory(path string) bool {
 	if !config.SaveGameDirectory(path) {
 		return false
 	}
 	a.refreshInstances()
+	a.notifyDirectoryWithoutVersions(path)
 
 	return true
 }
@@ -55,6 +59,24 @@ func (a *ConfigAPI) ClearGameDirectory() {
 // refreshInstances 按当前配置的游戏目录重扫实例（异步，结果经 instance:changed 推送）。
 func (a *ConfigAPI) refreshInstances() {
 	go instance.Refresh(callCtx(a.ctx), instance.ResolveConfiguredSourcePath())
+}
+
+// notifyDirectoryWithoutVersions 用户主动保存 / 添加了一个存在、但其中没有
+// 任何 Minecraft 版本的目录时，推送 instance:emptyDirectory 事件（载荷为目录
+// 路径），由前端给出温和提示。外部实例（MultiMC/PCL/HMCL 等布局）与版本读取
+// 失败（权限 / 占用）不打扰——前者有实例只是没 versions，后者不该误报。
+func (a *ConfigAPI) notifyDirectoryWithoutVersions(path string) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return
+	}
+	if _, ok := instance.TryResolveExternalInstance(trimmed); ok {
+		return
+	}
+	ids, readable := instance.GetInstalledVersionIdsChecked(trimmed)
+	if readable && len(ids) == 0 {
+		emit(a.ctx, "instance:emptyDirectory", trimmed)
+	}
 }
 
 // ---- Java ----
@@ -163,11 +185,13 @@ func (a *ConfigAPI) SaveVerifyFilesBeforeLaunch(enabled bool) {
 // 读写：这些键背后是 accounts.yaml 的加密凭据。前端/插件的合法账号操作
 // 全部走 AccountAPI；从 WebView 直呼这三个通用键值接口触碰账户域，
 // 只可能是恶意插件在绕过权限门——直接拒绝并记 WARN。
+// "secret:" 前缀同理：那是 SystemAPI.StoreSecret/ReadSecret 加密存储的命名
+// 空间，通用键值接口只许绕过解密层拿到裸 blob，一律拒绝。
 func guardAccountDomainKey(key string) bool {
-	if !config.IsAccountDomainKey(key) {
+	if !config.IsAccountDomainKey(key) && !isSecretStorageKey(key) {
 		return true
 	}
-	logs.Write("WARN", "已拒绝来自界面层的账户域配置访问："+key)
+	logs.Write("WARN", "已拒绝来自界面层的受保护配置访问："+key)
 	return false
 }
 
@@ -207,10 +231,7 @@ func (a *ConfigAPI) SaveGlobalLaunchSettings(settings config.GlobalLaunchSetting
 	return config.SaveGlobalLaunchSettings(settings)
 }
 
-// SaveGlobalWindowSize 保存全局窗口尺寸（启动器窗口，记忆用）。
-func (a *ConfigAPI) SaveGlobalWindowSize(width, height int) bool {
-	return config.SaveGlobalWindowSize(width, height)
-}
+// （不再暴露 SaveGlobalWindowSize：只有后端关窗钩子自己调 config 包，前端零调用。）
 
 // ---- 实例档案（独立内存 / 窗口 / JVM 参数 / 图标偏好） ----
 
@@ -227,18 +248,21 @@ func (a *ConfigAPI) SaveVersionProfile(profile config.GameVersionProfile) bool {
 // GetProfileFolders 额外扫描的游戏目录列表。
 func (a *ConfigAPI) GetProfileFolders() []string { return config.GetFolders() }
 
-// AddProfileFolder 追加额外游戏目录。
-func (a *ConfigAPI) AddProfileFolder(path string) bool { return config.AddFolder(path) }
+// AddProfileFolder 追加额外游戏目录。追加成功但目录下没有发现版本时，
+// 同样推送 instance:emptyDirectory 事件提示用户。
+func (a *ConfigAPI) AddProfileFolder(path string) bool {
+	if !config.AddFolder(path) {
+		return false
+	}
+	a.notifyDirectoryWithoutVersions(path)
+
+	return true
+}
 
 // RemoveProfileFolder 移除额外游戏目录。
 func (a *ConfigAPI) RemoveProfileFolder(path string) bool { return config.RemoveFolder(path) }
 
-// MigrateRenamedVersion 版本重命名后迁移关联配置（实例档案 / 目录 / 选中记录）。
-func (a *ConfigAPI) MigrateRenamedVersion(
-	minecraftDirectory, oldVersionID, newVersionID, oldVersionDirectory, newVersionDirectory string,
-) {
-	config.MigrateRenamedVersion(minecraftDirectory, oldVersionID, newVersionID, oldVersionDirectory, newVersionDirectory)
-}
+// （不再暴露 MigrateRenamedVersion：实例重命名服务在 Go 侧直调 config 包，前端零调用。）
 
 // ---- 代理（网络） ----
 

@@ -7,6 +7,7 @@ import (
 	"nekolauncher/internal/logs"
 	"nekolauncher/internal/monitoring"
 	"nekolauncher/internal/network"
+	"nekolauncher/internal/tools"
 )
 
 // ---- MonitorAPI ----
@@ -56,5 +57,5 @@ func (a *SystemAPI) GetCurrentLog() (string, error) { return logs.ReadCurrent() 
 
 // ExportCurrentLog 把本次运行的日志导出到指定路径。
 func (a *SystemAPI) ExportCurrentLog(destination string) error {
-	return logs.ExportCurrent(destination)
+	return logs.ExportCurrent(tools.SanitizeSavePath(destination))
 }

@@ -281,6 +281,9 @@ func Export(
 	progress func(ModpackExportProgress),
 ) (ModpackExportResult, error) {
 	var result ModpackExportResult
+	// 输出路径来自用户输入（整合包名拼出来的文件名）：带 '?' 时 Windows 会拒绝
+	// 创建文件，统一换成 '0'（临时文件与改名目标都从它派生，一并受益）。
+	outputPath = tools.SanitizeSavePath(outputPath)
 	if strings.TrimSpace(contentDirectory) == "" || strings.TrimSpace(outputPath) == "" {
 		return result, fmt.Errorf("参数无效")
 	}

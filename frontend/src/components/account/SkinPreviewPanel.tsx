@@ -249,7 +249,7 @@ const SkinPreviewPanel: React.FC<{
       {/* 画布常驻挂载（渲染器只在 mount 时初始化一次），无账号/出错时盖提示层 */}
       <canvas
         ref={canvasRef}
-        className={`w-full rounded-2xl bg-default-100/50 ${
+        className={`w-full rounded-lg bg-default-100/50 ${
           accountKey && !error
             ? "cursor-grab active:cursor-grabbing"
             : "pointer-events-none opacity-20"
@@ -258,7 +258,7 @@ const SkinPreviewPanel: React.FC<{
       />
       {error ? (
         <div className="absolute inset-0 flex items-center justify-center p-4">
-          <div className="flex items-start gap-2 rounded-xl bg-danger/10 px-3 py-2.5 text-xs text-danger">
+          <div className="flex items-start gap-2 rounded-lg bg-danger/10 px-3 py-2.5 text-xs text-danger">
             <span className="mt-px flex-none">
               <Warning20Regular className="h-4 w-4" />
             </span>
@@ -267,7 +267,7 @@ const SkinPreviewPanel: React.FC<{
         </div>
       ) : !accountKey ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-default-100/40 text-center text-gray-400">
-          <div className="flex size-12 items-center justify-center rounded-2xl bg-default-100/90">
+          <div className="flex size-12 items-center justify-center rounded-lg bg-default-100/90">
             <Person20Regular className="h-6 w-6" />
           </div>
           <span className="text-xs leading-relaxed">{t("未选择账号")}</span>

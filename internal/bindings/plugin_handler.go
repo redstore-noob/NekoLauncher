@@ -172,11 +172,13 @@ func pluginContentType(ext string) (string, bool) {
 
 // NewAssetFallbackHandler 组合内嵌资源未命中时的回退路由：
 // /localfile 走本地音频/图片/视频流，/plugins/ 走插件资源，
-// /wwwallpaper/ 走当前 Wallpaper Engine 网页壁纸的资源，其余 404。
+// /wwwallpaper/ 走当前 Wallpaper Engine 网页壁纸的资源，
+// /wescene/ 走当前 WE 场景壁纸的资源（scene.json / 解码贴图 / 粒子定义），其余 404。
 func NewAssetFallbackHandler() http.Handler {
 	localFileHandler := NewLocalFileHandler()
 	pluginHandler := NewPluginHandler()
 	webWallpaperHandler := NewWebWallpaperHandler()
+	sceneWallpaperHandler := NewSceneWallpaperHandler()
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -186,6 +188,8 @@ func NewAssetFallbackHandler() http.Handler {
 			pluginHandler.ServeHTTP(w, r)
 		case strings.HasPrefix(r.URL.Path, webWallpaperRoutePrefix):
 			webWallpaperHandler.ServeHTTP(w, r)
+		case strings.HasPrefix(r.URL.Path, sceneRoutePrefix):
+			sceneWallpaperHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}

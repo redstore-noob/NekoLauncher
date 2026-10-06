@@ -12,6 +12,7 @@ import p6 from "./parts/zh-TW-6";
 import p7 from "./parts/zh-TW-7";
 import p8 from "./parts/zh-TW-8";
 import p9 from "./parts/zh-TW-9";
+import p10 from "./parts/zh-TW-10";
 
 const zhTW: Record<string, string> = {
   ...p0,
@@ -24,6 +25,7 @@ const zhTW: Record<string, string> = {
   ...p7,
   ...p8,
   ...p9,
+  ...p10,
 };
 
 export default zhTW;

@@ -14,6 +14,8 @@ const dict: Record<string, string> = {
   "已开启自动调整：启动器按游戏版本与系统剩余内存自动分配，无需手动设置。":
     "Automatic sizing is on: the launcher allocates memory from the game version and free system memory, so no manual setting is needed.",
   "扫描实例失败：{0}": "Scanning instances failed: {0}",
+  "该目录下没有发现 Minecraft 版本：{0}":
+    "No Minecraft versions were found in this directory: {0}",
   "搜索失败：{0}": "Search failed: {0}",
   "资源搜索走的是 Modrinth 官方接口（api.modrinth.com），网络不通或触发限流时会失败；稍后重试即可。":
     "Content search uses Modrinth's official API (api.modrinth.com); it fails when the network is blocked or rate-limited — just retry in a moment.",

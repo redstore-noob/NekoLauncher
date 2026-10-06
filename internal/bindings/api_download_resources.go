@@ -3,34 +3,21 @@
 // 为什么挂在已有的 DownloadAPI 上：资源搜索的终点就是"把文件放进当前实例的
 // 内容目录"，与 DownloadAPI 原有的内容下载是同一件事；每新开一个 API 结构体
 // 就要多改一处 main.go 的 Bind 列表（P3-7 已按"能不加就不加"收敛过一轮）。
+//
+// CurseForge API Key 只有编译期内置一条来源（builtin_keys.go），不提供用户
+// 自行配置：内置 Key 是官方渠道统一分配的，用户侧没有任何合法获取途径，
+// 暴露填写入口只会诱导用户把随手申请的 Key 交进来共享配额被限流。
 package bindings
 
 import (
 	"context"
-	"strings"
 
-	"nekolauncher/internal/config"
 	"nekolauncher/internal/download"
 	"nekolauncher/internal/models"
 )
 
-// curseForgeAPIKeyConfigKey CurseForge API Key 的配置键。
-// 走 config.GetValue / SetValue 存在 launcher.yaml 里，不新建配置文件。
-// 注意：Key 是用户自己的凭据，明文保存（与其它设置一致），任何日志都不能打印它。
-const curseForgeAPIKeyConfigKey = "curseforgeApiKey"
-
-// SaveCurseForgeAPIKey 保存 CurseForge API Key；空串 = 清除，回到"未配置"状态。
-// 返回是否写入成功（配置存储不可用时为 false，界面应提示保存失败而不是假装成功）。
-func (a *DownloadAPI) SaveCurseForgeAPIKey(apiKey string) bool {
-	trimmed := strings.TrimSpace(apiKey)
-	if trimmed == "" {
-		return config.ClearValue(curseForgeAPIKeyConfigKey)
-	}
-	return config.SetValue(curseForgeAPIKeyConfigKey, trimmed)
-}
-
-// GetResourceSources 资源站清单：域名、镜像地址、Key 申请地址与"是否已配置 Key"
-// 全部由 Go 侧给出，前端只按 Available / NeedsAPIKey 渲染引导。
+// GetResourceSources 资源站清单：域名、镜像地址与"是否已配置 Key"全部由
+// Go 侧给出，前端只按 Available / NeedsAPIKey 渲染引导。
 func (a *DownloadAPI) GetResourceSources() []models.ResourceSourceInfo {
 	return download.ListResourceSources(effectiveCurseForgeAPIKey())
 }

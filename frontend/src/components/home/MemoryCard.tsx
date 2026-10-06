@@ -22,16 +22,21 @@ import { Pulse20Regular } from "@fluentui/react-icons";
 import { GetMemorySnapshot } from "../../../wailsjs/go/bindings/MonitorAPI";
 import { formatMemoryMb } from "../../lib/home";
 import { asObject } from "../../lib/guards";
+import { isLinuxPlatform } from "../../lib/platform";
+import { startVisiblePoll } from "../../lib/visibility";
 import { t } from "../../i18n";
 
 import HomeCard from "./HomeCard";
 
-/** 内存采样间隔（ms） */
-const MEMORY_POLL_INTERVAL_MS = 3000;
+/**
+ * 内存采样间隔（ms）。Linux 后端要遍历全部进程读 /proc，开销随进程数增长，
+ * 放宽到 6 秒（Windows 保持 3 秒）。
+ */
+const MEMORY_POLL_INTERVAL_MS = isLinuxPlatform() ? 6000 : 3000;
 
 /**
  * 内存监控卡片：MonitorAPI.GetMemorySnapshot 定时采样启动器与
- * 全部 java/javaw 进程的工作集，按 3 秒轮询刷新。
+ * 全部 java/javaw 进程的工作集，按固定间隔轮询刷新（Windows 3 秒 / Linux 6 秒）。
  */
 const MemoryCard: React.FC = () => {
   const [snapshot, setSnapshot] = useState<monitoring.MemorySnapshot | null>(
@@ -53,14 +58,11 @@ const MemoryCard: React.FC = () => {
     };
 
     void load();
-    const timer = window.setInterval(
-      () => void load(),
-      MEMORY_POLL_INTERVAL_MS,
-    );
+    const stop = startVisiblePoll(() => void load(), MEMORY_POLL_INTERVAL_MS);
 
     return () => {
       alive = false;
-      window.clearInterval(timer);
+      stop();
     };
   }, []);
 

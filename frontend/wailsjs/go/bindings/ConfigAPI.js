@@ -74,10 +74,6 @@ export function LoadGlobalLaunchSettings() {
   return window['go']['bindings']['ConfigAPI']['LoadGlobalLaunchSettings']();
 }
 
-export function MigrateRenamedVersion(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['bindings']['ConfigAPI']['MigrateRenamedVersion'](arg1, arg2, arg3, arg4, arg5);
-}
-
 export function RemoveJava(arg1) {
   return window['go']['bindings']['ConfigAPI']['RemoveJava'](arg1);
 }
@@ -96,10 +92,6 @@ export function SaveGameDirectory(arg1) {
 
 export function SaveGlobalLaunchSettings(arg1) {
   return window['go']['bindings']['ConfigAPI']['SaveGlobalLaunchSettings'](arg1);
-}
-
-export function SaveGlobalWindowSize(arg1, arg2) {
-  return window['go']['bindings']['ConfigAPI']['SaveGlobalWindowSize'](arg1, arg2);
 }
 
 export function SaveJava(arg1, arg2) {

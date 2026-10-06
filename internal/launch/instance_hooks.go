@@ -1,6 +1,10 @@
 package launch
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // 本文件定义 internal/launch 对 internal/instance（C# GameInstanceStore /
 // GameInstanceLayoutResolver / GameVersionIsolation）的最小依赖接口。
@@ -58,6 +62,31 @@ var ExternalInstanceResolver func(sourcePath string) (info ExternalInstanceInfo,
 // （对应 C# GameVersionIsolation.GetGameDirectory）。
 // 返回空串表示不隔离（使用 Minecraft 根目录）。为 nil 时不隔离。
 var IsolatedGameDirectoryResolver func(minecraftDirectory, sourcePath, versionId string) string
+
+// PreLaunchSnapshotHook 宿主注入：在游戏进程拉起**之前**为实例留一个"还原点"。
+//
+// 由 internal/content 的 Rewind 快照引擎实现（bindings 层接线）。设计要点：
+//   - **尽力而为**：返回的 error 只记日志，绝不阻断启动。存档快照失败
+//     （磁盘满、权限不足）不该让玩家玩不了游戏。
+//   - 是否真的创建由注入方决定（受"启动前自动备份"开关与"内容是否变化"控制），
+//     这里只负责在正确的时机调用。
+//   - gameDirectory 是实例的**游戏目录**（隔离时是 versions/<实例>），
+//     不是 .minecraft 根目录——还原点必须落在真正会被改动的那份存档上。
+//
+// 为 nil 时完全跳过（无钩子 = 无此功能，零开销）。
+var PreLaunchSnapshotHook func(gameDirectory, versionId string) error
+
+// runPreLaunchSnapshot 调用启动前快照钩子；返回给用户看的提示行（可为空）。
+func runPreLaunchSnapshot(gameDirectory, versionId string) string {
+	if PreLaunchSnapshotHook == nil || strings.TrimSpace(gameDirectory) == "" {
+		return ""
+	}
+	if err := PreLaunchSnapshotHook(gameDirectory, versionId); err != nil {
+		// 尽力而为：失败只提示，不阻断
+		return fmt.Sprintf("启动前自动备份未完成（不影响游戏启动）：%v", err)
+	}
+	return ""
+}
 
 // currentInstanceSnapshot 读取当前实例快照（钩子缺省时返回"未就绪"视图）。
 func currentInstanceSnapshot() GameInstanceSnapshot {

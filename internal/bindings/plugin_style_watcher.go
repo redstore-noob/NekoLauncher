@@ -4,8 +4,8 @@ package bindings
 // 就向前端发 plugin:styles:changed 事件（载荷 pluginId + 变化文件列表），前端
 // 自动重新拉取并重注入对应 <style>——作者改 CSS 存盘即生效，不用手点「重新加载」。
 //
-// 不引入 fsnotify：本地单用户场景下插件 CSS 就几个文件，1.5 秒一轮 stat 的
-// 开销可以忽略，换来零新依赖与纯函数式的可测试扫描。
+// 不引入 fsnotify：本地单用户场景下插件 CSS 就几个文件，1.5 秒（Linux 5 秒）
+// 一轮 stat 的开销可以忽略，换来零新依赖与纯函数式的可测试扫描。
 //
 // 防抖：文件写入可能跨越一个轮询周期，刚检出的变化先进入 pending 挂一轮，
 // 下一轮 modtime/体积都没再变才真正下发——作者连续保存也不会触发多次重注入。
@@ -14,12 +14,22 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
 
-// pluginStyleWatchInterval 轮询周期。
-const pluginStyleWatchInterval = 1500 * time.Millisecond
+// pluginStyleWatchInterval 轮询周期。Linux 的递归 ReadDir 会持续制造 CPU/IO
+// 唤醒、与 WebView 抢时间片，轮询周期放宽（作者改 CSS 后的生效延迟慢几秒
+// 可接受）；Windows 上 ReadDir 自带目录项元数据，保持原节奏。
+var pluginStyleWatchInterval = pluginStyleWatchIntervalForGOOS()
+
+func pluginStyleWatchIntervalForGOOS() time.Duration {
+	if runtime.GOOS == "linux" {
+		return 5 * time.Second
+	}
+	return 1500 * time.Millisecond
+}
 
 // styleStamp 样式文件的变化判据：modtime + 体积（体积兜底秒级精度时间戳的文件系统）。
 type styleStamp struct {

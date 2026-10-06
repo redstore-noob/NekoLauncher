@@ -12,6 +12,7 @@ import p6 from "./parts/ru-6";
 import p7 from "./parts/ru-7";
 import p8 from "./parts/ru-8";
 import p9 from "./parts/ru-9";
+import p10 from "./parts/ru-10";
 
 const ruRU: Record<string, string> = {
   ...p0,
@@ -24,6 +25,7 @@ const ruRU: Record<string, string> = {
   ...p7,
   ...p8,
   ...p9,
+  ...p10,
 };
 
 export default ruRU;

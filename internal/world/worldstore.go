@@ -22,7 +22,7 @@ type WorldInfo struct {
 	DirectoryPath string
 	// OwnerVersionId 世界所属的游戏实例（版本）Id；一键启动前先切换到该实例。
 	OwnerVersionId string
-	// LastPlayed 上次游玩时间（level.dat 修改时间，缺失时取目录时间）。
+	// LastPlayed 上次游玩时间（level.dat NBT 的 Data.LastPlayed；读不到回落文件修改时间）。
 	LastPlayed time.Time
 	// IconPath 世界图标 icon.png 的路径（不存在为空串）。
 	IconPath string
@@ -50,9 +50,9 @@ func GetRecentWorlds(snapshot instance.GameInstanceSnapshot, max int) []WorldInf
 
 	// 目录 → 拥有该目录的实例列表（多实例共享目录只扫一次）
 	type directoryOwners struct {
-		key     string
+		key       string
 		directory string
-		owners  []string
+		owners    []string
 	}
 	var directories []*directoryOwners
 	index := map[string]int{}
@@ -110,8 +110,12 @@ func GetRecentWorlds(snapshot instance.GameInstanceSnapshot, max int) []WorldInf
 			}
 			worldPath := filepath.Join(savesDirectory, worldEntry.Name())
 			levelFile := filepath.Join(worldPath, "level.dat")
+			// 优先 NBT 里的真实 LastPlayed（Unix 毫秒）：mtime 会被复制存档、
+			// 备份同步、网盘拉取刷新，把"最近游玩"排序搅乱；读不到再回落 mtime。
 			var lastPlayed time.Time
-			if info, err := os.Stat(levelFile); err == nil {
+			if fromNBT, ok := readLevelDatLastPlayed(levelFile); ok {
+				lastPlayed = fromNBT
+			} else if info, err := os.Stat(levelFile); err == nil {
 				lastPlayed = info.ModTime()
 			} else if info, err := os.Stat(worldPath); err == nil {
 				lastPlayed = info.ModTime()

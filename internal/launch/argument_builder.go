@@ -46,6 +46,10 @@ func isFlagArgument(argument string) bool {
 
 // appendResolvedArgument 追加一个已解析的参数；可空占位符解析为空时，连同刚追加的标志
 // 一起省略，避免留下一个悬空的空参数，或一个失去取值的标志。
+//
+// 这个函数会**回溯删除**已追加的标志（离线账号的 ${clientid} 解析为空 → 前面那条
+// "--clientId" 必须一并撤销）。因此溯源记账不能只看"要不要 append"，
+// 必须用同样的规则同步撤销，否则记账条数会多于最终命令行。
 func appendResolvedArgument(target *[]string, source, resolved string) {
 	if resolved != "" || !isNullablePlaceholder(source) {
 		*target = append(*target, resolved)
@@ -53,6 +57,33 @@ func appendResolvedArgument(target *[]string, source, resolved string) {
 	}
 	if count := len(*target); count > 0 && isFlagArgument((*target)[count-1]) {
 		*target = (*target)[:count-1]
+	}
+}
+
+// appendResolvedArgumentRecorded 带记账的 append。
+// 先算"这次 append 之后目标切片会变成什么"，再据此同步记账：
+//   - 正常追加 → 记一条；
+//   - 触发回溯删除 → 不仅要跳过后面的记，还要**撤销刚记的那条**。
+//
+// 返回被撤销的记账条数（0 或 1），调用方无需关心，传参即可。
+func appendResolvedArgumentRecorded(
+	target *[]string,
+	source, resolved string,
+	recorder *provenanceRecorder,
+	sourceInfo LaunchArgumentSource,
+) {
+	before := len(*target)
+	appendResolvedArgument(target, source, resolved)
+	after := len(*target)
+
+	switch {
+	case after > before:
+		// 净增：本次确实落进命令行
+		recorder.recordOne(resolved, sourceInfo)
+	case after < before:
+		// 回溯删除：本次没落进去，且还吃掉了上一条
+		// （上一条的记账由调用方在正常追加时已经记过，这里补一次撤销）
+		recorder.undoLast()
 	}
 }
 
@@ -68,6 +99,24 @@ func (MinecraftArgumentBuilder) Build(
 	mainClass string,
 	prependJvmArguments, appendJvmArguments []string,
 	prependGameArguments, appendGameArguments []string,
+) ([]string, error) {
+	return MinecraftArgumentBuilder{}.buildWithProvenance(
+		profile, options, nativeDirectory, classpath, mainClass,
+		prependJvmArguments, appendJvmArguments,
+		prependGameArguments, appendGameArguments, nil)
+}
+
+// buildWithProvenance 与 Build 相同，额外把溯源报告写回 provenanceOut。
+// 单独开一个入口是为了不改动 Build 的公开签名（调用方众多）。
+func (MinecraftArgumentBuilder) buildWithProvenance(
+	profile *MinecraftVersionProfile,
+	options MinecraftLaunchOptions,
+	nativeDirectory string,
+	classpath []string,
+	mainClass string,
+	prependJvmArguments, appendJvmArguments []string,
+	prependGameArguments, appendGameArguments []string,
+	provenanceOut **LaunchProvenanceReport,
 ) ([]string, error) {
 	if err := validateMemory(options); err != nil {
 		return nil, err
@@ -150,6 +199,10 @@ func (MinecraftArgumentBuilder) Build(
 	if strings.TrimSpace(versionName) == "" {
 		versionName = profile.Id
 	}
+	
+	// primary_jar_name 占位符：客户端 JAR 文件名（通常是 {version}.jar）
+	primaryJarName := versionName + ".jar"
+	
 	placeholders := map[string]string{
 		"auth_player_name":    authPlayerName,
 		"version_name":        versionName,
@@ -175,6 +228,7 @@ func (MinecraftArgumentBuilder) Build(
 		"resolution_width":    fmt.Sprintf("%d", options.WindowWidth),
 		"resolution_height":   fmt.Sprintf("%d", options.WindowHeight),
 		"path":                logConfigPath,
+		"primary_jar_name":    primaryJarName,
 	}
 
 	features := MinecraftRuleEvaluator.CreateDefaultFeatures(
@@ -185,14 +239,22 @@ func (MinecraftArgumentBuilder) Build(
 	userSpecifiesXms := containsMemoryArgument(options.AdditionalJvmArguments, "-Xms")
 	userSpecifiesXmx := containsMemoryArgument(options.AdditionalJvmArguments, "-Xmx")
 
+	// 溯源记账（纯旁路，见 launch_provenance.go）：选项未要求时 recorder 为 nil，
+	// 所有 record* 方法空转，热路径开销为零。
+	recorder := newProvenanceRecorder(options.CollectProvenance)
+	recorder.section(sectionJVM)
+
 	var result []string
 	// 插件前置 JVM 参数：置于所有 JVM 参数之前（注入/代理类参数需最先生效）
+	pluginJvmSource := LaunchArgumentSource{
+		Kind: SourcePlugin, Key: "plugin.prepend-jvm", PluginID: options.TransformPluginID,
+	}
 	for _, argument := range prependJvmArguments {
 		replaced, err := replacePlaceholders(argument, placeholders)
 		if err != nil {
 			return nil, err
 		}
-		appendResolvedArgument(&result, argument, replaced)
+		appendResolvedArgumentRecorded(&result, argument, replaced, recorder, pluginJvmSource)
 	}
 
 	// 日志配置：版本 JSON 的 logging.client.argument（原版为
@@ -203,37 +265,108 @@ func (MinecraftArgumentBuilder) Build(
 	if argument := strings.TrimSpace(profile.LoggingArgument); argument != "" {
 		if logConfigPath == "" || tools.FileExists(logConfigPath) {
 			if resolved, err := replacePlaceholders(argument, placeholders); err == nil && resolved != "" {
+				recorder.recordOne(resolved, LaunchArgumentSource{
+					Kind: SourceVersionJSON, Key: "version-json.logging",
+				})
 				result = append(result, resolved)
 			}
 		}
 	}
 
 	if !userSpecifiesXms {
-		result = append(result, fmt.Sprintf("-Xms%dM", options.MinimumMemoryMb))
+		argument := fmt.Sprintf("-Xms%dM", options.MinimumMemoryMb)
+		recorder.recordOne(argument, LaunchArgumentSource{
+			Kind: SourceLauncherAuto, Key: "memory.min.auto",
+			Detail: fmt.Sprintf("%d", options.MinimumMemoryMb),
+		})
+		result = append(result, argument)
 	}
 	if !userSpecifiesXmx {
-		result = append(result, fmt.Sprintf("-Xmx%dM", options.MaximumMemoryMb))
+		argument := fmt.Sprintf("-Xmx%dM", options.MaximumMemoryMb)
+		// 来源要区分"实例独立设置 / 全局手动上限 / 自动计算"——这正是用户最常问的那个"为什么"
+		memoryKey := "memory.max.global"
+		memoryKind := SourceGlobalSettings
+		switch {
+		case options.MemoryFromInstanceSettings:
+			memoryKey, memoryKind = "memory.max.instance", SourceInstanceSettings
+		case options.MemoryIsAutomatic:
+			memoryKey, memoryKind = "memory.max.automatic", SourceLauncherAuto
+		}
+		recorder.recordOne(argument, LaunchArgumentSource{
+			Kind: memoryKind, Key: memoryKey,
+			Detail: fmt.Sprintf("%d", options.MaximumMemoryMb),
+		})
+		result = append(result, argument)
 	}
 
-	// 通用 JVM 性能优化参数（仅在内存充足时启用预触页，低配机避免启动失败/变慢）
-	result = append(result,
+	// 通用 JVM 性能优化参数（针对 Minecraft 工作负载特性优化）
+	tuningArguments := []string{
 		"-XX:+UnlockExperimentalVMOptions",
 		"-XX:+UseG1GC",
-		"-XX:G1NewSizePercent=20",
-		"-XX:G1ReservePercent=20",
-		"-XX:MaxGCPauseMillis=50",
-		// 并行处理引用（软/弱引用清理），显著压低 Full GC 停顿；MC 大量使用缓存引用，收益明显
-		"-XX:+ParallelRefProcEnabled",
-	)
+		
+		// G1GC 核心参数：针对 MC 的内存分配模式优化
+		"-XX:G1NewSizePercent=20",          // 新生代最小占比 20%，适应 MC 高分配率
+		"-XX:G1MaxNewSizePercent=60",       // 新生代最大占比 60%，为对象晋升留空间
+		"-XX:G1ReservePercent=20",          // 预留 20% 堆防止晋升失败触发 Full GC
+		"-XX:MaxGCPauseMillis=50",          // 目标停顿 50ms，平衡吞吐与响应（游戏帧率敏感）
+		"-XX:G1HeapWastePercent=5",         // 堆浪费阈值 5%，减少内存碎片
+		"-XX:G1MixedGCCountTarget=4",       // 混合 GC 4 轮完成，缩短单次停顿
+		"-XX:G1MixedGCLiveThresholdPercent=90", // 90% 存活率的老年代区域才混合回收，避免无效工作
+		
+		// 线程与编译优化
+		"-XX:+ParallelRefProcEnabled",      // 并行处理引用（软/弱引用清理），显著压低 Full GC 停顿；MC 大量使用缓存引用，收益明显
+		"-XX:+PerfDisableSharedMem",        // 禁用 JVM 性能计数器共享内存，减少 /tmp 文件系统 I/O
+		"-XX:+DisableExplicitGC",           // 禁用显式 GC 调用（部分模组/插件的错误 System.gc() 会严重卡顿）
+		"-XX:+AlwaysActAsServerClassMachine", // 强制使用服务器模式 JVM 配置（C2 编译器 + 更大代码缓存）
+		"-XX:-OmitStackTraceInFastThrow",   // 保留异常堆栈跟踪，方便调试 MC 模组问题
+		
+		// 编译器优化（MaxInlineLevel 在 Java 8+ 都可用，适应 MC 深层方法调用链）
+		"-XX:MaxInlineLevel=15",            // 内联深度 15，适应 MC 深层方法调用链
+	}
+	
+	// 中等内存（≥4 GiB）优化
 	if options.MaximumMemoryMb >= 4096 {
-		result = append(result,
-			"-XX:+AlwaysPreTouch",
-			"-XX:G1HeapRegionSize=32M",
-			// G1 字符串去重：MC 日志/资源路径等重复字符串极多，可省 10-20% 堆
+		tuningArguments = append(tuningArguments,
+			// 字符串去重：MC 日志/资源路径/NBT 等重复字符串极多，可省 10-20% 堆
 			"-XX:+UseStringDeduplication",
+			"-XX:StringDeduplicationAgeThreshold=1", // 新生代晋升 1 次就去重，MC 字符串生命周期长
 		)
 	}
+	
+	// 大内存（≥8 GiB）优化
+	if options.MaximumMemoryMb >= 8192 {
+		tuningArguments = append(tuningArguments,
+			"-XX:+AlwaysPreTouch",              // 预触页：启动时提交所有物理页，消除运行时缺页中断（仅大内存机器）
+			"-XX:G1HeapRegionSize=32M",         // 32M region 减少大堆的 region 管理开销
+			"-XX:InitiatingHeapOccupancyPercent=15", // 堆占用 15% 就启动并发标记，为大堆争取更多 GC 时间
+		)
+	} else {
+		// 小内存堆默认参数
+		tuningArguments = append(tuningArguments,
+			"-XX:InitiatingHeapOccupancyPercent=40", // 小堆 40% 触发并发标记（更积极回收）
+		)
+	}
+	
+	// 超大内存（≥16 GiB）专属优化
+	if options.MaximumMemoryMb >= 16384 {
+		tuningArguments = append(tuningArguments,
+			"-XX:G1NewSizePercent=30",          // 超大堆提升新生代下限到 30%
+			"-XX:G1MaxNewSizePercent=50",       // 但上限降到 50%，为老年代留更多空间
+			"-XX:SurvivorRatio=32",             // Survivor 区更小（1:32），减少复制开销
+			"-XX:MaxTenuringThreshold=1",       // 快速晋升到老年代（MC 模组世界对象生命周期长）
+		)
+	}
+	recorder.record(tuningArguments, LaunchArgumentSource{
+		Kind: SourceLauncherAuto, Key: "jvm.tuning.g1",
+	})
+	result = append(result, tuningArguments...)
 
+	// 用户附加 JVM 参数：来源取决于是否跟随全局（buildLaunchOptions 已做过合并）
+	userJvmSource := LaunchArgumentSource{Kind: SourceInstanceSettings, Key: "jvm.user.instance"}
+	if options.UsingGlobalLaunchSettings {
+		userJvmSource = LaunchArgumentSource{Kind: SourceGlobalSettings, Key: "jvm.user.global"}
+	}
+	recorder.record(options.AdditionalJvmArguments, userJvmSource)
 	result = append(result, options.AdditionalJvmArguments...)
 
 	// 记录启动器自身 JVM 参数的起始位置：classpath 探测只看启动器与版本档案
@@ -241,10 +374,14 @@ func (MinecraftArgumentBuilder) Build(
 	launcherJvmArgsStart := len(result)
 
 	if len(profile.JvmArguments) > 0 {
-		if err := appendModernArguments(&result, profile.JvmArguments, features, placeholders); err != nil {
+		if err := appendModernArguments(&result, profile.JvmArguments, features, placeholders,
+			recorder, LaunchArgumentSource{Kind: SourceVersionJSON, Key: "version-json.jvm"}); err != nil {
 			return nil, err
 		}
 	} else {
+		recorder.record([]string{
+			"-Djava.library.path=" + nativeDirectory, "-cp", classpathValue,
+		}, LaunchArgumentSource{Kind: SourceVersionJSON, Key: "version-json.classpath-legacy"})
 		result = append(result,
 			"-Djava.library.path="+nativeDirectory,
 			"-cp",
@@ -252,12 +389,15 @@ func (MinecraftArgumentBuilder) Build(
 	}
 
 	// 插件追加 JVM 参数：位于 JVM 段末尾、主类之前
+	pluginAppendJvmSource := LaunchArgumentSource{
+		Kind: SourcePlugin, Key: "plugin.append-jvm", PluginID: options.TransformPluginID,
+	}
 	for _, argument := range appendJvmArguments {
 		replaced, err := replacePlaceholders(argument, placeholders)
 		if err != nil {
 			return nil, err
 		}
-		appendResolvedArgument(&result, argument, replaced)
+		appendResolvedArgumentRecorded(&result, argument, replaced, recorder, pluginAppendJvmSource)
 	}
 
 	// NeoForge / Forge 的 FML 在 production 模式下要求 system property "libraryDirectory"
@@ -271,27 +411,43 @@ func (MinecraftArgumentBuilder) Build(
 		}
 	}
 	if !hasLibraryDirectory {
-		result = append(result, "-DlibraryDirectory="+librariesDirectory)
+		argument := "-DlibraryDirectory=" + librariesDirectory
+		recorder.recordOne(argument, LaunchArgumentSource{
+			Kind: SourceLauncherAuto, Key: "jvm.library-directory",
+		})
+		result = append(result, argument)
 	}
 
 	// classpath 探测只看启动器与版本档案生成的参数段
 	if !containsClasspathArgument(result[launcherJvmArgsStart:]) {
+		recorder.record([]string{"-cp", classpathValue}, LaunchArgumentSource{
+			Kind: SourceLauncherAuto, Key: "jvm.classpath",
+		})
 		result = append(result, "-cp", classpathValue)
 	}
 
+	recorder.section(sectionMainClass)
+	recorder.recordOne(mainClass, LaunchArgumentSource{
+		Kind: SourceVersionJSON, Key: "version-json.main-class",
+	})
 	result = append(result, mainClass)
 
+	recorder.section(sectionGame)
 	// 插件前置游戏参数：紧贴主类之后、版本档案参数之前
+	pluginPrependGameSource := LaunchArgumentSource{
+		Kind: SourcePlugin, Key: "plugin.prepend-game", PluginID: options.TransformPluginID,
+	}
 	for _, argument := range prependGameArguments {
 		replaced, err := replacePlaceholders(argument, placeholders)
 		if err != nil {
 			return nil, err
 		}
-		appendResolvedArgument(&result, argument, replaced)
+		appendResolvedArgumentRecorded(&result, argument, replaced, recorder, pluginPrependGameSource)
 	}
 
 	if len(profile.GameArguments) > 0 {
-		if err := appendModernArguments(&result, profile.GameArguments, features, placeholders); err != nil {
+		if err := appendModernArguments(&result, profile.GameArguments, features, placeholders,
+			recorder, LaunchArgumentSource{Kind: SourceVersionJSON, Key: "version-json.game"}); err != nil {
 			return nil, err
 		}
 	} else if strings.TrimSpace(profile.LegacyGameArguments) != "" {
@@ -304,26 +460,48 @@ func (MinecraftArgumentBuilder) Build(
 			if err != nil {
 				return nil, err
 			}
-			appendResolvedArgument(&result, argument, replaced)
+			appendResolvedArgumentRecorded(&result, argument, replaced, recorder,
+				LaunchArgumentSource{Kind: SourceVersionJSON, Key: "version-json.game"})
 		}
 	} else {
 		return nil, newLaunchError("版本配置没有可用的游戏启动参数。")
 	}
 
+	gameArgumentSource := LaunchArgumentSource{Kind: SourceInstanceSettings, Key: "game.user.instance"}
+	if options.UsingGlobalLaunchSettings {
+		gameArgumentSource = LaunchArgumentSource{Kind: SourceGlobalSettings, Key: "game.user.global"}
+	}
 	for _, argument := range options.AdditionalGameArguments {
 		replaced, err := replacePlaceholders(argument, placeholders)
 		if err != nil {
 			return nil, err
 		}
-		appendResolvedArgument(&result, argument, replaced)
+		appendResolvedArgumentRecorded(&result, argument, replaced, recorder, gameArgumentSource)
 	}
 	// 插件追加游戏参数：与其余插件参数列表一样做占位符替换后追加
+	pluginAppendGameSource := LaunchArgumentSource{
+		Kind: SourcePlugin, Key: "plugin.append-game", PluginID: options.TransformPluginID,
+	}
 	for _, argument := range appendGameArguments {
 		replaced, err := replacePlaceholders(argument, placeholders)
 		if err != nil {
 			return nil, err
 		}
-		appendResolvedArgument(&result, argument, replaced)
+		appendResolvedArgumentRecorded(&result, argument, replaced, recorder, pluginAppendGameSource)
+	}
+
+	// 溯源是纯旁路：记账条目与最终参数逐一对齐后再产出报告，
+	// 任何对不齐（理论不可达，记账点与 append 点成对）都不影响返回值。
+	if recorder != nil {
+		report := recorder.collectProvenance(result)
+		if report != nil {
+			report.JavaExecutable = options.JavaExecutable
+			report.MainClass = mainClass
+			report.WorkingDirectory = gameDirectory
+		}
+		if provenanceOut != nil {
+			*provenanceOut = report
+		}
 	}
 	return result, nil
 }
@@ -348,11 +526,15 @@ func toCompactUuid(uuid string) string {
 
 // appendModernArguments 展开 argument 数组：字符串直接替换占位符；
 // 对象按 rules 过滤后展开 value（字符串或字符串数组）。
+// recorder 可为 nil（不记账）：记账在占位符替换**之后**按最终值记，
+// 与 Build 末尾的逐条对齐检查口径一致。
 func appendModernArguments(
 	target *[]string,
 	argumentElements []json.RawMessage,
 	features map[string]bool,
 	placeholders map[string]string,
+	recorder *provenanceRecorder,
+	source LaunchArgumentSource,
 ) error {
 	for _, element := range argumentElements {
 		var text string
@@ -361,7 +543,7 @@ func appendModernArguments(
 			if err != nil {
 				return err
 			}
-			appendResolvedArgument(target, text, replaced)
+			appendResolvedArgumentRecorded(target, text, replaced, recorder, source)
 			continue
 		}
 
@@ -382,7 +564,7 @@ func appendModernArguments(
 			if err != nil {
 				return err
 			}
-			appendResolvedArgument(target, singleValue, replaced)
+			appendResolvedArgumentRecorded(target, singleValue, replaced, recorder, source)
 			continue
 		}
 		var multipleValues []string
@@ -392,7 +574,7 @@ func appendModernArguments(
 				if err != nil {
 					return err
 				}
-				appendResolvedArgument(target, value, replaced)
+				appendResolvedArgumentRecorded(target, value, replaced, recorder, source)
 			}
 		}
 	}

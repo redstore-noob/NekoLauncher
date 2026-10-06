@@ -251,8 +251,8 @@ func TestListResourceSourcesReportsAvailability(t *testing.T) {
 	if !curseForge.RequiresAPIKey || curseForge.Available || curseForge.APIKeyConfigured {
 		t.Fatalf("未配置 Key 时应为「需要 Key 且不可用」：%+v", curseForge)
 	}
-	if !strings.Contains(curseForge.Hint, curseForge.APIKeyApplyURL) || curseForge.APIKeyApplyURL == "" {
-		t.Fatalf("引导里必须给出申请地址：%+v", curseForge)
+	if !strings.Contains(curseForge.Hint, "内置 API Key") || curseForge.Hint == "" {
+		t.Fatalf("引导里必须说明内置 Key 未生效：%+v", curseForge)
 	}
 
 	configured := ListResourceSources("some-key")[1]
@@ -274,13 +274,10 @@ func TestSearchResourcesCurseForgeWithoutKeyReturnsHint(t *testing.T) {
 		t.Fatalf("未配置 Key 不该返回错误（界面要能正常显示引导）：%v", err)
 	}
 	if !result.NeedsAPIKey {
-		t.Fatal("应标记 NeedsAPIKey，界面据此显示设置引导")
+		t.Fatal("应标记 NeedsAPIKey，界面据此显示提示")
 	}
-	if !strings.Contains(result.Message, "CurseForge API Key") {
-		t.Fatalf("提示信息应说明要填 CurseForge API Key：%q", result.Message)
-	}
-	if !strings.Contains(result.Message, curseforge.APIKeyApplyURL) {
-		t.Fatalf("提示信息应给出申请地址：%q", result.Message)
+	if !strings.Contains(result.Message, "内置 API Key") {
+		t.Fatalf("提示信息应说明内置 CurseForge API Key 未生效：%q", result.Message)
 	}
 	if result.Source != models.ResourceSourceCurseForge {
 		t.Fatalf("降级后仍应报告真实数据源，实际 %q", result.Source)
@@ -319,8 +316,8 @@ func TestDownloadResourceVersionCurseForgeWithoutKeyReturnsHint(t *testing.T) {
 	if err == nil {
 		t.Fatal("未配置 Key 时下载必须报错（不能静默什么都不做）")
 	}
-	if !strings.Contains(err.Error(), "CurseForge API Key") {
-		t.Fatalf("错误信息应指向 API Key 配置：%v", err)
+	if !strings.Contains(err.Error(), "内置 API Key") {
+		t.Fatalf("错误信息应指向内置 API Key 未生效：%v", err)
 	}
 }
 

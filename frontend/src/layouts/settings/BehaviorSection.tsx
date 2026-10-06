@@ -17,13 +17,13 @@ import React, { useEffect, useState } from "react";
 import { Button, Select, SelectItem } from "@heroui/react";
 import { ArrowClockwise20Regular } from "@fluentui/react-icons";
 
+import { selectPopoverProps } from "../../lib/motion";
 import {
   ClearValue,
   GetValue,
   SetValue,
 } from "../../../wailsjs/go/bindings/ConfigAPI";
 import { OOBE_COMPLETED_KEY } from "../../components/oobe/OobeProvider";
-import { popoverMotionProps } from "../../lib/motion";
 import { t } from "../../i18n";
 
 import Section, { SettingRow } from "./Section";
@@ -81,10 +81,7 @@ const BehaviorSection: React.FC = () => {
       ]}
       title={t("启动器行为")}
     >
-      <SettingRow
-        hint={t("托盘常驻，可单击图标唤回窗口")}
-        label={t("关闭按钮行为")}
-      >
+      <SettingRow label={t("关闭按钮行为")}>
         <div className="flex items-center gap-2">
           <Select
             aria-label={t("关闭按钮行为")}
@@ -93,7 +90,7 @@ const BehaviorSection: React.FC = () => {
               key: action.key,
               label: t(action.label),
             }))}
-            popoverProps={{ motionProps: popoverMotionProps }}
+            popoverProps={selectPopoverProps}
             selectedKeys={[closeAction]}
             size="sm"
             variant="bordered"
@@ -110,10 +107,7 @@ const BehaviorSection: React.FC = () => {
           {hint ? <span className="text-xs text-gray-400">{hint}</span> : null}
         </div>
       </SettingRow>
-      <SettingRow
-        hint={t("重新查看萌新 / 创作者引导，不影响任何现有配置")}
-        label={t("首次启动引导")}
-      >
+      <SettingRow label={t("首次启动引导")}>
         <Button
           size="sm"
           startContent={<ArrowClockwise20Regular />}

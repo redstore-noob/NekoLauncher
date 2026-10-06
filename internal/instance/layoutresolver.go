@@ -98,12 +98,14 @@ func detectAutoIsolation(mcRoot, versionDirectory, isolatedDirectory, sourcePath
 		return &layout
 	}
 
-	hmclMarker := filepath.Join(versionDirectory, ".hmclversion.cfg")
-	if tools.FileExists(hmclMarker) && hasMinecraftContent(isolatedDirectory) {
+	// HMCL 的实例设置文件：现行版本为 hmclversion.cfg，老版本是 .hmclversion.cfg，
+	// 都放在 versions/<id>/ 内（官方文档：版本隔离后游戏目录切到 versions/<实例名>）。
+	hmclMarker := firstExistingMarker(versionDirectory, ".hmclversion.cfg", "hmclversion.cfg")
+	if hmclMarker != "" && hasMinecraftContent(isolatedDirectory) {
 		layout := isolatedLayout(
 			isolatedDirectory,
 			"HMCL",
-			"检测到 .hmclversion.cfg 与版本独立内容")
+			"检测到 hmclversion.cfg 与版本独立内容")
 		return &layout
 	}
 
@@ -298,11 +300,29 @@ func hasExternalMarker(directory string) bool {
 	return ok
 }
 
+// firstExistingMarker 依次探测候选标记文件，返回第一个存在的相对名；都不存在返回空串。
+func firstExistingMarker(directory string, names ...string) string {
+	for _, name := range names {
+		if tools.FileExists(filepath.Join(directory, name)) {
+			return name
+		}
+	}
+	return ""
+}
+
 // getExternalMarker 按优先级探测外部实例元数据文件，返回启动器名称与判定依据。
 func getExternalMarker(directory string) (string, string, bool) {
 	if tools.FileExists(filepath.Join(directory, "instance.cfg")) {
 		return "MultiMC / Prism Launcher",
 			"检测到外部 instance.cfg 与独立 minecraft/.minecraft 内容目录", true
+	}
+	// HMCL：versions/<id>/ 内的实例设置文件（现行 hmclversion.cfg，老版 .hmclversion.cfg）。
+	if firstExistingMarker(directory, "hmclversion.cfg", ".hmclversion.cfg") != "" {
+		return "HMCL", "检测到外部 hmclversion.cfg 实例设置文件", true
+	}
+	// PCL / PCL CE：版本目录内 PCL/Setup.ini 保存实例设置（与隔离检测同源证据）。
+	if tools.FileExists(filepath.Join(directory, "PCL", "Setup.ini")) {
+		return "PCL", "检测到外部 PCL/Setup.ini 实例设置", true
 	}
 	if tools.FileExists(filepath.Join(directory, "minecraftinstance.json")) {
 		return "CurseForge", "检测到外部 minecraftinstance.json 实例元数据", true

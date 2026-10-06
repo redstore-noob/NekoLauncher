@@ -50,6 +50,14 @@ func (m *ModLoaderInstaller) Install(
 		// 覆盖原版元数据且形成自引用继承环——必须在安装前拒绝
 		return fmt.Errorf("实例名称不能与 Minecraft 版本号相同（%s），请换一个名称。", minecraftVersion)
 	}
+	// 实例名会作为 versions/<名称> 的目录名直接拼路径（installFromInstallerJar 的
+	// alignInstanceDirectory、FlattenVersionJSON、tryRemoveUnreferencedDependency），
+	// 所以必须在**动任何文件之前**过一遍与版本 ID 同一套的穿越校验。此前只有
+	// Fabric 分支经 baseInstaller.Install 间接受检，Forge / NeoForge 分支能拿
+	// "..\\.." 这类名称把文件写到 versions/ 之外。
+	if err := ValidateVersionID(instanceName); err != nil {
+		return err
+	}
 
 	root := filepath.Clean(minecraftDirectory)
 

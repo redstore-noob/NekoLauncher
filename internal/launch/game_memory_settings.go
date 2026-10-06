@@ -19,7 +19,7 @@ type SystemMemorySnapshot struct {
 }
 
 // GameMemoryDecision 启动时的内存决策：是否自动、最终 -Xmx 以及系统/保留内存信息。
-// IsMemoryTight 可用内存不足以满足预留策略时为 true：已按 2 GiB 保底分配，
+// IsMemoryTight 可用内存不足以满足预留策略时为 true：已按 4 GiB 保底分配，
 // 但系统随时可能进入换页，启动器应向用户发出低内存警告。
 type GameMemoryDecision struct {
 	IsAutomatic       bool
@@ -28,6 +28,8 @@ type GameMemoryDecision struct {
 	AvailableMemoryMb int
 	ReservedMemoryMb  int
 	IsMemoryTight     bool
+	// FromInstanceSettings 本次上限由实例独立内存设置进一步压低（供"为什么是这么大"溯源）。
+	FromInstanceSettings bool
 }
 
 // GameMemorySettings 持久化全局内存策略，并在启动时解析最终生效的 JVM -Xmx。
@@ -39,12 +41,12 @@ const (
 	automaticAdjustmentKey    = "automaticMemoryAdjustment"
 	minimumSelectableMemoryMb = 512
 	memoryStepMb              = 256
-	defaultMaximumMemoryMb    = 4096
 
 	// automaticMemoryFloorMb 自动模式下的保底堆上限：-Xmx 只是上限并不预先占用，
-	// 现代 Minecraft 世界生成时的实际堆需求远超 512 MiB——低于 2 GiB 分配等于必崩
-	// （可用内存不足时宁可承受系统换页，也不给一个注定 OOM 的值）。
-	automaticMemoryFloorMb = 2048
+	// 现代 Minecraft（尤其百模级整合包）世界生成时的实际堆需求普遍超过 2 GiB——
+	// 低于 4 GiB 分配大概率 OOM（可用内存不足时宁可承受系统换页，
+	// 也不给一个注定崩的值）。
+	automaticMemoryFloorMb = 4096
 )
 
 type gameMemorySettingsNamespace struct{}
@@ -75,9 +77,20 @@ func (gameMemorySettingsNamespace) ManualMaximumMemoryMb() int {
 	sliderMaximum := GameMemorySettings.SliderMaximumMemoryMb()
 	configured, err := strconv.Atoi(strings.TrimSpace(config.GetValue(maximumMemoryKey)))
 	if err != nil {
-		configured = minInt(defaultMaximumMemoryMb, sliderMaximum)
+		configured = minInt(recommendedDefaultMaximumMemoryMb(), sliderMaximum)
 	}
 	return clampAndRoundMemory(configured, sliderMaximum)
+}
+
+// recommendedDefaultMaximumMemoryMb 手动模式未配置时的缺省上限：按物理内存的一半
+// 给出，钳制在 [2 GiB, 8 GiB]——8 GiB 足够绝大多数大型整合包，同时给系统/启动器
+// 留出余量；采样失败时退回 4 GiB。
+func recommendedDefaultMaximumMemoryMb() int {
+	total := GetSystemMemory().TotalMemoryMb
+	if total <= 0 {
+		return 4096
+	}
+	return minInt(maxInt(roundDown(total/2, memoryStepMb), 2048), 8192)
 }
 
 // SaveManualMaximumMemoryMb 保存手动内存上限。
@@ -96,11 +109,12 @@ func ResolveForLaunch(instanceMaximumMemoryMb *int) GameMemoryDecision {
 	if !GameMemorySettings.IsAutomaticAdjustmentEnabled() {
 		policyMaximum := clampAndRoundMemory(GameMemorySettings.ManualMaximumMemoryMb(), systemMaximum)
 		return GameMemoryDecision{
-			IsAutomatic:       false,
-			MaximumMemoryMb:   applyInstanceMemoryLimit(policyMaximum, instanceMaximumMemoryMb, systemMaximum),
-			TotalMemoryMb:     memory.TotalMemoryMb,
-			AvailableMemoryMb: memory.AvailableMemoryMb,
-			ReservedMemoryMb:  0,
+			IsAutomatic:          false,
+			MaximumMemoryMb:      applyInstanceMemoryLimit(policyMaximum, instanceMaximumMemoryMb, systemMaximum),
+			TotalMemoryMb:        memory.TotalMemoryMb,
+			AvailableMemoryMb:    memory.AvailableMemoryMb,
+			ReservedMemoryMb:     0,
+			FromInstanceSettings: instanceMaximumMemoryMb != nil,
 		}
 	}
 
@@ -124,12 +138,13 @@ func ResolveForLaunch(instanceMaximumMemoryMb *int) GameMemoryDecision {
 	automaticMaximum := clampAndRoundMemory(minInt(candidate, totalMemoryCap), systemMaximum)
 
 	return GameMemoryDecision{
-		IsAutomatic:       true,
-		MaximumMemoryMb:   applyInstanceMemoryLimit(automaticMaximum, instanceMaximumMemoryMb, systemMaximum),
-		TotalMemoryMb:     memory.TotalMemoryMb,
-		AvailableMemoryMb: memory.AvailableMemoryMb,
-		ReservedMemoryMb:  reserve,
-		IsMemoryTight:     isMemoryTight,
+		IsAutomatic:          true,
+		MaximumMemoryMb:      applyInstanceMemoryLimit(automaticMaximum, instanceMaximumMemoryMb, systemMaximum),
+		TotalMemoryMb:        memory.TotalMemoryMb,
+		AvailableMemoryMb:    memory.AvailableMemoryMb,
+		ReservedMemoryMb:     reserve,
+		IsMemoryTight:        isMemoryTight,
+		FromInstanceSettings: instanceMaximumMemoryMb != nil,
 	}
 }
 

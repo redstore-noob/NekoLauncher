@@ -201,7 +201,7 @@ const DailyLuckCard: React.FC = () => {
       value={
         fortune ? (
           <span
-            className={`rounded-xl px-2.5 py-0.5 text-xl ${levelClass(fortune.level)}`}
+            className={`rounded-lg px-2.5 py-0.5 text-xl ${levelClass(fortune.level)}`}
           >
             {t(fortune.level)}
           </span>
@@ -244,7 +244,7 @@ const DailyLuckCard: React.FC = () => {
             </li>
           </ul>
 
-          <div className="flex items-center justify-between gap-2 rounded-xl bg-default-100/80 px-3 py-2 text-[11px] text-gray-400">
+          <div className="flex items-center justify-between gap-2 rounded-lg bg-default-100/80 px-3 py-2 text-[11px] text-gray-400">
             <span className="flex items-center gap-1.5">
               <NumberSymbol20Regular className="h-3.5 w-3.5" />
 

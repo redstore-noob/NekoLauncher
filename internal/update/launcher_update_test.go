@@ -2,6 +2,8 @@ package update
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -300,5 +302,47 @@ func TestDownloadRejectsTruncatedAsset(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(path) })
 	if info, err := os.Stat(path); err != nil || info.Size() != int64(len(payload)) {
 		t.Fatalf("落盘文件不符：%v / %+v", err, info)
+	}
+}
+
+// TestDownloadVerifiesDigest GitHub 声明 sha256 摘要时的强校验：一致放行、
+// 不一致拒绝落盘；声明为空或未知格式时跳过（退回大小核对）。
+func TestDownloadVerifiesDigest(t *testing.T) {
+	// 载荷要过 validateReplacement 的 512KB 粗筛，内容里埋标记再算摘要
+	payload := make([]byte, minimumExecutableBytes+100)
+	copy(payload, "NekoLauncher fake update payload for digest test")
+	sum := sha256.Sum256(payload)
+	hexSum := hex.EncodeToString(sum[:])
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(payload)
+	}))
+	defer server.Close()
+
+	url := server.URL + "/NekoLauncher.exe"
+	size := int64(len(payload))
+
+	// 摘要一致：正常落盘
+	path, err := Download(context.Background(), Asset{Name: "NekoLauncher.exe", URL: url, Size: size, Digest: "sha256:" + hexSum}, nil)
+	if err != nil {
+		t.Fatalf("摘要一致时应通过：%v", err)
+	}
+	_ = os.Remove(path)
+
+	// 摘要不符：拒绝并清理
+	wrong := Asset{Name: "NekoLauncher.exe", URL: url, Size: size, Digest: "sha256:" + strings.Repeat("0", 64)}
+	if _, err := Download(context.Background(), wrong, nil); err == nil {
+		t.Fatal("摘要不符时应报错")
+	}
+	if _, err := os.Stat(filepath.Join(os.TempDir(), downloadDirectoryName, "NekoLauncher.exe")); !os.IsNotExist(err) {
+		t.Fatalf("校验失败的文件应被清理：%v", err)
+	}
+
+	// 空摘要 / 未知格式：跳过校验不阻塞更新通道
+	for _, digest := range []string{"", "md5:" + hexSum} {
+		path, err := Download(context.Background(), Asset{Name: "NekoLauncher.exe", URL: url, Size: size, Digest: digest}, nil)
+		if err != nil {
+			t.Fatalf("摘要 %q 应跳过校验：%v", digest, err)
+		}
+		_ = os.Remove(path)
 	}
 }

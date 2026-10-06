@@ -62,6 +62,19 @@ body,
   background-color: transparent !important;
 }
 
+/* 滚动锁：窗口外壳（html/body/#root）永不滚动，一切滚动都发生在各页面
+ * 自己的滚动容器里。没有这条时，某些事件序列（输入法候选框、Select 浮层
+ * 打开瞬间的焦点跳动、触控板惯性滚动到达边界）会把滚动链传导到 body 上，
+ * 表现为整个界面连同标题栏一起被"滚走"一截。overscroll-behavior 同时
+ * 掐掉滚动链与 WebView 的下拉刷新/回弹语义。 */
+html,
+body,
+#root {
+  overflow: hidden;
+  overscroll-behavior: none;
+  height: 100%;
+}
+
 /* 背景层淡入：图源就绪/切换时（BackgroundLayer 按 url 重挂载子节点）柔和淡入，
  * 避免"图片加载完瞬间硬切"造成的一闪；结束值回落到元素自身的不透明度设置。 */
 @keyframes nya-bg-fade {
@@ -229,6 +242,19 @@ body,
 .nya-border {
   border-color: hsl(var(--nya-border-c) / 0.7);
 }
+/* 长列表行：只铺半透明底色，**不带 backdrop-filter**。
+ * 列表里几十行各自做一次 20px 背景模糊，滚动时每帧都要重采样，在透明窗口的
+ * WebView2 里会让滚动卡死/不响应（下载大厅、资源列表都栽在这里）。
+ * 毛玻璃交给外层容器（nya-panel / 弹窗表面）做一次即可。 */
+.nya-row {
+  background-color: hsl(var(--nya-surface-2) / var(--nya-glass-alpha, 0.8));
+}
+/* 独立滚动区：滚到边界不把滚动链传给外层（弹窗/页面不跟着动） */
+.nya-scroll-area {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 
 /* ---------------- 弹窗遮罩 / 面板 / 浮层菜单（毛玻璃） ---------------- */
 
@@ -257,6 +283,10 @@ body,
   -webkit-backdrop-filter: blur(calc(28px * var(--nya-blur-scale, 1)))
     saturate(160%);
   border: 1px solid hsl(var(--nya-border-c) / 0.7);
+  /* 面板圆角统一走 HeroUI 刻度：rounded-large = 14px（Modal/Card 的默认档）。
+   * 未分层规则优先于 utilities，这里与 HeroUI 的 rounded-large 同值，
+   * 只是覆盖它自带的不透明底色时必须连圆角一起声明。 */
+  border-radius: 0.875rem;
 }
 
 /* 弹窗面板入场：上浮 + 轻缩放（替代 framer 的 initial opacity:0 弹簧） */
@@ -274,31 +304,22 @@ body,
   animation: nya-modal-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
-/* 浮层菜单（Popover / Dropdown / Select / Autocomplete）：毛玻璃。
- * 所有浮层表面统一是 [data-slot="content"]（Tooltip 同名，但它恒带
- * data-disabled，用 :not 排除）。本文件规则未分层，级联优先于
- * utilities 层的 bg-content1，无需逐组件传 classNames。
+/* ---------------- 浮层菜单（Popover / Dropdown / Select / Autocomplete）----------------
+ * **这里不再做任何覆盖**：浮层表面一律用 HeroUI 自己给的槽位类（`bg-content1`
+ * 等），本文件不再出现任何 `[data-slot=...]` 选择器。
  *
- * 注意：不要选择 [data-slot="popover"]。Select 虽把该属性传给
- * FreeSoloPopover，但 Popover 内部的 getDialogProps 会把它覆盖为
- * [data-slot="base"]，因此该属性不会出现在最终 DOM 上——历史版本这里
- * 写成 [data-slot="popover"]，导致 Select 面板的毛玻璃与圆角全部失效。
- * src/styles/globals.test.ts 会守住这个契约。 */
-[data-slot="content"]:not([data-disabled]) {
-  background-color: hsl(var(--nya-surface-1) / var(--nya-glass-alpha, 0.8));
-  backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1))) saturate(150%);
-  -webkit-backdrop-filter: blur(calc(20px * var(--nya-blur-scale, 1)))
-    saturate(150%);
-  border: 1px solid hsl(var(--nya-border-c) / 0.6);
-}
-
-/* Select / Dropdown 的弹出面板：HeroUI 只给触发器圆角，content 本体默认直角
- * （Select 的 popoverContent 槽默认类只有 "w-full p-1 overflow-hidden"），
- * 这里统一补圆角，否则下拉列表出现生硬的直角边。 */
-[data-slot="content"]:not([data-disabled]) {
-  border-radius: 0.875rem;
-  overflow: hidden;
-}
+ * 为什么立这条规矩（两轮修复都栽在同一件事上）：
+ * 槽位名是**字符串**，写错了不报错、不失败编译，只是静默失效。历史上：
+ *   - 圆角那条规则写成 `[data-slot="popover"]` —— 该属性从不渲染（Select 把它
+ *     传给 FreeSoloPopover，Popover 内部的 getDialogProps 又覆盖成 `base`），
+ *     于是 Select 面板从 Pre-Beta 1 到 0.3.1 一直是直角；
+ *   - 毛玻璃那条规则的选择器里**同时**写着 `content`，所以它其实一直在生效
+ *     —— 当年那句"毛玻璃与圆角全部失效"把两件事记反了，直接导致一轮无效修复
+ *     （2026-10 的"摘掉毛玻璃治闪"）。
+ *
+ * 现在的分工：组件外观只走 HeroUI 公开 props（classNames / className / 主题变量），
+ * 需要 CSS 出面的只有本文件里 .nya-* 这些**本项目自己的类**。
+ * src/styles/globals.test.ts 守住这条契约。 */
 
 ::-webkit-scrollbar {
   display: none; /* Chrome/Safari/Edge */
@@ -309,13 +330,18 @@ body,
  * 表面的 backdrop-filter，并把半透明底色提到接近不透明——半透明无模糊的
  * 面板会透出背景图锐利边缘，观感很差，所以关闭模糊必须同时提高遮盖力。
  * 本文件规则未分层，且属性选择器优先级高于上面的单类规则，直接覆盖。 */
+/* ---------------- 面板毛玻璃开关（外观设置 → 面板毛玻璃） ----------------
+ * background.tsx 把开关写到 <html data-panel-blur="on|off">。off 时移除全部
+ * 表面的 backdrop-filter，并把半透明底色提到接近不透明——半透明无模糊的
+ * 面板会透出背景图锐利边缘，观感很差，所以关闭模糊必须同时提高遮盖力。
+ * 浮层菜单（[data-slot="content"]）本身就无模糊、底色恒定，不随开关变化。
+ * 本文件规则未分层，且属性选择器优先级高于上面的单类规则，直接覆盖。 */
 html[data-panel-blur="off"] .nya-sidebar,
 html[data-panel-blur="off"] .nya-panel,
 html[data-panel-blur="off"] .nya-panel-strong,
 html[data-panel-blur="off"] .nya-panel-inner,
 html[data-panel-blur="off"] .nya-modal-surface,
-html[data-panel-blur="off"] .nya-neon-card,
-html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]) {
+html[data-panel-blur="off"] .nya-neon-card {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
 }
@@ -337,8 +363,53 @@ html[data-panel-blur="off"] .nya-modal-surface {
 html[data-panel-blur="off"] .nya-neon-card {
   background-color: hsl(var(--nya-surface-2) / 0.96);
 }
-html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]) {
-  background-color: hsl(var(--nya-surface-1) / 0.98);
+
+/* 拖动小组件时的删除区遮罩（home.tsx 的 DeleteZoneOverlay）：它用 tailwind 的
+ * backdrop-blur-* 单独做模糊，同样要跟随"面板毛玻璃"开关；关闭时靠底色压暗，
+ * 而不是留一层没模糊的半透明盖在面板上。 */
+html[data-panel-blur="off"] .nya-delete-mask {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 散落在组件里的 tailwind backdrop-blur-* 工具类（标题栏、OOBE 遮罩等）同样
+ * 跟随"面板毛玻璃"开关：本文件规则未分层，级联优先于 utilities 层的 tailwind
+ * 类。标题栏是全宽常驻表面，不摘掉就永远单独付一份背景重采样开销。 */
+html[data-panel-blur="off"] [class*="backdrop-blur"] {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* ---------------- Linux 低特效路径（WebKitGTK） ----------------
+ * background.tsx 在 Linux 上写 <html data-low-fx="true">。WebKitGTK 的合成器
+ * 对 box-shadow / height / background-position 这类 paint、layout 型属性没有
+ * WebView2 那样的加速，"无限循环装饰动画 + 毛玻璃表面"叠加时整页持续重绘。
+ * 这里停掉的只限挂机也在跑的 paint/layout 型动画；transform 类合成器动画
+ * （唱片旋转、侧栏图标弹跳）和一次性入场动画不动。 */
+html[data-low-fx="true"] .nya-neon-live,
+html[data-low-fx="true"] .nya-cover-glow {
+  animation: none;
+}
+/* 均衡器条：height 动画每帧触发布局，冻结为静态的错落高度保留"音浪"意象 */
+html[data-low-fx="true"] .nya-eq-bar {
+  animation: none;
+  height: 9px;
+}
+html[data-low-fx="true"] .nya-eq-bar:nth-child(2) {
+  height: 15px;
+}
+html[data-low-fx="true"] .nya-eq-bar:nth-child(3) {
+  height: 6px;
+}
+/* 进度条流光与侧栏选中高光扫过：background-position / transform 逐帧重绘渐变 */
+html[data-low-fx="true"] .nya-bar {
+  animation: none;
+}
+html[data-low-fx="true"] .nya-sidebar-cursor::after {
+  content: none;
+}
+html[data-low-fx="true"] .nya-sidebar-item-active .nya-sidebar-icon {
+  animation: none;
 }
 
 /* ---------------- 音乐播放器 ---------------- */
@@ -378,6 +449,32 @@ html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]) {
 }
 .nya-vinyl {
   animation: nya-spin 6s linear infinite;
+}
+
+/* 黑胶播放页的全屏浮层：整层背景做毛玻璃（比面板更强的模糊，突出浮层），
+ * 叠一层深色渐变保证任何背景图上歌词都可读。圆角/模糊强度均随全局开关。 */
+.nya-nowplaying {
+  background:
+    linear-gradient(
+      160deg,
+      rgb(0 0 0 / 0.45),
+      rgb(0 0 0 / 0.25) 45%,
+      rgb(0 0 0 / 0.5)
+    ),
+    hsl(var(--nya-surface-2) / 0.2);
+  backdrop-filter: blur(calc(40px * var(--nya-blur-scale, 1))) saturate(130%);
+  -webkit-backdrop-filter: blur(calc(40px * var(--nya-blur-scale, 1)))
+    saturate(130%);
+}
+html[data-panel-blur="off"] .nya-nowplaying {
+  background: rgb(0 0 0 / 0.62);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 播放页大黑胶：整体缓慢旋转（暂停时由内联 animationPlayState 停住） */
+.nya-vinyl-disc {
+  animation: nya-spin 16s linear infinite;
 }
 
 /* 播放中封面呼吸光晕 */
@@ -540,7 +637,8 @@ html[data-panel-blur="off"] [data-slot="content"]:not([data-disabled]) {
 /* 卡片：主题色描边 + 主题派生表面毛玻璃（不再使用彩色渐变） */
 .nya-neon-card {
   position: relative;
-  border-radius: 1.5rem;
+  /* HeroUI rounded-large = 14px，卡片档 */
+  border-radius: 0.875rem;
   background-color: hsl(
     var(--nya-surface-2) / max(0.45, calc(var(--nya-glass-alpha, 0.8) - 0.08))
   );

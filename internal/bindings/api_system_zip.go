@@ -24,6 +24,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"nekolauncher/internal/tools"
 )
 
 // ResourcePackFile 资源包内单个文件。导出时三选一：PngBase64 / Base64 / Text；
@@ -106,7 +108,7 @@ func (a *SystemAPI) ExportResourcePack(targetPath string, files []ResourcePackFi
 	if len(files) > resourcePackMaxFiles {
 		return "", fmt.Errorf("文件数超过上限（%d）", resourcePackMaxFiles)
 	}
-	target := strings.TrimSpace(targetPath)
+	target := tools.SanitizeSavePath(strings.TrimSpace(targetPath))
 	if target == "" {
 		return "", errors.New("未选择保存位置")
 	}

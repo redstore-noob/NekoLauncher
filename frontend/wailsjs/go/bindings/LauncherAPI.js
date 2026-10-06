@@ -14,6 +14,14 @@ export function DiagnoseCrash() {
   return window['go']['bindings']['LauncherAPI']['DiagnoseCrash']();
 }
 
+export function GetLaunchProvenance() {
+  return window['go']['bindings']['LauncherAPI']['GetLaunchProvenance']();
+}
+
+export function GetLaunchProvenanceVersionId() {
+  return window['go']['bindings']['LauncherAPI']['GetLaunchProvenanceVersionId']();
+}
+
 export function GetLaunchSnapshot() {
   return window['go']['bindings']['LauncherAPI']['GetLaunchSnapshot']();
 }
@@ -42,12 +50,12 @@ export function IsAutomaticMemoryAdjustmentEnabled() {
   return window['go']['bindings']['LauncherAPI']['IsAutomaticMemoryAdjustmentEnabled']();
 }
 
-export function Launch(arg1, arg2) {
-  return window['go']['bindings']['LauncherAPI']['Launch'](arg1, arg2);
+export function Launch(arg1, arg2, arg3) {
+  return window['go']['bindings']['LauncherAPI']['Launch'](arg1, arg2, arg3);
 }
 
-export function LaunchVersion(arg1, arg2, arg3) {
-  return window['go']['bindings']['LauncherAPI']['LaunchVersion'](arg1, arg2, arg3);
+export function LaunchVersion(arg1, arg2, arg3, arg4) {
+  return window['go']['bindings']['LauncherAPI']['LaunchVersion'](arg1, arg2, arg3, arg4);
 }
 
 export function SaveManualMaximumMemoryMb(arg1) {

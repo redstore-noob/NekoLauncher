@@ -64,8 +64,6 @@ export function ResumeDownload():Promise<boolean>;
 
 export function SaveActiveDownloadSource(arg1:download.DownloadSource):Promise<void>;
 
-export function SaveCurseForgeAPIKey(arg1:string):Promise<boolean>;
-
 export function SaveFallbackDownloadSource(arg1:download.DownloadSource):Promise<void>;
 
 export function SaveParallelDownloads(arg1:number):Promise<void>;

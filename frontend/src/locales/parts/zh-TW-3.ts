@@ -301,6 +301,9 @@ const dict: Record<string, string> = {
   "CurseForge API Key": "CurseForge API Key",
   "搜索走后端绑定：官方接口失败时会自动改用国内镜像，仍失败才是网络问题；稍后重试即可。":
     "搜尋走後端綁定：官方介面失敗時會自動改用國內鏡像，仍失敗才是網路問題；稍後重試即可。",
+  播放列表: "播放清單",
+  正在播放: "正在播放",
+  检查模组冲突和更新: "檢查模組衝突和更新",
 };
 
 export default dict;

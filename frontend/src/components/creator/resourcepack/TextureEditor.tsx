@@ -23,7 +23,13 @@
  */
 import type { PackFile, TextureHistory } from "./types";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Button, Select, SelectItem } from "@heroui/react";
 import {
   Add20Regular,
@@ -44,7 +50,7 @@ import {
   Subtract20Regular,
 } from "@fluentui/react-icons";
 
-import { popoverMotionProps } from "../../../lib/motion";
+import { selectPopoverProps } from "../../../lib/motion";
 import { t } from "../../../i18n";
 
 import { hexToRgb, makeCanvas, TEXTURE_SIZE_OPTIONS } from "./types";
@@ -247,6 +253,13 @@ const TextureEditor: React.FC<TextureEditorProps> = ({
   const [, setHistoryStamp] = useState(0);
 
   const resolution = tex ? `${tex.width}×${tex.height}` : "";
+
+  // 缓存 selectedKeys 数组，避免每次渲染都创建新数组导致 Select 闪烁
+  const brushKeys = useMemo(() => [String(brush)], [brush]);
+  const textureSizeKeys = useMemo(
+    () => (tex ? [String(tex.width)] : []),
+    [tex?.width],
+  );
 
   const paintTexel = useCallback(
     (ctx: CanvasRenderingContext2D, x: number, y: number, erase: boolean) => {
@@ -1054,8 +1067,8 @@ const TextureEditor: React.FC<TextureEditorProps> = ({
             aria-label={t("笔刷大小")}
             className="w-16 [&_*]:min-w-0"
             classNames={{ trigger: "h-7 min-h-7" }}
-            popoverProps={{ motionProps: popoverMotionProps }}
-            selectedKeys={[String(brush)]}
+            popoverProps={selectPopoverProps}
+            selectedKeys={brushKeys}
             size="sm"
             onSelectionChange={(keys) =>
               setBrush(Number(Array.from(keys)[0] ?? 1))
@@ -1086,8 +1099,8 @@ const TextureEditor: React.FC<TextureEditorProps> = ({
             aria-label={t("贴图尺寸")}
             className="w-20 [&_*]:min-w-0"
             classNames={{ trigger: "h-7 min-h-7" }}
-            popoverProps={{ motionProps: popoverMotionProps }}
-            selectedKeys={[String(tex.width)]}
+            popoverProps={selectPopoverProps}
+            selectedKeys={textureSizeKeys}
             size="sm"
             onSelectionChange={(keys) =>
               resizeTexture(Number(Array.from(keys)[0] ?? tex.width))

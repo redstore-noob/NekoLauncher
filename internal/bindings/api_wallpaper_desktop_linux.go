@@ -8,6 +8,7 @@ package bindings
 //	2. kreadconfig5/6 或直接解析 plasma-org.kde.plasma.desktop-appletsrc（KDE Plasma）
 //	3. xfconf-query（XFCE）
 //	4. ~/.fehbg（feh 用户，脚本里写着上一条 --bg 命令）
+//	5. swww query（wlroots 系桌面：Sway / Hyprland 等，没有 gsettings 可问）
 //
 // 全部拿不到就返回空串，由前端回退默认图——不报错，因为"这个环境没读过壁纸"并不是故障。
 // 取值解析（去引号、file:// URI、死路径过滤）在 api_wallpaper_desktop_parse.go。
@@ -18,13 +19,15 @@ import (
 	"strings"
 )
 
-// desktopWallpaperPath 依次尝试各桌面环境的读取方式。
+// desktopWallpaperPath 依次尝试各桌面环境的读取方式。swww 放最后：
+// GNOME/KDE/XFCE 用户走不到这一步就返回了，少 spawn 一次子进程。
 func desktopWallpaperPath() (string, error) {
 	for _, probe := range []func() string{
 		gnomeWallpaperPath,
 		kdeWallpaperPath,
 		xfceWallpaperPath,
 		fehWallpaperPath,
+		swwwWallpaperPath,
 	} {
 		if path := probe(); path != "" {
 			return path, nil

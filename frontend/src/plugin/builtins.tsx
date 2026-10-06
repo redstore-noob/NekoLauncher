@@ -9,10 +9,10 @@ import {
   AnimalCat20Regular,
   Apps20Regular,
   ArrowDownload20Regular,
-  Bot20Regular,
   CalendarClock20Regular,
   CalendarLtr20Regular,
   Chat20Regular,
+  Clock20Regular,
   DocumentText20Regular,
   Flag20Regular,
   FoodFish20Regular,
@@ -23,10 +23,10 @@ import {
   Image20Regular,
   MusicNote220Regular,
   PaintBrush20Regular,
-  People20Regular,
   Person20Regular,
   Pulse20Regular,
   PuzzleCube20Regular,
+  Rss20Regular,
   Server20Regular,
   Settings20Regular,
   Star20Regular,
@@ -36,7 +36,9 @@ import {
   WindowDevTools20Regular,
 } from "@fluentui/react-icons";
 
+import NekoAgentIcon from "../components/neko-agent-icon";
 import CalendarCard from "../components/home/CalendarCard";
+import ClockCard from "../components/home/ClockCard";
 import CountdownCard from "../components/home/CountdownCard";
 import DailyLuckCard from "../components/home/DailyLuckCard";
 import DiskCard from "../components/home/DiskCard";
@@ -58,25 +60,40 @@ import QuickDownloadCard from "../components/home/QuickDownloadCard";
 import QuickServerCard from "../components/home/QuickServerCard";
 import QuickSettingsCard from "../components/home/QuickSettingsCard";
 import RecentWorldsCard from "../components/home/RecentWorldsCard";
+import RssFeedCard from "../components/home/RssFeedCard";
 import RewindCard from "../components/home/RewindCard";
 import ScreenshotWallCard from "../components/home/ScreenshotWallCard";
 import SkinViewCard from "../components/home/SkinViewCard";
 import AppearanceQuickCard from "../components/home/AppearanceQuickCard";
-import AccountPage from "../layouts/account";
-import AiPage from "../layouts/ai";
-import AppearancePage from "../layouts/appearance";
-import CreatorPage from "../layouts/creator";
-import DownloadPage from "../layouts/download";
 import HomePage from "../layouts/home";
-import HelpPage from "../layouts/help";
-import InstancesPage from "../layouts/instances";
-import MultiplayerPage from "../layouts/multiplayer";
-import MusicPage from "../layouts/music";
-import PluginsPage from "../layouts/plugins";
-import SettingsPage from "../layouts/settings";
 import { t } from "../i18n";
+import { lazyPage } from "../lib/lazy";
 
 import { registerPage, registerWidget } from "./registry";
+
+/*
+ * 除主页外的页面全部切成懒加载 chunk（见 lib/lazy.ts）：首包只带壳层与主页，
+ * 其余在首帧后的空闲期预取，真正切换过去时已在内存中，无感直达。
+ */
+const AccountPage = lazyPage(() => import("../layouts/account"));
+const AiPage = lazyPage(() => import("../layouts/ai"));
+const AppearancePage = lazyPage(() => import("../layouts/appearance"));
+const CreatorPage = lazyPage(() => import("../layouts/creator"));
+const DownloadPage = lazyPage(() => import("../layouts/download"));
+const InstancesPage = lazyPage(() => import("../layouts/instances"));
+const MusicPage = lazyPage(() => import("../layouts/music"));
+const OnlinePageWrapper = lazyPage(() =>
+  import("../layouts/multiplayer").then((m) => ({
+    default: m.OnlinePageWrapper,
+  })),
+);
+const PluginsPage = lazyPage(() => import("../layouts/plugins"));
+const ServersPageWrapper = lazyPage(() =>
+  import("../layouts/multiplayer").then((m) => ({
+    default: m.ServersPageWrapper,
+  })),
+);
+const SettingsPage = lazyPage(() => import("../layouts/settings"));
 
 let registered = false;
 
@@ -110,7 +127,7 @@ export function registerBuiltins() {
         isBusy={context.isBusy}
         reloadKey={context.launchPhase}
         selectedVersion={context.selectedVersion}
-        onLaunchVersion={context.onLaunchVersion}
+        onLaunchWorld={context.onLaunchWorld}
         onSelectVersion={context.onSelectVersion}
       />
     ),
@@ -158,6 +175,16 @@ export function registerBuiltins() {
     icon: <Pulse20Regular />,
     tileClass: "from-fuchsia-400 via-pink-500 to-rose-500 shadow-pink-500/30",
     render: () => <MemoryCard />,
+  });
+
+  registerWidget({
+    id: "rss",
+    title: t("RSS 订阅"),
+    description: t("订阅任意 RSS / Atom 源，点击条目打开原文"),
+    icon: <Rss20Regular />,
+    tileClass:
+      "from-orange-400 via-amber-500 to-yellow-500 shadow-amber-500/30",
+    render: () => <RssFeedCard />,
   });
 
   registerWidget({
@@ -272,6 +299,15 @@ export function registerBuiltins() {
   });
 
   registerWidget({
+    id: "clock",
+    title: t("时钟"),
+    description: t("数字时钟与日期星期，秒级跳动"),
+    icon: <Clock20Regular />,
+    tileClass: "from-indigo-400 via-blue-500 to-cyan-500 shadow-blue-500/30",
+    render: () => <ClockCard />,
+  });
+
+  registerWidget({
     id: "calendar",
     title: t("日历"),
     description: t("月历视图，节假日红字标记"),
@@ -292,7 +328,7 @@ export function registerBuiltins() {
       <FavoriteInstancesCard
         isBusy={context.isBusy}
         selectedVersion={context.selectedVersion}
-        onLaunchVersion={context.onLaunchVersion}
+        onLaunchVersion={(versionId) => context.onLaunchWorld(versionId, "")}
       />
     ),
   });
@@ -391,11 +427,19 @@ export function registerBuiltins() {
   });
 
   registerPage({
-    id: "multiplayer",
-    label: t("多人"),
-    icon: <People20Regular />,
-    order: 45,
-    render: () => <MultiplayerPage />,
+    id: "servers",
+    label: t("服务器"),
+    icon: <Server20Regular />,
+    order: 44,
+    render: () => <ServersPageWrapper />,
+  });
+
+  registerPage({
+    id: "online",
+    label: t("联机"),
+    icon: <Globe20Regular />,
+    order: 46,
+    render: () => <OnlinePageWrapper />,
   });
 
   registerPage({
@@ -424,18 +468,10 @@ export function registerBuiltins() {
 
   registerPage({
     id: "ai",
-    label: t("AI 助手"),
-    icon: <Bot20Regular />,
+    label: t("NekoAgent喵"),
+    icon: <NekoAgentIcon className="h-5 w-5" />,
     order: 68,
     render: () => <AiPage />,
-  });
-
-  registerPage({
-    id: "help",
-    label: t("帮助"),
-    icon: <DocumentText20Regular />,
-    order: 70,
-    render: () => <HelpPage />,
   });
 
   registerPage({

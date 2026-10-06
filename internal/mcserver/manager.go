@@ -49,6 +49,10 @@ type runtimeState struct {
 	// stopRequested 是否由用户主动停止（区分"手动停"与"崩溃退出"，
 	// 后者才走自动重启）。
 	stopRequested bool
+	// exitDone 上一轮进程的退出观察者（awaitExit）完成收尾后关闭。
+	// 强杀路径不等进程"死透"就返回，StopServer / 下一次 StartServer 靠它
+	// 等待旧观察者落地，避免其把新进程的 status/cmd 清成 stopped。
+	exitDone chan struct{}
 	// restartCount / lastRestart 自动重启的窗口计数。
 	restartCount int
 	lastRestart  time.Time
@@ -101,17 +105,36 @@ func (m *Manager) StartServer(ctx context.Context, id string) error {
 	}
 
 	state := m.ensureState(id)
+	// 上一轮进程的退出观察者若还没收尾（软停超时强杀不等待死亡的场景），
+	// 先等它落地——否则紧随其后的新启动会被旧 awaitExit 清掉 status/cmd，
+	// UI 显示"已停止"但进程活着、停止失效。
+	if state.exitDone != nil {
+		select {
+		case <-state.exitDone:
+		case <-time.After(3 * time.Second):
+		}
+	}
 	state.mu.Lock()
 	if state.status == StatusRunning || state.status == StatusStarting {
 		state.mu.Unlock()
 
 		return errors.New("服务器已在运行中")
 	}
+	if state.status == StatusStopping {
+		state.mu.Unlock()
+
+		return errors.New("服务器正在停止，请稍后再启动")
+	}
 	state.status = StatusStarting
+	// 上次"启动准备期取消"会把这个标记留下来（无进程无 awaitExit 消费）；
+	// 不清掉的话下次进程异常退出会被误判为用户主动停止、自动重启失效。
+	// 旧观察者已在上面等完，这里重置是安全的。
+	state.stopRequested = false
 	// 启动准备阶段（可能包含 Java 下载）没有进程可杀，用户点"停止"时靠这个
 	// context 中断；成功拉起进程后清掉，此后走正常的进程停止路径。
 	startCtx, cancelStart := context.WithCancel(ctx)
 	state.cancelStart = cancelStart
+	state.exitDone = make(chan struct{})
 	state.mu.Unlock()
 
 	// 启动准备阶段结束后清掉取消句柄：此后停止走进程路径，不再需要它。
@@ -289,9 +312,47 @@ func (m *Manager) awaitExit(id string, state *runtimeState, cmd *exec.Cmd) {
 	state.stopRequested = false
 	state.mu.Unlock()
 
+	// 通知等待者（StopServer / 下一次 StartServer）：状态已收尾完毕
+	if state.exitDone != nil {
+		close(state.exitDone)
+	}
+
 	if !userRequested {
 		m.maybeAutoRestart(id, waitErr)
 	}
+}
+
+// waitForExit 等待上一轮进程的退出观察者收尾（awaitExit 关闭 exitDone），
+// 最多 3 秒。强杀路径杀完进程树不等待死亡就返回，紧随其后的
+// RestartServer → StartServer 若不与旧观察者同步，会被它污染状态。
+func (m *Manager) waitForExit(state *runtimeState) {
+	state.mu.Lock()
+	done := state.exitDone
+	state.mu.Unlock()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+	}
+}
+
+// appendConsole 往服务器控制台缓冲追加一行系统消息（环形容量与普通日志一致）。
+// 自动重启/自动备份这类后台失败此前只写启动器日志文件，用户在控制台里
+// 看到一半的提示就没了下文。
+func (m *Manager) appendConsole(id, line string) {
+	state := m.state(id)
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	state.logs = append(state.logs, line)
+	if len(state.logs) > consoleCapacity {
+		state.logs = state.logs[len(state.logs)-consoleCapacity:]
+	}
+	state.cursor++
+	state.mu.Unlock()
 }
 
 // autoRestartWindow 自动重启的观察窗口：窗口内最多重启 maxAutoRestarts 次，
@@ -347,6 +408,7 @@ func (m *Manager) maybeAutoRestart(id string, waitErr error) {
 	}
 	if err := m.StartServer(context.Background(), id); err != nil {
 		logs.Write("WARN", fmt.Sprintf("自动重启 %s 失败：%v", id, err))
+		m.appendConsole(id, fmt.Sprintf("[%s] 自动重启失败：%v（可手动点启动重试）", time.Now().Format("15:04:05"), err))
 	}
 }
 
@@ -537,6 +599,9 @@ func (m *Manager) StopServer(id string, force bool) error {
 			// 否则这里会"成功返回但服务器照样启动"，用户以为停掉了。
 			cancelStart()
 		}
+		// 强杀不等待进程死亡：在这里等退出观察者收尾，RestartServer 紧跟着
+		// 的 StartServer 才不会与旧 awaitExit 竞争。
+		m.waitForExit(state)
 
 		return nil
 	}
@@ -569,6 +634,8 @@ func (m *Manager) StopServer(id string, force bool) error {
 		// 子进程会把真正的 JVM 留成占用服务器目录的孤儿进程。
 		_ = killProcessTree(cmd.Process.Pid)
 	}
+	// 与强杀路径同理：等退出观察者收尾再返回，重启才不会撞上状态污染。
+	m.waitForExit(state)
 
 	return nil
 }

@@ -68,7 +68,7 @@ export const ModalShell: React.FC<ModalShellProps> = ({
     <>
       <ModalHeader className="flex items-center gap-3 px-6 pt-4 pb-3 border-b border-gray-100 dark:border-gray-800/60">
         {icon ? (
-          <div className="w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-[10px] bg-primary/15 text-primary-600 dark:text-primary-300">
+          <div className="w-10 h-10 flex-shrink-0 flex items-center justify-center rounded-lg bg-primary/15 text-primary-600 dark:text-primary-300">
             {icon}
           </div>
         ) : null}
@@ -95,7 +95,7 @@ export const ModalShell: React.FC<ModalShellProps> = ({
       {/* min-h-0 flex-1：固定高度的业务弹窗（如整合包制作）靠它撑满内部网格；
           内容较短的弹窗不受影响（ModalContent 高度仍由内容决定）。
           overflow-y-auto：半窗高（50vh）的下载类弹窗内容超出时在体内滚动。 */}
-      <ModalBody className="min-h-0 flex-1 overflow-y-auto px-6 pb-5 pt-4">
+      <ModalBody className="nya-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain px-6 pb-5 pt-4">
         {children}
       </ModalBody>
     </>

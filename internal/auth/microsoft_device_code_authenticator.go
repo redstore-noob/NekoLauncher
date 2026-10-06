@@ -16,12 +16,16 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"nekolauncher/internal/logs"
 )
 
+// deviceCodeTransientRetryLimit 设备码轮询对瞬时服务端故障的容忍轮数。
+const deviceCodeTransientRetryLimit = 3
+
 // DefaultMicrosoftClientId 默认使用 NekoLauncher 自建的 Azure 应用注册
-// （多租户 + 个人 MSA，公共客户端）。需注意：自建 Client ID 必须通过
-// aka.ms/mce-reviewappid 提交 Mojang 审核，放行前链路最后一步
-// Minecraft Services 会返回 403 Invalid app registration。
+// （多租户 + 个人 MSA，公共客户端）。该 Client ID 已通过 aka.ms/mce-reviewappid
+// 的 Mojang 审核（2026-10），微软登录开箱即用。
 // 可通过构造函数或环境变量 NEKOLAUNCHER_MSA_CLIENT_ID 覆盖。
 const DefaultMicrosoftClientId = "427f0a7c-9edd-40ba-a0ec-f189f8328418"
 
@@ -117,7 +121,20 @@ func NewMicrosoftDeviceCodeAuthenticator(clientId string, httpClient *http.Clien
 }
 
 // Authenticate 设备码登录全流程。
+// 全链路失败统一记一条日志：此前失败只活在 5 秒浮层里，用户切走窗口后
+// 错误信息永久丢失，日志文件无痕可查。
 func (a *MicrosoftDeviceCodeAuthenticator) Authenticate(
+	ctx context.Context,
+	deviceCodeHandler func(DeviceCodeInfo, context.Context),
+) (MicrosoftAccount, error) {
+	account, err := a.authenticate(ctx, deviceCodeHandler)
+	if err != nil {
+		logs.Write("WARN", "微软设备码登录失败："+err.Error())
+	}
+	return account, err
+}
+
+func (a *MicrosoftDeviceCodeAuthenticator) authenticate(
 	ctx context.Context,
 	deviceCodeHandler func(DeviceCodeInfo, context.Context),
 ) (MicrosoftAccount, error) {
@@ -270,6 +287,8 @@ func (a *MicrosoftDeviceCodeAuthenticator) pollForToken(
 	deviceCode *DeviceCodeInfo,
 ) (string, string, error) {
 	deadline := time.Now().Add(deviceCode.ExpiresIn)
+	// 瞬时服务端故障（5xx / 非 JSON 响应体 / server_error）的连续容忍计数
+	transientFailures := 0
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return "", "", err
@@ -299,6 +318,11 @@ func (a *MicrosoftDeviceCodeAuthenticator) pollForToken(
 		}
 		token, err := deserializeToken(body)
 		if err != nil {
+			// 令牌端点偶发 5xx / 代理注入的错误页（非 JSON）：与网络层抖动同等
+			// 对待——用户正等在浏览器前，容忍几轮再放弃，别让登录直接挂掉
+			if transientFailures++; transientFailures <= deviceCodeTransientRetryLimit {
+				continue
+			}
 			return "", "", err
 		}
 
@@ -313,6 +337,12 @@ func (a *MicrosoftDeviceCodeAuthenticator) pollForToken(
 			// OAuth 2.0 规范：服务器要求放慢轮询，间隔 +5 秒后继续等待
 			deviceCode.PollIntervalSeconds += 5
 			continue
+		case "server_error":
+			// OAuth 2.0 规范声明的可重试错误：容忍几轮，别一击致命
+			if transientFailures++; transientFailures <= deviceCodeTransientRetryLimit {
+				continue
+			}
+			return "", "", newMicrosoftAuthErrorCode("设备码登录失败：令牌服务持续返回 server_error，请稍后重试。", token.Error)
 		case "authorization_declined":
 			return "", "", newMicrosoftAuthErrorCode("你在浏览器中拒绝了授权请求。", AuthorizationDeclined)
 		case "expired_token":
@@ -361,9 +391,13 @@ func (a *MicrosoftDeviceCodeAuthenticator) requestTokenByRefreshToken(
 		} else {
 			detail = body
 		}
-		return "", "", newMicrosoftAuthErrorCode(
-			fmt.Sprintf("刷新令牌失败（HTTP %d）：%s", response.StatusCode, detail),
-			token.Error)
+		message := fmt.Sprintf("刷新令牌失败（HTTP %d）：%s", response.StatusCode, detail)
+		// invalid_grant = refresh token 已被吊销/在别处轮换：与 authlib 同口径
+		// 给出可操作指引，别让用户对着一句协议错误猜下一步
+		if strings.EqualFold(strings.TrimSpace(token.Error), "invalid_grant") {
+			message += "——该账号的登录凭据已失效，请删除该账号后重新登录。"
+		}
+		return "", "", newMicrosoftAuthErrorCode(message, token.Error)
 	}
 
 	// 服务端未返回新 refresh_token（无轮换策略）时回退保留旧值，防止账号刷新后被清空

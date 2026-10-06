@@ -30,8 +30,8 @@ import {
 } from "@heroui/react";
 import { ChevronDown20Regular, Search20Regular } from "@fluentui/react-icons";
 
+import { selectPopoverProps } from "../../lib/motion";
 import { ModalShell, modalBehaviorProps } from "../modal-shell";
-import { popoverMotionProps } from "../../lib/motion";
 import { asArray } from "../../lib/guards";
 import {
   DownloadFileToInstance,
@@ -53,7 +53,7 @@ import {
 } from "../../../wailsjs/go/bindings/InstanceAPI";
 import { DeleteDirectory } from "../../../wailsjs/go/bindings/LauncherAPI";
 import { SaveFile as pickSaveFile } from "../../../wailsjs/go/bindings/SystemAPI";
-import { EventsOn } from "../../../wailsjs/runtime/runtime";
+import { notify } from "../overlay/dialog";
 import { t } from "../../i18n";
 
 export type ContentKind = "mod" | "modpack" | "resourcepack" | "shaderpack";
@@ -114,9 +114,7 @@ const LOADER_NAMES: Record<number, string> = {
 };
 
 // GameDownloadPhase 终态值（见 internal/download/game_download_service.go）
-const GAME_PHASE_COMPLETED = 3;
 const GAME_PHASE_FAILED = 4;
-const GAME_PHASE_CANCELLED = 5;
 
 // 折叠分组的展示顺序：常见加载器在前，其余按字母序
 const LOADER_GROUP_ORDER = ["fabric", "forge", "neoforge", "quilt"];
@@ -125,56 +123,6 @@ function loaderGroupLabel(loader: string): string {
   if (loader === "other") return t("其他");
 
   return loader.charAt(0).toUpperCase() + loader.slice(1);
-}
-
-/**
- * 等待后台游戏安装任务到达终态，返回错误信息（空串 = 成功）。
- * 只认 Revision 超过起始值之后的终态——快照里可能残留上一个任务的完成状态；
- * 事件（download:progress）+ 每秒轮询双保险，事件丢包也能收敛。
- * 期间弹层只等待完成（进度统一在右下角下载中心）。EventsOn 返回的取消函数只摘掉自己的监听，
- * 不会动 DownloadIndicator 等全局订阅。
- */
-function waitGameDownload(
-  onPercent: (percent: number) => void,
-): Promise<string> {
-  return (async () => {
-    const initial = await GetCurrentDownloadSnapshot().catch(() => null);
-    const startRevision = initial?.Revision ?? 0;
-
-    return new Promise<string>((resolve) => {
-      let settled = false;
-      const done = (message: string) => {
-        if (settled) return;
-        settled = true;
-        window.clearInterval(timer);
-        unsubscribe();
-        resolve(message);
-      };
-      const check = (snap: download.GameDownloadSnapshot | null) => {
-        if (!snap || settled) return;
-        onPercent(Math.min(100, Math.round(snap.Percentage ?? 0)));
-        if (snap.Revision <= startRevision) return; // 旧任务的残留快照
-        if (snap.Phase === GAME_PHASE_COMPLETED) done("");
-        else if (snap.Phase === GAME_PHASE_FAILED)
-          done(
-            t("游戏版本安装失败：{0}", {
-              "0": snap.Detail || snap.StageName || "未知原因",
-            }),
-          );
-        else if (snap.Phase === GAME_PHASE_CANCELLED)
-          done(t("游戏版本安装已取消"));
-      };
-      const unsubscribe = EventsOn(
-        "download:progress",
-        (snap: download.GameDownloadSnapshot) => check(snap),
-      );
-      const timer = window.setInterval(() => {
-        void GetCurrentDownloadSnapshot()
-          .then(check)
-          .catch(() => undefined);
-      }, 1000);
-    });
-  })();
 }
 
 function versionLabel(v: ModrinthVersion): string {
@@ -486,6 +434,8 @@ const ContentDownloadOverlay: React.FC<Props> = ({
     setDownloading(true);
     setStatusFileText(fileName);
     setStatusDetail("");
+    // 发起下载的轻提示：进度统一在右下角下载中心跟踪
+    notify.info(t("已开始下载，进度见右下角的下载中心"));
   }
 
   function finish(message: string) {
@@ -546,16 +496,20 @@ const ContentDownloadOverlay: React.FC<Props> = ({
           "1": mcVersion,
         });
 
-      const started = StartModLoaderDownload(
+      // 后端 StartModLoaderDownload 是阻塞式调用：返回 true 时安装已经全部
+      // 完成（终态快照已发布），返回 false 则是被并发任务拒绝或安装失败。
+      // 不能在这里再等 download:progress —— 终态 Revision 已是最新，等待器
+      // 会因"没有更新的快照"空转 15 秒后误报失败，整合包内容也随之不解压。
+      const started = await StartModLoaderDownload(
         gameVersion,
         loader,
         instanceName.trim(),
         true,
-      );
+      ).catch(() => false);
 
-      if (!started) return t("游戏安装任务启动失败（可能有正在进行的下载）。");
+      if (!started) return await gameDownloadFailureReason();
 
-      return await waitGameDownload(() => undefined);
+      return "";
     }
 
     // 原版：已装复用（内容装进该版本对应的内容目录）
@@ -571,11 +525,22 @@ const ContentDownloadOverlay: React.FC<Props> = ({
     if (!gameVersion)
       return t("下载源中没有找到 MC {0}，无法自动安装。", { "0": mcVersion });
 
-    const started = StartDownload(gameVersion);
+    // 同上：阻塞式调用，返回 true 即安装完成
+    const started = await StartDownload(gameVersion).catch(() => false);
 
-    if (!started) return t("游戏安装任务启动失败（可能有正在进行的下载）。");
+    if (!started) return await gameDownloadFailureReason();
 
-    return await waitGameDownload(() => undefined);
+    return "";
+  }
+
+  /** 任务被拒 / 安装失败时，从终态快照里取真实原因（阻塞式调用返回时已发布）。 */
+  async function gameDownloadFailureReason(): Promise<string> {
+    const snap = await GetCurrentDownloadSnapshot().catch(() => null);
+
+    if (snap && snap.Phase === GAME_PHASE_FAILED && snap.Detail)
+      return t("游戏版本安装失败：{0}", { "0": snap.Detail });
+
+    return t("游戏安装任务启动失败（可能有正在进行的下载）。");
   }
 
   // 整合包安装：确保所需版本就绪 → 解压到实例内容目录 + 下载声明依赖 → 汇总
@@ -597,11 +562,25 @@ const ContentDownloadOverlay: React.FC<Props> = ({
         () => null,
       );
 
+      // 识别不出版本要求（包根没有 modrinth.index.json / manifest.json /
+      // mmc-pack.json，或清单损坏）时不能继续：内容不知道挂到哪个实例、
+      // 加载器也无从安装，倒进共享根目录只会污染现有实例——明确拒绝。
+      if (!requirements?.MinecraftVersion) {
+        setDownloading(false);
+        setStatusText(
+          t(
+            "无法从整合包读取版本要求（未找到可识别的清单文件），已取消安装。请确认这是 .mrpack / CurseForge zip / MultiMC 导出的整合包。",
+          ),
+        );
+
+        return;
+      }
+
       // 声明了 MC 版本时先确保游戏本体（+加载器）就绪，导入完成即可启动；
       // versionId 同时决定内容目录（与启动时的隔离判定完全一致）
       let versionId = "";
 
-      if (requirements?.MinecraftVersion) {
+      if (requirements.MinecraftVersion) {
         // 声明了加载器、但本启动器识别不了（LoaderType 为 0 而 RawLoaderKey
         // 非空，如 rift-loader）：继续下去会走"原版"分支，把整合包内容倒进
         // 玩家已装的原版实例里——加载器没装上，现有版本还被污染了。
@@ -920,7 +899,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
           aria-label={t("下载目标")}
           items={targetOptions}
           placeholder={t("选择目标实例…")}
-          popoverProps={{ motionProps: popoverMotionProps }}
+          popoverProps={selectPopoverProps}
           selectedKeys={targetId ? [targetId] : []}
           size="sm"
           variant="bordered"
@@ -941,7 +920,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
       {statusText ? (
         <span className="text-xs text-red-500">{statusText}</span>
       ) : null}
-      <div className="flex flex-col gap-2 rounded-xl nya-panel-inner px-3.5 py-3">
+      <div className="flex flex-col gap-2 rounded-medium nya-panel-inner px-3.5 py-3">
         <span className="truncate text-xs text-gray-600 dark:text-gray-300">
           {statusFileText || idleText || t("未选择版本")}
         </span>
@@ -972,7 +951,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
       }}
       scrollBehavior="inside"
     >
-      <ModalContent className="h-full overflow-y-auto">
+      <ModalContent className="h-full overflow-hidden">
         <ModalShell
           subtitle={headerSubtitle}
           title={headerTitle || t("下载内容")}
@@ -1012,7 +991,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
                 />
                 <Select
                   aria-label={t("版本类型")}
-                  popoverProps={{ motionProps: popoverMotionProps }}
+                  popoverProps={selectPopoverProps}
                   selectedKeys={[mcReleaseOnly ? "release" : "all"]}
                   size="sm"
                   variant="bordered"
@@ -1025,7 +1004,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
                   <SelectItem key="release">{t("正式版")}</SelectItem>
                   <SelectItem key="all">{t("全部")}</SelectItem>
                 </Select>
-                <div className="nya-panel-inner flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto rounded-xl p-1.5">
+                <div className="nya-panel-inner flex min-h-0 flex-1 flex-col gap-0.5 nya-scroll nya-scroll-area rounded-medium p-1.5">
                   {versionLoading ? (
                     <div className="flex items-center justify-center gap-2 px-3 py-6 text-xs text-gray-400">
                       <span className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
@@ -1078,16 +1057,16 @@ const ContentDownloadOverlay: React.FC<Props> = ({
                   onValueChange={setVersionQuery}
                 />
                 {versionLoading ? (
-                  <div className="nya-panel-inner flex items-center justify-center gap-2 rounded-xl px-3.5 py-6 text-xs text-gray-400">
+                  <div className="nya-panel-inner flex items-center justify-center gap-2 rounded-medium px-3.5 py-6 text-xs text-gray-400">
                     <span className="size-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
                     {t("正在加载版本…")}
                   </div>
                 ) : displayGroups.length === 0 ? (
-                  <div className="nya-panel-inner flex items-center justify-center rounded-xl px-3.5 py-6 text-center text-xs text-gray-400">
+                  <div className="nya-panel-inner flex items-center justify-center rounded-medium px-3.5 py-6 text-center text-xs text-gray-400">
                     {statusText || t("该过滤条件下没有可用版本")}
                   </div>
                 ) : (
-                  <div className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto pr-0.5">
+                  <div className="nya-scroll nya-scroll-area flex min-h-0 flex-1 flex-col gap-1.5 pr-0.5">
                     {displayGroups.map((group) => {
                       const expanded =
                         searchActive || expandedLoaders.includes(group.loader);
@@ -1095,7 +1074,7 @@ const ContentDownloadOverlay: React.FC<Props> = ({
                       return (
                         <div
                           key={group.loader}
-                          className="nya-panel-inner shrink-0 overflow-hidden rounded-xl"
+                          className="nya-panel-inner shrink-0 overflow-hidden rounded-medium"
                         >
                           <button
                             className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-gray-200/60 dark:hover:bg-gray-800/60"

@@ -52,6 +52,7 @@ import {
   PaintBrush20Regular as ColorIcon,
 } from "@fluentui/react-icons";
 
+import { selectPopoverProps } from "../../lib/motion";
 import {
   CreateInstanceSnapshot,
   CreateSaveSnapshot,
@@ -265,7 +266,12 @@ const ColorPicker: React.FC<{
   const [open, setOpen] = useState(false);
 
   return (
-    <Popover isOpen={open} placement="bottom" onOpenChange={setOpen}>
+    <Popover
+      isOpen={open}
+      motionProps={popoverMotionProps}
+      placement="bottom"
+      onOpenChange={setOpen}
+    >
       <PopoverTrigger>
         <Button
           isIconOnly
@@ -575,7 +581,7 @@ const RewindDialog: React.FC<RewindDialogProps> = ({
           >
             {/* 存档选择栏：实例模式下可切换查看每个存档的时间线 */}
             {showSavePicker ? (
-              <div className="nya-scroll w-48 flex-none overflow-y-auto rounded-xl border nya-border bg-default-100/40 p-1.5">
+              <div className="nya-scroll w-48 flex-none overflow-y-auto rounded-lg border nya-border bg-default-100/40 p-1.5">
                 <div className="px-2 pb-1 pt-1 text-[10px] font-medium text-gray-400">
                   {t("快照目标")}
                 </div>
@@ -684,7 +690,7 @@ const RewindDialog: React.FC<RewindDialogProps> = ({
               </div>
 
               {/* 定时快照：弹窗打开期间按间隔对当前目标自动创建 */}
-              <div className="flex items-center gap-2.5 rounded-xl border nya-border bg-default-100/40 px-3 py-2">
+              <div className="flex items-center gap-2.5 rounded-lg border nya-border bg-default-100/40 px-3 py-2">
                 <Switch
                   aria-label={t("定时创建快照")}
                   isSelected={autoOn}
@@ -714,7 +720,7 @@ const RewindDialog: React.FC<RewindDialogProps> = ({
                     key: String(minutes),
                     label: t("{0} 分钟", { "0": minutes }),
                   }))}
-                  popoverProps={{ motionProps: popoverMotionProps }}
+                  popoverProps={selectPopoverProps}
                   selectedKeys={[String(autoMinutes)]}
                   size="sm"
                   onSelectionChange={(keys) => {

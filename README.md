@@ -19,11 +19,6 @@
 | MacOS(x64/arm)           | ⚠️理论支持，CI构建时一同构建，但是开发者并没有相关测试，无官方支持，但可以协助修改Bug                 |
 | Linux arm/Windows on arm | 🤔同上                                                                                                |
 
-发行包：Windows 提供安装器与便携 zip；Linux 提供 AppImage、裸二进制 tar.gz 以及
-`.deb`（分 glibc 2.35 / 2.39 两份）、`.rpm`、Arch 的 `pkg.tar.zst`；macOS 按
-Intel 与 Apple Silicon 各出一份 zip。构建矩阵与打包细节见
-[docs/RELEASE_PACKAGING.md](docs/RELEASE_PACKAGING.md)。
-
 ## 项目创新
 
 - 基于React的插件系统:编写更简单，同时限制插件部分权力保障数据安全。
@@ -97,14 +92,10 @@ cat packaging/nfpm.yaml packaging/depends/deb-glibc-2.39.yaml > /tmp/nfpm-merged
 NPFPM_VERSION=0.3.2 nfpm package --config /tmp/nfpm-merged.yaml --packager deb --target dist/
 ```
 
-打包要**在目标发行版自己身上做**：webkit2gtk 4.0 / 4.1 的 API 绑死在编译产物里，
-在 24.04 上编的包装不进 Debian 12。具体见
-[docs/RELEASE_PACKAGING.md](docs/RELEASE_PACKAGING.md)。
-
 ## 🫂社区
 
 QQ群号:1108330006<br>
-官方网站(目前托管在Github Pages):https://redstore-noob.github.io(当你看到这个括号的时候，说明还是旧项目(逃)
+官方网站(目前托管在Github Pages):https://redstore-noob.github.io
 
 ## 👆相关人员名单
 
@@ -119,8 +110,7 @@ _下列名单没有排名，没有先后，我发自内心的感谢每一位为�
 
 因为项目的整体代码栈已经发生实质性改变，现启用全新的版本更新命名，规则如下:  
 1.在正式版发布后，使用类似IOS的系统命名规则，具体为年份+月份+子版本号。例如`26.9.1`为2026年9月第一次更新。  
-~~2.在启动器功能全部完善/与之前对齐之前，项目版本号不做更改，统一命名为Nya_Rebuild。~~
-_功能已完成。_
+2.在正式版发布前，阶段称为`Public Beta`，在Github Releases与包版本、启动器中显示为0.x.x
 
 ## 💵项目目前引用的其他项目
 

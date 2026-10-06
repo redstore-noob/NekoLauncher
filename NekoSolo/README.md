@@ -53,14 +53,17 @@ cd NekoSolo
 ```
 
 产物复制到 `NekoSolo/build/NekoSolo.Installer.exe` 后，启动器导出时会自动找到它。
+每个候选目录下会依次尝试 `NekoSolo.Installer.exe` 与 `NekoSoloInstaller.exe` 两个文件名。
 查找顺序（`internal/solo/stub.go`）：
 
 1. 环境变量 `NEKOSOLO_STUB`
-2. `<启动器exe目录>/tools/NekoSolo/NekoSolo.Installer.exe`
-3. `<启动器exe目录>/NekoSolo/NekoSolo.Installer.exe`
-4. `<工作目录>/NekoSolo/build/NekoSolo.Installer.exe`
+2. `<启动器exe目录>/tools/NekoSolo/`（发布启动器时的推荐落点）
+3. `<启动器exe目录>/NekoSolo/`
+4. `<启动器存储目录>/tools/NekoSolo/`（启动器自动下载模板的落点，见下）
+5. `<工作目录>/NekoSolo/build/`（仓库开发布局）
 
-> 发布启动器时记得把模板一起放进 `tools/NekoSolo/`，否则用户导出 exe 会提示缺模板。
+> 发布启动器时记得把模板一起放进 `tools/NekoSolo/`，否则用户导出 exe 会提示缺模板——
+> 此时启动器会从 GitHub Release 下载模板落到第 4 个候选目录，下载失败才真正阻塞导出。
 
 ## 目录结构
 

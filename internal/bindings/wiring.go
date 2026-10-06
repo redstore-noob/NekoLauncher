@@ -18,6 +18,7 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"nekolauncher/internal/config"
+	"nekolauncher/internal/content"
 	"nekolauncher/internal/download"
 	"nekolauncher/internal/instance"
 	"nekolauncher/internal/launch"
@@ -171,8 +172,13 @@ func (a *API) wireInstance() {
 
 	// CurseForge CDN 鉴权钩子：CDN 直链自 2026-07-16 起要求 x-api-key。
 	// 内置 Key 是编译期写进 bindings 包的变量，download 包读不到，
-	// 只能由这里把「用户配置 → 内置」的完整取值逻辑挂过去。
+	// 只能由这里把取值逻辑挂过去（Key 唯一来源是编译期内置，见 builtin_keys.go）。
 	download.CurseForgeCDNKeyHook = effectiveCurseForgeAPIKey
+
+	// 清理历史遗留的用户自配 CurseForge Key：该功能已移除（Key 只剩内置一条
+	// 来源，旧值不再被读取），但它是明文凭据，继续躺在 launcher.yaml 里只会
+	// 构成泄露面（任何能读配置的插件/进程都能拿走）。启动时顺手删掉。
+	_ = config.ClearValue("curseforgeApiKey")
 
 	// 实例基础版本 / 加载器解析钩子（X-4 更新检测）：
 	// 检测侧要用它把「最新版本」限定在当前实例可用的范围内（1.21.1 + Fabric），
@@ -236,10 +242,31 @@ func (a *API) wireInstance() {
 		emit(a.Instance.ctx, "instance:changed", snapshot)
 	})
 
-	// 实例档案（独立内存 / 窗口尺寸等）变更 → config:profilesChanged 事件
-	config.AddChangedHandler(func() {
-		emit(a.Config.ctx, "config:profilesChanged")
-	})
+	// （不再发 config:profilesChanged：前端没有任何消费者——需要配置档案的
+	// 页面都在挂载时直读，事件只是空转。真有 UI 需要联动时再挂回来。）
+
+	// 启动变换来源接线：此前 LaunchTransformProvider 从未被生产代码赋值
+	// （只有单测设置过），启动管线取到的永远是空变换——插件想换主类、
+	// 挂 javaagent、往 classpath 塞 jar 全都没有通道。
+	//
+	// 这里接上"插件清单 → 启动变换"的转换层。目前 v1 插件清单里还没有
+	// 声明启动贡献的字段，因此解析结果仍是空变换；但**链路已经通了**：
+	// 以后在 pluginManifest 增加 transform 段，只需要改 launchTransformFromPlugins。
+	launch.LaunchTransformProvider = func() *launch.MinecraftLaunchTransform {
+		transform, _ := a.Plugin.launchTransform()
+		return transform
+	}
+
+	// 启动前自动留存档还原点（时间机器）。
+	// 开关默认关闭：这是替用户写磁盘的行为，必须主动开启；
+	// 创建逻辑本身还会跳过"内容没变"的情况，连续启动不会堆重复还原点。
+	launch.PreLaunchSnapshotHook = func(gameDirectory, versionId string) error {
+		if !config.SnapshotBeforeLaunchEnabled() {
+			return nil
+		}
+		_, _, err := content.CreateLaunchSnapshot(callCtx(a.Content.ctx), gameDirectory)
+		return err
+	}
 
 	// 启动快照变更 → launch:changed 事件
 	a.Launcher.service.OnChanged = func(snapshot launch.GameLaunchSnapshot) {
@@ -271,9 +298,9 @@ func (a *API) wireMusic() {
 	music.Shared.OnPlaybackModeChanged = func() {
 		emit(a.Music.ctx, "music:playbackModeChanged", music.Shared.PlaybackMode())
 	}
-	music.Shared.OnTrackFinished = func() {
-		emit(a.Music.ctx, "music:trackFinished")
-	}
+	// （不再发 music:trackFinished：实际流程是前端 audio 的 ended 事件反向调
+	// Music.NotifyTrackFinished 绑定驱动 Go 状态机切歌，Go 侧该回调在生产环境
+	// 不会触发，前端也从未监听这个事件名——空转的 emit 删掉。）
 }
 
 // wireModName 模组中文名缓存更新回调 → Wails 事件（前端收到后重查缓存刷新列表）。

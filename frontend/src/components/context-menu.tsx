@@ -94,7 +94,7 @@ export const ContextMenuOverlay: React.FC<{
       }}
     >
       <div
-        className="absolute min-w-44 overflow-hidden rounded-xl border nya-border nya-panel py-1.5 shadow-xl"
+        className="absolute min-w-44 overflow-hidden rounded-large border nya-border nya-panel py-1.5 shadow-xl"
         id="nya-context-menu"
         role="menu"
         style={{ left: (pos ?? state).x, top: (pos ?? state).y }}

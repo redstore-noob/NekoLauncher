@@ -68,7 +68,7 @@ import {
   StopGame,
   GetPlaytimeStats,
 } from "../../wailsjs/go/bindings/LauncherAPI";
-import { EventsOn, EventsOff } from "../../wailsjs/runtime/runtime";
+import { EventsOn } from "../../wailsjs/runtime/runtime";
 import {
   DEFAULT_WIDGET_IDS,
   useWidgets,
@@ -90,23 +90,42 @@ import { navigateToPage } from "../lib/navigation";
 import {
   HOME_WIDGET_COLUMNS_KEY,
   HOME_WIDGET_LAYOUT_KEY,
+  HOME_WIDGET_PAGES_KEY,
+  HOME_WIDGET_CURRENT_PAGE_KEY,
+  HOME_LAUNCH_PANEL_WIDTH_KEY,
+  HOME_WIDGET_AREA_WIDTH_KEY,
+  LAUNCH_CARD_BG_EVENT,
+  LAUNCH_CARD_BG_KEY,
+  LAUNCH_PANEL_WIDTH_MIN,
+  LAUNCH_PANEL_WIDTH_MAX,
+  WIDGET_AREA_WIDTH_MIN,
+  WIDGET_AREA_WIDTH_MAX,
   WIDGET_COLUMNS_EVENT,
+  DEFAULT_WIDGET_COLUMNS,
+  MAX_WIDGET_COLUMNS,
+  allocateWidgetInstanceId,
   columnInsertionIndex,
   errorMessage,
   migrateWidgetIds,
+  parseLaunchPanelWidth,
+  parseWidgetAreaWidth,
   parseWidgetColumns,
   parseWidgetLayout,
+  widgetBaseId,
   splitWidgetColumns,
 } from "../lib/home";
-import { notifyCrashIfNeeded } from "../lib/crashNotice";
+import { confirm, notify } from "../components/overlay/dialog";
 import { t } from "../i18n";
 
 import { useSimpleMode } from "./simple-mode";
 
-/** 多列网格下每列的目标宽度（下标 = 列数；1 列沿用原有 384px） */
-const WIDGET_COLUMN_WIDTHS = [0, 384, 680, 900];
-/** 各列数下的宽度上限（vw，防止窄窗口挤压中间空白区） */
-const WIDGET_COLUMN_MAX_VW = [0, 32, 56, 76];
+/** 多列网格下每列的最小宽度（下标 = 列数；窄窗口时收缩到此） */
+
+const WIDGET_COLUMN_WIDTHS = [0, 384, 680, 900, 1080];
+/** 各列数下小组件区最多占窗口的比例（单列最大 1/2，有富余就变宽） */
+const WIDGET_COLUMN_FRACTIONS = [0, 0.5, 0.68, 0.82, 0.9];
+/** 各列数下的宽度上限（像素，防止超宽屏拉成一条横幅） */
+const WIDGET_COLUMN_WIDTH_CAPS = [0, 640, 1024, 1280, 1500];
 
 interface AccountRow {
   account: auth.LaunchAccount;
@@ -133,7 +152,7 @@ const DeleteZoneOverlay: React.FC<{ over: boolean }> = ({ over }) => (
   <div
     className={`
       pointer-events-none absolute inset-0 z-30 flex flex-col items-center
-      justify-center gap-3 rounded-3xl transition-colors
+      justify-center gap-3 rounded-large backdrop-blur-md transition-colors
       ${over ? "bg-danger/20 ring-2 ring-danger" : "bg-black/5 ring-1 ring-danger/30 dark:bg-white/5"}
     `}
   >
@@ -288,20 +307,20 @@ const HomePage: React.FC = () => {
     );
   }, [selectedVersion]);
 
-  // 启动快照：初始拉取一次 + 订阅 launch:changed
+  // 启动快照：初始拉取一次 + 订阅 launch:changed。
+  // 崩溃弹窗已上移到应用根（layouts/index.tsx）全局订阅——切页是真卸载，
+  // 订阅放在主页的话，从实例页启动后崩溃的弹窗会永久丢失。
   useEffect(() => {
     GetLaunchSnapshot()
       .then(setSnap)
       .catch(() => {
         /* 未注入 ctx 时忽略 */
       });
-    EventsOn("launch:changed", (s: launch.GameLaunchSnapshot) => {
-      setSnap(s);
-      // 异常退出（非零退出码）时弹一次 NekoPrompt；正常退出/手动停止不弹
-      notifyCrashIfNeeded(s);
-    });
 
-    return () => EventsOff("launch:changed");
+    // 只摘掉自己的监听：EventsOff 会连插件等其它订阅者一起清掉
+    return EventsOn("launch:changed", (s: launch.GameLaunchSnapshot) => {
+      setSnap(s);
+    });
   }, []);
 
   // 游玩统计：初始拉取一次，游戏运行/退出后重拉（退出时后端已结算本次时长）
@@ -329,11 +348,12 @@ const HomePage: React.FC = () => {
     async (
       serverHost = "",
       serverPort: number | null = null,
+      worldName = "",
     ): Promise<string | null> => {
       setLaunchError("");
       try {
         // 阻塞至启动流程结束（进程创建成功，或失败返回原因）；期间状态由快照事件驱动
-        const result = await Launch(serverHost, serverPort);
+        const result = await Launch(serverHost, serverPort, worldName);
 
         if (!result?.Success) {
           const message = result?.Message || t("启动失败");
@@ -364,9 +384,9 @@ const HomePage: React.FC = () => {
     await runLaunch();
   };
 
-  // 「最近存档」直接启动：先切到该存档所属实例，再走统一启动入口
+  // 「最近存档」快速启动：先切到该存档所属实例，再通过 Quick Play 直接进入存档
   const launchWorld = useCallback(
-    async (versionId: string): Promise<string | null> => {
+    async (versionId: string, worldName: string): Promise<string | null> => {
       if (!versionId) return t("该存档没有关联的游戏实例");
       try {
         await SelectInstance(versionId);
@@ -375,16 +395,21 @@ const HomePage: React.FC = () => {
       }
       setSelectedVersion(versionId);
 
-      return runLaunch();
+      // 使用快速进存档功能（Minecraft 1.20+ 支持）
+      return runLaunch("", null, worldName);
     },
     [runLaunch],
   );
 
   const handleStop = async () => {
     try {
-      await StopGame();
-    } catch {
-      /* 进程已退出时忽略 */
+      const result = await StopGame();
+
+      if (result && result.Success === false) {
+        notify.error(result.Message || t("停止失败"));
+      }
+    } catch (ex) {
+      notify.error(errorMessage(ex) || t("停止失败"));
     }
   };
 
@@ -401,29 +426,106 @@ const HomePage: React.FC = () => {
 
   const [widgetIds, setWidgetIds] = useState<string[]>(DEFAULT_WIDGET_IDS);
   const [layoutLoaded, setLayoutLoaded] = useState(false);
-  /** 小组件列数（外观设置可调 1~3，存 homeWidgetColumns） */
-  const [widgetColumns, setWidgetColumns] = useState(1);
+  /** 小组件列数（外观设置可调 1~4，存 homeWidgetColumns；缺省 2 列） */
+  const [widgetColumns, setWidgetColumns] = useState(DEFAULT_WIDGET_COLUMNS);
   const isGridWidgets = widgetColumns > 1;
   /** 组件库是否展开（展开时右侧启动页滑出） */
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
   const widgetIdsRef = useRef(widgetIds);
 
+  /** 多页面支持：每个页面存储独立的小组件布局 */
+  const [currentPage, setCurrentPage] = useState(0);
+  const [widgetPages, setWidgetPages] = useState<Record<number, string[]>>({
+    0: DEFAULT_WIDGET_IDS,
+  });
+  const [totalPages, setTotalPages] = useState(1);
+
   widgetIdsRef.current = widgetIds;
 
   useEffect(() => {
-    GetValue(HOME_WIDGET_LAYOUT_KEY)
-      .then((raw) => {
-        const saved = parseWidgetLayout(raw ?? "");
+    // 加载多页面布局
+    Promise.all([
+      GetValue(HOME_WIDGET_PAGES_KEY),
+      GetValue(HOME_WIDGET_CURRENT_PAGE_KEY),
+      GetValue(HOME_WIDGET_LAYOUT_KEY), // 兼容旧版单页布局
+    ])
+      .then(([pagesRaw, currentPageRaw, legacyLayoutRaw]) => {
+        let pages: Record<number, string[]> = {};
+        let savedCurrentPage = 0;
 
-        // 未注册的 id（插件被禁用）原样保留：只在渲染时跳过，插件重新启用后
-        // 组件回到原位，而不是被这里悄悄从布局里删掉。已下线的内置组件则
-        // 迁移到替代组件（migrateWidgetIds），避免留下永远空着的占位。
-        if (saved) setWidgetIds(migrateWidgetIds(saved));
+        // 尝试解析多页面布局
+        if (pagesRaw) {
+          try {
+            const parsed = JSON.parse(pagesRaw);
+
+            if (typeof parsed === "object" && parsed !== null) {
+              pages = parsed;
+            }
+          } catch {
+            /* 解析失败使用空对象 */
+          }
+        }
+
+        // 如果没有多页面数据，但有旧版布局，迁移到第一页
+        if (Object.keys(pages).length === 0 && legacyLayoutRaw) {
+          const legacy = parseWidgetLayout(legacyLayoutRaw);
+
+          if (legacy && legacy.length > 0) {
+            pages[0] = migrateWidgetIds(legacy);
+          }
+        }
+
+        // 如果完全没有数据，使用默认布局
+        if (Object.keys(pages).length === 0) {
+          pages[0] = DEFAULT_WIDGET_IDS;
+        }
+
+        // 解析当前页面索引
+        if (currentPageRaw) {
+          const parsed = parseInt(currentPageRaw, 10);
+
+          if (Number.isFinite(parsed) && parsed >= 0) {
+            savedCurrentPage = parsed;
+          }
+        }
+
+        // 确保当前页面存在
+        if (!pages[savedCurrentPage]) {
+          savedCurrentPage = parseInt(Object.keys(pages)[0] ?? "0", 10);
+        }
+
+        setWidgetPages(pages);
+        setTotalPages(Object.keys(pages).length);
+        setCurrentPage(savedCurrentPage);
+        setWidgetIds(pages[savedCurrentPage] ?? []);
       })
       .catch(() => {
         /* 读配置失败按默认布局显示 */
+        setWidgetPages({ 0: DEFAULT_WIDGET_IDS });
+        setTotalPages(1);
+        setCurrentPage(0);
+        setWidgetIds(DEFAULT_WIDGET_IDS);
       })
       .finally(() => setLayoutLoaded(true));
+  }, []);
+
+  // 启动卡自定义背景图：启动时读一次配置，之后跟随外观设置的实时变更广播
+  // （更换 / 清除入口已移到外观设置，见 lib/home.ts 的 LAUNCH_CARD_BG_*）
+  useEffect(() => {
+    GetValue(LAUNCH_CARD_BG_KEY)
+      .then((p) => setCardBgPath((p ?? "").trim()))
+      .catch(() => {
+        /* 读配置失败 = 无自定义背景 */
+      });
+
+    const onCardBgChanged = (event: Event) => {
+      setCardBgPath(String((event as CustomEvent<string>).detail ?? "").trim());
+    };
+
+    window.addEventListener(LAUNCH_CARD_BG_EVENT, onCardBgChanged);
+
+    return () =>
+      window.removeEventListener(LAUNCH_CARD_BG_EVENT, onCardBgChanged);
   }, []);
 
   // 列数：初始读配置 + 订阅外观设置的实时变更广播
@@ -435,12 +537,14 @@ const HomePage: React.FC = () => {
         if (saved) setWidgetColumns(saved);
       })
       .catch(() => {
-        /* 读配置失败按 1 列显示 */
+        /* 读配置失败按缺省列数显示 */
       });
     const onColumnsChanged = (event: Event) => {
       const value = Math.round((event as CustomEvent<number>).detail);
 
-      if (value >= 1 && value <= 3) setWidgetColumns(value);
+      if (value >= 1 && value <= MAX_WIDGET_COLUMNS) {
+        setWidgetColumns(value);
+      }
     };
 
     window.addEventListener(WIDGET_COLUMNS_EVENT, onColumnsChanged);
@@ -454,12 +558,112 @@ const HomePage: React.FC = () => {
     if (!isLibraryOpen) void loadVersions();
   }, [isLibraryOpen]);
 
-  const persistLayout = useCallback((next: string[]) => {
-    setWidgetIds(next);
-    void SetValue(HOME_WIDGET_LAYOUT_KEY, JSON.stringify(next)).catch(
+  // 页面切换：保存当前页面并加载新页面
+  const switchPage = useCallback(
+    (pageIndex: number) => {
+      if (pageIndex === currentPage || !widgetPages[pageIndex]) return;
+
+      setCurrentPage(pageIndex);
+      setWidgetIds(widgetPages[pageIndex] ?? []);
+      void SetValue(HOME_WIDGET_CURRENT_PAGE_KEY, String(pageIndex)).catch(
+        () => undefined,
+      );
+    },
+    [currentPage, widgetPages],
+  );
+
+  // 新建页面
+  const createNewPage = useCallback(() => {
+    const newPageIndex = totalPages;
+    const newPages = { ...widgetPages, [newPageIndex]: [] };
+
+    setWidgetPages(newPages);
+    setTotalPages(totalPages + 1);
+    setCurrentPage(newPageIndex);
+    setWidgetIds([]);
+
+    void SetValue(HOME_WIDGET_PAGES_KEY, JSON.stringify(newPages)).catch(
       () => undefined,
     );
-  }, []);
+    void SetValue(HOME_WIDGET_CURRENT_PAGE_KEY, String(newPageIndex)).catch(
+      () => undefined,
+    );
+  }, [totalPages, widgetPages]);
+
+  // 删除页面
+  const deletePage = useCallback(
+    (pageIndex: number) => {
+      if (totalPages <= 1) {
+        notify.error(t("至少需要保留一个页面"));
+
+        return;
+      }
+
+      const newPages = { ...widgetPages };
+
+      delete newPages[pageIndex];
+
+      // 重新索引页面：删除后的页面索引前移
+      const reindexedPages: Record<number, string[]> = {};
+      let newIndex = 0;
+
+      Object.keys(newPages)
+        .map(Number)
+        .sort((a, b) => a - b)
+        .forEach((oldIndex) => {
+          reindexedPages[newIndex] = newPages[oldIndex];
+          newIndex++;
+        });
+
+      const newTotal = Object.keys(reindexedPages).length;
+      let newCurrentPage = currentPage;
+
+      // 如果删除的是当前页，切换到前一页（或第一页）
+      if (pageIndex === currentPage) {
+        newCurrentPage = Math.max(0, currentPage - 1);
+      } else if (pageIndex < currentPage) {
+        // 删除的是当前页之前的页面，当前页索引减1
+        newCurrentPage = currentPage - 1;
+      }
+
+      setWidgetPages(reindexedPages);
+      setTotalPages(newTotal);
+      setCurrentPage(newCurrentPage);
+      setWidgetIds(reindexedPages[newCurrentPage] ?? []);
+
+      void SetValue(
+        HOME_WIDGET_PAGES_KEY,
+        JSON.stringify(reindexedPages),
+      ).catch(() => undefined);
+      void SetValue(HOME_WIDGET_CURRENT_PAGE_KEY, String(newCurrentPage)).catch(
+        () => undefined,
+      );
+    },
+    [currentPage, totalPages, widgetPages],
+  );
+
+  // 持久化当前页面布局到多页面存储
+  const persistLayout = useCallback(
+    (next: string[]) => {
+      setWidgetIds(next);
+
+      const newPages = { ...widgetPages, [currentPage]: next };
+
+      setWidgetPages(newPages);
+
+      void SetValue(HOME_WIDGET_PAGES_KEY, JSON.stringify(newPages)).catch(
+        () => undefined,
+      );
+
+      // 向后兼容：同时更新旧版布局键（使用第一页的数据）
+      if (currentPage === 0) {
+        void SetValue(HOME_WIDGET_LAYOUT_KEY, JSON.stringify(next)).catch(
+          () => undefined,
+        );
+      }
+    },
+    [currentPage, widgetPages],
+  );
 
   // 拖动落点 → 新增 / 重排 / 删除
   const handleWidgetDrop = useCallback(
@@ -474,16 +678,19 @@ const HomePage: React.FC = () => {
         return;
       }
 
-      // 目标落点是「纵排 + 列内位置」：换算成平铺下标再插入
+      // 目标落点是「纵排 + 列内位置」：换算成平铺下标再插入。
+      // 同一组件允许重复放置：从组件库拖入的 base id 在这里分配实例 id
+      // （首个不带后缀，重复的为 "#2"、"#3"…）
       if (payload.kind === "library") {
-        if (prev.includes(payload.widgetId)) return;
+        const instanceId = allocateWidgetInstanceId(prev, payload.widgetId);
         const slices = splitWidgetColumns(prev, widgetColumns);
         const at = columnInsertionIndex(slices, target.column, target.index);
         const next = [...prev];
 
-        next.splice(at, 0, payload.widgetId);
+        next.splice(at, 0, instanceId);
         persistLayout(next);
-        setIsLibraryOpen(false); // 拖出组件后组件库收回，启动页回来
+        // 组件库保持打开：连续拖入多个组件不用每次重新打开，手动收起走
+        // 面板上的关闭按钮或再点右下角入口
 
         return;
       }
@@ -518,14 +725,14 @@ const HomePage: React.FC = () => {
     [persistLayout, widgetColumns],
   );
 
-  // 组件库条目被点击（未拖出）：追加到列表末尾
+  // 组件库条目被点击（未拖出）：追加到列表末尾（允许重复放置，分配实例 id）。
+  // 组件库保持打开：连续添加多个组件不用每次重新打开
   const addWidget = useCallback(
     (widgetId: string) => {
       const prev = widgetIdsRef.current;
+      const instanceId = allocateWidgetInstanceId(prev, widgetId);
 
-      if (prev.includes(widgetId)) return;
-      persistLayout([...prev, widgetId]);
-      setIsLibraryOpen(false);
+      persistLayout([...prev, instanceId]);
     },
     [persistLayout],
   );
@@ -533,6 +740,126 @@ const HomePage: React.FC = () => {
   const widgetListRef = useRef<HTMLDivElement>(null);
   const launchPanelRef = useRef<HTMLDivElement>(null);
   const libraryPanelRef = useRef<HTMLElement>(null);
+
+  // ---- 启动面板宽度：左边缘拖拽调整，持久化在 launcher.yaml ----
+  const [panelWidth, setPanelWidth] = useState(420);
+  // 启动卡自定义背景图（本地路径，经 /localfile 中转显示；空串 = 无）
+  const [cardBgPath, setCardBgPath] = useState("");
+  const [isResizingPanel, setIsResizingPanel] = useState(false);
+  const resizeStartRef = useRef({ pointerX: 0, width: 0 });
+
+  useEffect(() => {
+    GetValue(HOME_LAUNCH_PANEL_WIDTH_KEY)
+      .then((raw) => {
+        const saved = parseLaunchPanelWidth(raw ?? "");
+
+        if (saved) setPanelWidth(saved);
+      })
+      .catch(() => {
+        /* 读配置失败按默认宽度显示 */
+      });
+  }, []);
+
+  /** 拖左边缘调宽：宽度 = 面板右边界 - 指针 x（向左拖变宽），收在上下限内 */
+  const handlePanelResizeStart = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    resizeStartRef.current = {
+      pointerX: event.clientX,
+      width: panelWidth,
+    };
+    setIsResizingPanel(true);
+  };
+
+  const handlePanelResizeMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isResizingPanel) return;
+    const next = Math.min(
+      LAUNCH_PANEL_WIDTH_MAX,
+      Math.max(
+        LAUNCH_PANEL_WIDTH_MIN,
+        resizeStartRef.current.width +
+          (resizeStartRef.current.pointerX - event.clientX),
+      ),
+    );
+
+    setPanelWidth(next);
+  };
+
+  const handlePanelResizeEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!isResizingPanel) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    setIsResizingPanel(false);
+    void SetValue(HOME_LAUNCH_PANEL_WIDTH_KEY, String(panelWidth)).catch(
+      () => undefined,
+    );
+  };
+
+  // ---- 小组件区宽度：右边缘拖拽调整（null = 跟随窗口的自动宽度） ----
+  const [widgetAreaWidth, setWidgetAreaWidth] = useState<number | null>(null);
+  const [isResizingWidgetArea, setIsResizingWidgetArea] = useState(false);
+  const widgetAreaStartRef = useRef({ pointerX: 0, width: 0 });
+
+  useEffect(() => {
+    GetValue(HOME_WIDGET_AREA_WIDTH_KEY)
+      .then((raw) => {
+        const saved = parseWidgetAreaWidth(raw ?? "");
+
+        if (saved) setWidgetAreaWidth(saved);
+      })
+      .catch(() => {
+        /* 读配置失败按自动宽度显示 */
+      });
+  }, []);
+
+  const handleWidgetAreaResizeStart = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    widgetAreaStartRef.current = {
+      pointerX: event.clientX,
+      width: widgetListRef.current?.getBoundingClientRect().width ?? 384,
+    };
+    setIsResizingWidgetArea(true);
+  };
+
+  const handleWidgetAreaResizeMove = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (!isResizingWidgetArea) return;
+    const next = Math.min(
+      WIDGET_AREA_WIDTH_MAX,
+      Math.max(
+        WIDGET_AREA_WIDTH_MIN,
+        widgetAreaStartRef.current.width +
+          (event.clientX - widgetAreaStartRef.current.pointerX),
+      ),
+    );
+
+    setWidgetAreaWidth(next);
+  };
+
+  const handleWidgetAreaResizeEnd = (
+    event: React.PointerEvent<HTMLDivElement>,
+  ) => {
+    if (!isResizingWidgetArea) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    setIsResizingWidgetArea(false);
+    if (widgetAreaWidth !== null) {
+      void SetValue(HOME_WIDGET_AREA_WIDTH_KEY, String(widgetAreaWidth)).catch(
+        () => undefined,
+      );
+    }
+  };
+
+  /** 双击把手：清掉自定义宽度，回到跟随窗口的自动模式 */
+  const resetWidgetAreaWidth = () => {
+    setWidgetAreaWidth(null);
+    void SetValue(HOME_WIDGET_AREA_WIDTH_KEY, "").catch(() => undefined);
+  };
+
   const {
     session: dragSession,
     pressingId,
@@ -555,19 +882,18 @@ const HomePage: React.FC = () => {
 
   const isListDrag = dragSession?.payload.kind === "list";
   const draggedDefinition = dragSession
-    ? widgetById(dragSession.payload.widgetId)
+    ? widgetById(widgetBaseId(dragSession.payload.widgetId))
     : undefined;
   // 订阅注册表：插件加载完成后，它注册的小组件会出现在组件库里
   const widgets = useWidgets();
-  const availableWidgets = useMemo(
-    () => widgets.filter((widget) => !widgetIds.includes(widget.id)),
-    [widgets, widgetIds],
-  );
-  // 已放置且确实可渲染的组件定义（不含插件被禁用后留下的空位）
+  // 组件库列出全部组件：同一组件可以重复放置（如多个 RSS 订阅卡片）
+  const availableWidgets = widgets;
+  // 已放置且确实可渲染的组件定义（不含插件被禁用后留下的空位）；
+  // 布局存的是实例 id，查定义前先剥掉 "#n" 重复后缀
   const placedWidgets = useMemo(
     () =>
       widgetIds
-        .map((id) => widgetById(id))
+        .map((id) => widgetById(widgetBaseId(id)))
         .filter((widget): widget is NonNullable<typeof widget> =>
           Boolean(widget),
         ),
@@ -594,7 +920,7 @@ const HomePage: React.FC = () => {
     launchRevision: snap?.Revision ?? 0,
     selectedVersion,
     onSelectVersion: setSelectedVersion,
-    onLaunchVersion: launchWorld,
+    onLaunchWorld: launchWorld,
     onJoin: runLaunch,
     selectedAccount: selectedAccountRow
       ? {
@@ -619,12 +945,42 @@ const HomePage: React.FC = () => {
         {!simpleMode ? (
           <div
             ref={widgetListRef}
-            className="pointer-events-none my-4 ml-1 flex h-[calc(100%-2rem)] min-w-0 shrink gap-3"
+            className={`pointer-events-none relative my-4 ml-1 flex h-[calc(100%-2rem)] min-w-0 shrink gap-3 ${
+              isResizingWidgetArea ? "select-none" : ""
+            }`}
             style={{
-              width: WIDGET_COLUMN_WIDTHS[widgetColumns] ?? 384,
-              maxWidth: `${WIDGET_COLUMN_MAX_VW[widgetColumns] ?? 32}vw`,
+              // 拖过右边缘后固定为自定义宽度；否则跟随窗口自适应（单列最大 1/2）
+              width:
+                widgetAreaWidth !== null
+                  ? widgetAreaWidth
+                  : `max(${WIDGET_COLUMN_WIDTHS[widgetColumns] ?? 384}px, min(${
+                      (WIDGET_COLUMN_FRACTIONS[widgetColumns] ?? 0.5) * 100
+                    }vw, ${WIDGET_COLUMN_WIDTH_CAPS[widgetColumns] ?? 640}px))`,
             }}
           >
+            {/* 右边缘宽度调整把手：向右拖变宽（拖组件排序时隐藏避让）；
+                双击恢复自动宽度 */}
+            {!dragSession ? (
+              <div
+                className={`pointer-events-auto absolute top-0 right-0 bottom-0 z-10 flex w-3 cursor-ew-resize touch-none items-center justify-center ${
+                  isResizingWidgetArea
+                    ? ""
+                    : "opacity-0 transition-opacity hover:opacity-100"
+                }`}
+                title={t("拖动调整宽度，双击恢复自动")}
+                onDoubleClick={resetWidgetAreaWidth}
+                onPointerCancel={handleWidgetAreaResizeEnd}
+                onPointerDown={handleWidgetAreaResizeStart}
+                onPointerMove={handleWidgetAreaResizeMove}
+                onPointerUp={handleWidgetAreaResizeEnd}
+              >
+                <span
+                  className={`h-16 w-1 rounded-full ${
+                    isResizingWidgetArea ? "bg-primary" : "bg-default-300"
+                  }`}
+                />
+              </div>
+            ) : null}
             {widgetColumnsData.map((columnIds, columnIndex) => {
               // 该列第一个组件在平铺数组里的下标（data-widget-index 用）
               const columnOffset = widgetColumnsData
@@ -644,13 +1000,14 @@ const HomePage: React.FC = () => {
                   {!isGridWidgets ? <div className="min-h-0 flex-1" /> : null}
 
                   {columnIndex === 0 && layoutLoaded && placedCount === 0 ? (
-                    <div className="nya-enter rounded-3xl border border-dashed border-gray-300/80 px-5 py-8 text-center text-xs leading-relaxed text-gray-400 dark:border-gray-700">
+                    <div className="nya-enter rounded-large border border-dashed border-gray-300/80 px-5 py-8 text-center text-xs leading-relaxed text-gray-400 dark:border-gray-700">
                       {t("组件都被移除了")}
                     </div>
                   ) : null}
 
                   {columnIds.map((widgetId, localIndex) => {
-                    const definition = widgetById(widgetId);
+                    // 布局存实例 id（重复放置带 "#n" 后缀），查定义用 base id
+                    const definition = widgetById(widgetBaseId(widgetId));
 
                     if (!definition) return null;
                     const isDragged =
@@ -708,24 +1065,83 @@ const HomePage: React.FC = () => {
           </div>
         ) : null}
 
-        {/* 中间空白区：右下角圆形 + 按钮（拖动中隐藏）；S 模式无小组件功能，不渲染 */}
+        {/* 中间空白区：右下角圆形 + 按钮和页面切换器（拖动中隐藏）；S 模式无小组件功能，不渲染 */}
         {!simpleMode ? (
           <div className="relative min-w-0 flex-1">
             {!isLibraryOpen && !dragSession ? (
-              <button
-                aria-label={t("打开组件盒")}
-                className="
-                absolute right-6 bottom-8 flex size-12 cursor-pointer items-center
-                justify-center rounded-full bg-primary
-                text-primary-foreground shadow-lg shadow-primary/40 transition-transform
-                hover:scale-105 active:scale-95
-              "
-                title={t("打开组件盒")}
-                type="button"
-                onClick={() => setIsLibraryOpen(true)}
-              >
-                <Add20Regular />
-              </button>
+              <div className="absolute right-6 bottom-8 flex flex-col items-end gap-3">
+                {/* 页面切换器：胶囊样式 */}
+                <div className="flex items-center gap-1 rounded-full bg-black/5 p-1 backdrop-blur-sm shadow-md dark:bg-white/5">
+                  {Array.from({ length: totalPages }, (_, i) => (
+                    <button
+                      key={i}
+                      className={`
+                        relative flex size-8 items-center justify-center rounded-full text-xs font-medium
+                        transition-all
+                        ${
+                          i === currentPage
+                            ? "bg-primary text-primary-foreground shadow-sm"
+                            : "text-gray-600 hover:bg-black/10 dark:text-gray-300 dark:hover:bg-white/10"
+                        }
+                      `}
+                      title={t("切换到第 {0} 页", { "0": i + 1 })}
+                      type="button"
+                      onClick={() => switchPage(i)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        if (totalPages > 1) {
+                          confirm(
+                            t("删除页面"),
+                            t(
+                              "确定要删除第 {0} 页吗？该页面的所有小组件将被移除。",
+                              { "0": i + 1 },
+                            ),
+                          ).then((ok) => {
+                            if (ok) deletePage(i);
+                          });
+                        }
+                      }}
+                    >
+                      {i + 1}
+                    </button>
+                  ))}
+
+                  {totalPages < 5 ? (
+                    <>
+                      <div className="mx-0.5 h-4 w-px bg-black/10 dark:bg-white/10" />
+                      <button
+                        className="
+                          flex size-8 items-center justify-center rounded-full
+                          text-gray-500 hover:bg-black/10 hover:text-gray-700
+                          dark:text-gray-400 dark:hover:bg-white/10 dark:hover:text-gray-200
+                          transition-all
+                        "
+                        title={t("新建页面")}
+                        type="button"
+                        onClick={createNewPage}
+                      >
+                        <Add20Regular className="h-4 w-4" />
+                      </button>
+                    </>
+                  ) : null}
+                </div>
+
+                {/* 打开组件盒按钮 */}
+                <button
+                  aria-label={t("打开组件盒")}
+                  className="
+                    flex size-12 cursor-pointer items-center
+                    justify-center rounded-full bg-primary
+                    text-primary-foreground shadow-lg shadow-primary/40 transition-transform
+                    hover:scale-105 active:scale-95
+                  "
+                  title={t("打开组件盒")}
+                  type="button"
+                  onClick={() => setIsLibraryOpen(true)}
+                >
+                  <Add20Regular />
+                </button>
+              </div>
             ) : null}
           </div>
         ) : null}
@@ -733,22 +1149,56 @@ const HomePage: React.FC = () => {
         {/* 右侧区域：启动页 ↔ 组件库，横向滑动互换。
             S 模式没有组件库，启动面板改为主区域居中 */}
         <div
-          className={`relative my-4 h-[calc(100%-2rem)] w-[35%] max-w-[480px] min-w-[280px] ${
-            simpleMode ? "mx-auto" : "mr-4"
-          }`}
+          className={`relative my-4 h-[calc(100%-2rem)] ${
+            isResizingPanel ? "select-none" : ""
+          } ${simpleMode ? "mx-auto" : "mr-4"}`}
+          style={{ width: panelWidth }}
         >
+          {/* 左边缘宽度调整把手：按住左右拖动改变启动面板宽度（拖组件排序时隐藏避让） */}
+          {!dragSession ? (
+            <div
+              className={`absolute top-0 bottom-0 -left-1.5 z-10 flex w-3 cursor-ew-resize touch-none items-center justify-center ${
+                isResizingPanel
+                  ? ""
+                  : "opacity-0 transition-opacity hover:opacity-100"
+              }`}
+              onPointerCancel={handlePanelResizeEnd}
+              onPointerDown={handlePanelResizeStart}
+              onPointerMove={handlePanelResizeMove}
+              onPointerUp={handlePanelResizeEnd}
+            >
+              <span
+                className={`h-16 w-1 rounded-full ${
+                  isResizingPanel ? "bg-primary" : "bg-default-300"
+                }`}
+              />
+            </div>
+          ) : null}
           <aside
             ref={launchPanelRef}
             className={`
-              absolute inset-0 flex flex-col overflow-hidden rounded-3xl
+              group absolute inset-0 flex flex-col overflow-hidden rounded-large
               border nya-border backdrop-blur-md shadow-lg
               transition-transform duration-300 ease-out nya-panel
               ${isLibraryOpen ? "translate-x-[115%]" : "translate-x-0"}
             `}
           >
+            {/* 自定义背景图：作为子元素悬在面板底色（nya-panel 毛玻璃）之上、
+                内容之下；cover 裁切，不接收鼠标 */}
+            {cardBgPath ? (
+              <div
+                aria-hidden
+                className="pointer-events-none absolute inset-0 z-0 bg-cover bg-center"
+                style={{
+                  backgroundImage: `url("/localfile?path=${encodeURIComponent(cardBgPath)}")`,
+                }}
+              />
+            ) : null}
+
             {/* 主视觉：实例图标 + 版本名 + 账号，居中填充整块高度（避免上下留白）。
-                min-h-32 保证高度不足时先压缩此处，而不是把底部状态条挤掉。 */}
-            <div className="relative flex min-h-32 flex-1 flex-col items-center justify-center gap-3.5 p-4">
+                min-h-32 保证高度不足时先压缩此处，而不是把底部状态条挤掉。
+                自定义背景图的更换 / 清除入口在外观设置。 */}
+            <div className="relative z-10 flex min-h-32 flex-1 flex-col items-center justify-center gap-3.5 p-4">
               <div className="flex size-24 min-h-14 min-w-14 flex-none items-center justify-center rounded-[28px] border nya-border bg-gradient-to-br from-white/10 to-white/[0.03] shadow-lg">
                 <LaunchVersionIcon versionId={selectedVersion} />
               </div>
@@ -924,7 +1374,7 @@ const HomePage: React.FC = () => {
             (!isLoading && versions.length === 0 && minecraftDirectory) ? (
               <button
                 className={`
-                  flex flex-none cursor-pointer items-start gap-1.5 px-4 pb-1
+                  relative z-10 flex flex-none cursor-pointer items-start gap-1.5 px-4 pb-1
                   text-left text-[10px] leading-tight
                   ${loadError ? "text-danger" : "text-gray-400 hover:text-primary"}
                 `}
@@ -944,7 +1394,7 @@ const HomePage: React.FC = () => {
             ) : null}
 
             {/* 底部：状态提示 + 启动/停止按钮（按钮内联失败原因） */}
-            <div className="flex-none border-t nya-border px-3 pt-2.5 pb-3">
+            <div className="relative z-10 flex-none border-t nya-border px-3 pt-2.5 pb-3">
               {isRunning ? (
                 <div className="mb-2 flex items-center gap-1.5 rounded-lg bg-success/10 px-2.5 py-1.5">
                   <span className="size-1.5 flex-none animate-pulse rounded-full bg-success" />
@@ -962,7 +1412,7 @@ const HomePage: React.FC = () => {
               ) : null}
 
               <div className="flex items-center gap-2">
-                {isRunning ? (
+                {isRunning || isPreparing ? (
                   <Button
                     fullWidth
                     className="h-12 text-[14px] font-semibold"
@@ -973,7 +1423,9 @@ const HomePage: React.FC = () => {
                     variant="flat"
                     onPress={handleStop}
                   >
-                    {t("停止游戏")}
+                    {/* 准备阶段（校验补全/凭据刷新/Java 下载）也可取消：
+                        后端会在当前步骤结束后中止启动流程 */}
+                    {isPreparing ? t("取消启动") : t("停止游戏")}
                   </Button>
                 ) : (
                   <>
@@ -995,9 +1447,10 @@ const HomePage: React.FC = () => {
                       >
                         {isPreparing ? t("正在启动…") : t("启动游戏")}
                       </Button>
-                      {/* 失败原因就地显示在按钮下方，不再另起一块提示条 */}
+                      {/* 失败原因就地显示在按钮下方，不再另起一块提示条；
+                          多行缺失清单用 pre-line 展开而不是 truncate 截掉 */}
                       {!isPreparing && (launchError || launchPhase === 3) ? (
-                        <span className="truncate text-[10px] leading-4 text-danger">
+                        <span className="whitespace-pre-line break-all text-[10px] leading-4 text-danger">
                           {launchError || snap?.Message}
                         </span>
                       ) : null}
@@ -1065,7 +1518,7 @@ const HomePage: React.FC = () => {
         >
           <div
             className={`
-              flex items-center gap-2.5 rounded-2xl border px-3 py-2 shadow-xl
+              flex items-center gap-2.5 rounded-large border px-3 py-2 shadow-xl
               backdrop-blur-md
               ${
                 dragSession.overDeleteZone

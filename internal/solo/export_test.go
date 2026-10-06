@@ -1,14 +1,14 @@
 package solo
 
-// 导出全流程的端到端测试：伪造 stub / 启动器 exe / 版本链 / 实例内容 / Java，
-// 跑通 ExportSolo 后逐项校验最终 exe 的尾标、载荷条目与 CRC。
-// 标记激活（ApplyStartupDefaults）见 marker_test.go。
+// 导出/提取全流程的端到端测试：伪造 stub / 启动器 exe / 实例内容，跑通
+// ExportSolo 后逐项校验最终 exe 的尾标、载荷条目与 CRC；再验证
+// ExtractSoloPack / ImportSoloExe 的往返。标记激活见 marker_test.go。
 
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
-	"errors"
 	"hash/crc32"
 	"io"
 	"os"
@@ -31,37 +31,50 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-// buildFakeWorld 构造一份作者侧实例：
-//
-//	root/versions/1.20.1/…                          （父版本）
-//	root/versions/1.20.1-forge-47.2.0/…             （Forge 版本，inheritsFrom 1.20.1，同时是内容目录）
-//	root/java-home/…                                （待捆绑的假 JRE）
-func buildFakeWorld(t *testing.T, root string) (versionsRoot, contentDirectory, javaHome string) {
+// buildFakeWorld 构造一份作者侧实例内容（v3 不再需要版本目录与 Java）。
+func buildFakeWorld(t *testing.T, root string) (contentDirectory string) {
 	t.Helper()
-	forgeID := "1.20.1-forge-47.2.0"
-	forgeDir := filepath.Join(root, "versions", forgeID)
-	writeFile(t, filepath.Join(forgeDir, forgeID+".json"),
-		`{"inheritsFrom": "1.20.1", "id": "`+forgeID+`"}`)
-	writeFile(t, filepath.Join(forgeDir, forgeID+".jar"), "forge-jar-bytes")
+	forgeDir := filepath.Join(root, "versions", "1.20.1-forge-47.2.0")
 	writeFile(t, filepath.Join(forgeDir, "options.txt"), "options-bytes")
 	writeFile(t, filepath.Join(forgeDir, "mods", "jei.jar"), "jei-mod-bytes")
 	writeFile(t, filepath.Join(forgeDir, "config", "jei.cfg"), "config-bytes")
 	writeFile(t, filepath.Join(forgeDir, "saves", "world", "level.dat"), "level-bytes")
+	return forgeDir
+}
 
-	parentDir := filepath.Join(root, "versions", "1.20.1")
-	writeFile(t, filepath.Join(parentDir, "1.20.1.json"), `{"id": "1.20.1"}`)
-	writeFile(t, filepath.Join(parentDir, "1.20.1.jar"), "vanilla-jar-bytes")
+// stubModrinthResolver 替换 Modrinth 直链解析：匹配命中由 wantMatch 控制。
+func stubModrinthResolver(t *testing.T, wantMatch bool) {
+	t.Helper()
+	previous := modpack.ModrinthResolver
+	modpack.ModrinthResolver = func(ctx context.Context, sha1Hex string) (*modpack.ModrinthFileMatch, error) {
+		if !wantMatch {
+			return nil, nil
+		}
+		return &modpack.ModrinthFileMatch{
+			FileName:    "jei.jar",
+			DownloadUrl: "https://cdn.modrinth.com/jei.jar",
+			Sha1:        sha1Hex,
+			SizeBytes:   int64(len("jei-mod-bytes")),
+		}, nil
+	}
+	t.Cleanup(func() { modpack.ModrinthResolver = previous })
+}
 
-	javaHome = filepath.Join(root, "java-home")
-	writeFile(t, filepath.Join(javaHome, "bin", "java.exe"), "fake-java")
-	writeFile(t, filepath.Join(javaHome, "lib", "rt.jar"), "rt-bytes")
-	writeFile(t, filepath.Join(javaHome, "jmods", "java.base.jmod"), "should-be-skipped")
-	writeFile(t, filepath.Join(javaHome, "src.zip"), "should-be-skipped")
-	// JDK 9+ 的 release 文件：供应商探测读它判定再分发条件
-	writeFile(t, filepath.Join(javaHome, "release"),
-		"IMPLEMENTOR=\"Azul Systems, Inc.\"\nJAVA_VERSION=\"17.0.9\"\n")
+// buildExportWorld 组装导出所需的 stub / 启动器注入，返回输出路径辅助。
+func buildExportWorld(t *testing.T) {
+	t.Helper()
+	if err := config.SetStorageDirectory(t.TempDir()); err != nil {
+		t.Fatalf("重定向存储目录失败：%v", err)
+	}
+	stubPath := filepath.Join(t.TempDir(), "NekoSolo.Installer.exe")
+	writeFile(t, stubPath, "FAKE-STUB-PE-IMAGE")
+	t.Setenv(stubEnvKey, stubPath)
 
-	return filepath.Join(root, "versions"), forgeDir, javaHome
+	launcherPath := filepath.Join(t.TempDir(), "NekoLauncher.exe")
+	writeFile(t, launcherPath, "FAKE-NEKOLAUNCHER-EXE")
+	previous := launcherExecutable
+	launcherExecutable = func() (string, error) { return launcherPath, nil }
+	t.Cleanup(func() { launcherExecutable = previous })
 }
 
 // readSoloPayload 解析最终 exe：校验尾标与 CRC，返回载荷 zip 读取器。
@@ -122,30 +135,12 @@ func zipHasEntry(reader *zip.Reader, name string) bool {
 }
 
 func TestExportSoloEndToEnd(t *testing.T) {
-	storage := t.TempDir()
-	if err := config.SetStorageDirectory(storage); err != nil {
-		t.Fatalf("重定向存储目录失败：%v", err)
-	}
+	buildExportWorld(t)
+	stubModrinthResolver(t, true)
 	world := t.TempDir()
-	versionsRoot, contentDirectory, javaHome := buildFakeWorld(t, world)
-
-	stubBytes := "FAKE-STUB-PE-IMAGE"
-	stubPath := filepath.Join(t.TempDir(), "NekoSolo.Installer.exe")
-	writeFile(t, stubPath, stubBytes)
-	t.Setenv(stubEnvKey, stubPath)
-
-	launcherBytes := "FAKE-NEKOLAUNCHER-EXE"
-	launcherPath := filepath.Join(t.TempDir(), "NekoLauncher.exe")
-	writeFile(t, launcherPath, launcherBytes)
-	previous := launcherExecutable
-	launcherExecutable = func() (string, error) { return launcherPath, nil }
-	defer func() { launcherExecutable = previous }()
+	contentDirectory := buildFakeWorld(t, world)
 
 	forgeID := "1.20.1-forge-47.2.0"
-	if !config.AddJava(filepath.Join(javaHome, "bin", "java.exe"), "17") {
-		t.Fatal("注册首选 Java 失败")
-	}
-
 	outputPath := filepath.Join(t.TempDir(), "Demo-Setup.exe")
 	options := SoloExportOptions{
 		PackName:         "我的究极生存包",
@@ -158,9 +153,7 @@ func TestExportSoloEndToEnd(t *testing.T) {
 		LoaderVersion:    "47.2.0",
 		IncludedPaths:    []string{"mods/jei.jar", "config", "saves/world", "options.txt"},
 		ContentDirectory: contentDirectory,
-		VersionDirectory: filepath.Join(versionsRoot, forgeID),
 		VersionID:        forgeID,
-		BundleJava:       true,
 		SimpleMode:       true,
 	}
 
@@ -171,8 +164,11 @@ func TestExportSoloEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportSolo 失败：%v", err)
 	}
-	if result.OutputPath != outputPath || result.OverrideFiles != 4 || result.DeclaredFiles != 2 {
+	if result.OutputPath != outputPath {
 		t.Fatalf("导出统计不符：%+v", result)
+	}
+	if result.DeclaredFiles != 1 || result.OverrideFiles != 3 {
+		t.Fatalf("导出统计不符（声明/覆写应为 1/3）：%+v", result)
 	}
 	if phases[len(phases)-1] != "完成" {
 		t.Fatalf("进度未以「完成」收尾：%v", phases)
@@ -182,253 +178,153 @@ func TestExportSoloEndToEnd(t *testing.T) {
 	if trailer.Offset <= 0 {
 		t.Fatalf("载荷偏移异常：%d", trailer.Offset)
 	}
+	if !trailer.V3 {
+		t.Fatal("v3 导出应写 NKSOLO3 尾标")
+	}
 
-	// manifest：元数据完整、图标缺省不写条目
+	// manifest：元数据完整、不再声明捆绑 Java
 	manifest, err := ParseManifest([]byte(zipEntryText(t, reader, "manifest.json")))
 	if err != nil {
 		t.Fatalf("载荷清单解析失败：%v", err)
 	}
 	if manifest.VersionID != forgeID || manifest.PackVersion != "2.4.0" ||
-		!manifest.SimpleMode || !manifest.HasJava || manifest.UpdateLink != "https://example.com/pack" {
+		!manifest.SimpleMode || manifest.HasJava || manifest.UpdateLink != "https://example.com/pack" {
 		t.Fatalf("清单字段不符：%+v", manifest)
 	}
 
 	// files/：启动器本体逐字节一致（固定命名，与安装器/标记的约定一致）+ 便携标记
-	if got := zipEntryText(t, reader, "files/NekoLauncher.exe"); got != launcherBytes {
+	if got := zipEntryText(t, reader, "files/NekoLauncher.exe"); got != "FAKE-NEKOLAUNCHER-EXE" {
 		t.Fatalf("载荷内的启动器本体不符：%q", got)
 	}
 	if !zipHasEntry(reader, "files/portable.flag") {
 		t.Fatal("载荷缺少 portable.flag")
 	}
 
-	// minecraft/：只带版本描述（json）+ 内容（进版本目录），不带客户端本体
-	if got := zipEntryText(t, reader, "minecraft/versions/"+forgeID+"/"+forgeID+".json"); !strings.Contains(got, "inheritsFrom") {
-		t.Fatalf("Forge 版本 json 内容不符：%q", got)
+	// v3 载荷 = 标准 mrpack：modrinth.index.json 声明直链，overrides/ 带回退内容
+	indexRaw := zipEntryText(t, reader, "modrinth.index.json")
+	var index struct {
+		Files []struct {
+			Path      string   `json:"path"`
+			Downloads []string `json:"downloads"`
+		} `json:"files"`
+		Dependencies map[string]string `json:"dependencies"`
 	}
-	if !zipHasEntry(reader, "minecraft/versions/1.20.1/1.20.1.json") {
-		t.Fatal("载荷缺少 inheritsFrom 父版本的描述文件")
+	if err := json.Unmarshal([]byte(indexRaw), &index); err != nil {
+		t.Fatalf("modrinth.index.json 解析失败：%v", err)
 	}
-	// 客户端本体是 Mojang 版权物：绝不可随安装包分发，改由启动前校验联网补下
-	for _, forbidden := range []string{
-		"minecraft/versions/" + forgeID + "/" + forgeID + ".jar",
-		"minecraft/versions/1.20.1/1.20.1.jar",
-	} {
-		if zipHasEntry(reader, forbidden) {
-			t.Fatalf("载荷不得包含客户端本体 %s（应由启动前校验从官方地址补下）", forbidden)
-		}
+	if len(index.Files) != 1 || index.Files[0].Path != "mods/jei.jar" ||
+		len(index.Files[0].Downloads) != 1 || !strings.HasPrefix(index.Files[0].Downloads[0], "https://") {
+		t.Fatalf("index 声明不符：%+v", index.Files)
+	}
+	if index.Dependencies["minecraft"] != "1.20.1" || index.Dependencies["forge"] != "47.2.0" {
+		t.Fatalf("index dependencies 不符：%+v", index.Dependencies)
 	}
 	for _, required := range []string{
-		"minecraft/versions/" + forgeID + "/mods/jei.jar",
-		"minecraft/versions/" + forgeID + "/config/jei.cfg",
-		"minecraft/versions/" + forgeID + "/saves/world/level.dat",
+		"overrides/mods/jei.jar",
+		"overrides/config/jei.cfg",
+		"overrides/saves/world/level.dat",
+		"overrides/options.txt",
 	} {
-		if !zipHasEntry(reader, required) {
-			t.Fatalf("载荷缺少内容条目 %s", required)
+		if zipHasEntry(reader, required) && required == "overrides/mods/jei.jar" {
+			t.Fatalf("已声明直链的 mod 不该再进 overrides：%s", required)
+		}
+		if required != "overrides/mods/jei.jar" && !zipHasEntry(reader, required) {
+			t.Fatalf("载荷缺少 overrides 条目 %s", required)
 		}
 	}
 
-	// jre/：运行时带上了，排除项没带上；Zulu 属宽松许可，不应有再分发警告
-	if got := zipEntryText(t, reader, "jre/bin/java.exe"); got != "fake-java" {
-		t.Fatalf("捆绑 Java 内容不符：%q", got)
-	}
-	if zipHasEntry(reader, "jre/jmods/java.base.jmod") || zipHasEntry(reader, "jre/src.zip") {
-		t.Fatal("捆绑 Java 不应包含 jmods / src.zip")
-	}
-	for _, warning := range result.Warnings {
-		if strings.Contains(warning, "Java") {
-			t.Fatalf("Zulu 运行时不应触发再分发警告：%v", result.Warnings)
+	// v3 不再携带版本描述与 jre/
+	for _, forbidden := range []string{
+		"minecraft/versions/" + forgeID + "/" + forgeID + ".json",
+		"jre/bin/java.exe",
+	} {
+		if zipHasEntry(reader, forbidden) {
+			t.Fatalf("v3 载荷不该包含 %s（MC 本体与 Java 均由首启联网补全）", forbidden)
 		}
 	}
 }
 
-// 捆绑 Java 的再分发提示：Oracle 与识别不出的供应商要警告，宽松许可不警告。
-func TestExportSoloJavaRedistributionNotice(t *testing.T) {
-	cases := []struct {
-		name       string
-		release    string
-		wantWarn   bool
-		wantSubstr string
-	}{
-		{
-			name:       "Zulu 宽松许可",
-			release:    "IMPLEMENTOR=\"Azul Systems, Inc.\"\n",
-			wantWarn:   false,
-			wantSubstr: "",
-		},
-		{
-			name:       "Temurin 宽松许可",
-			release:    "IMPLEMENTOR=\"Eclipse Adoptium\"\n",
-			wantWarn:   false,
-			wantSubstr: "",
-		},
-		{
-			name:       "Oracle 需要核对条款",
-			release:    "IMPLEMENTOR=\"Oracle Corporation\"\n",
-			wantWarn:   true,
-			wantSubstr: "Oracle",
-		},
-		{
-			name:       "识别不出的供应商",
-			release:    "IMPLEMENTOR=\"Some Tiny Vendor\"\n",
-			wantWarn:   true,
-			wantSubstr: "Some Tiny Vendor",
-		},
-		{
-			name:       "没有 release 文件",
-			release:    "",
-			wantWarn:   true,
-			wantSubstr: "无法识别",
-		},
-	}
-
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			if err := config.SetStorageDirectory(t.TempDir()); err != nil {
-				t.Fatalf("重定向存储目录失败：%v", err)
-			}
-			world := t.TempDir()
-			versionsRoot, contentDirectory, javaHome := buildFakeWorld(t, world)
-			// buildFakeWorld 写的是 Azul 的 release：按用例覆盖
-			releasePath := filepath.Join(javaHome, "release")
-			if testCase.release == "" {
-				if err := os.Remove(releasePath); err != nil {
-					t.Fatalf("移除 release 失败：%v", err)
-				}
-				// 目录名也不含供应商关键字，才能落到「无法识别」分支
-				javaHome = filepath.Join(world, "jdk")
-				writeFile(t, filepath.Join(javaHome, "bin", "java.exe"), "fake-java")
-			} else {
-				writeFile(t, releasePath, testCase.release)
-			}
-
-			stubPath := filepath.Join(t.TempDir(), "stub.exe")
-			writeFile(t, stubPath, "STUB")
-			t.Setenv(stubEnvKey, stubPath)
-
-			launcherPath := filepath.Join(t.TempDir(), "NekoLauncher.exe")
-			writeFile(t, launcherPath, "LAUNCHER")
-			previous := launcherExecutable
-			launcherExecutable = func() (string, error) { return launcherPath, nil }
-			defer func() { launcherExecutable = previous }()
-
-			if !config.AddJava(filepath.Join(javaHome, "bin", "java.exe"), "17") {
-				t.Fatal("注册首选 Java 失败")
-			}
-
-			forgeID := "1.20.1-forge-47.2.0"
-			result, err := ExportSolo(t.Context(), SoloExportOptions{
-				PackName:         "Vendor Pack",
-				PackVersion:      "1.0.0",
-				MinecraftVersion: "1.20.1",
-				IncludedPaths:    []string{"options.txt"},
-				ContentDirectory: contentDirectory,
-				VersionDirectory: filepath.Join(versionsRoot, forgeID),
-				VersionID:        forgeID,
-				BundleJava:       true,
-			}, filepath.Join(t.TempDir(), "Out-Setup.exe"), nil)
-			if err != nil {
-				t.Fatalf("ExportSolo 失败：%v", err)
-			}
-
-			matched := false
-			for _, warning := range result.Warnings {
-				if strings.Contains(warning, testCase.wantSubstr) {
-					matched = true
-				}
-			}
-			if testCase.wantWarn {
-				if !matched {
-					t.Fatalf("期望出现含 %q 的再分发警告，实际：%v", testCase.wantSubstr, result.Warnings)
-				}
-			} else if len(result.Warnings) != 0 {
-				t.Fatalf("宽松许可不应有警告，实际：%v", result.Warnings)
-			}
-		})
-	}
-}
-
-// 客户端 jar 的引用必须靠描述文件传递：jar 指向旁支版本时，该版本的 json
-// 也要进载荷（否则玩家侧无从得知它的下载地址），但 jar 本体一律不下发。
-func TestExportSoloJarProviderWithoutJar(t *testing.T) {
-	if err := config.SetStorageDirectory(t.TempDir()); err != nil {
-		t.Fatalf("重定向存储目录失败：%v", err)
-	}
+// ExtractSoloPack：从导出的 exe 里提出标准 .mrpack（不含 manifest/files）。
+func TestExtractSoloPack(t *testing.T) {
+	buildExportWorld(t)
+	stubModrinthResolver(t, false)
 	world := t.TempDir()
-	versionsRoot := filepath.Join(world, "versions")
-	instanceID := "MyPack"
-	instanceDir := filepath.Join(versionsRoot, instanceID)
-	// 实例声明 jar 借用旁支版本 "1.7.10"，inheritsFrom 指向 "1.20.1"
-	writeFile(t, filepath.Join(instanceDir, instanceID+".json"),
-		`{"id":"`+instanceID+`","inheritsFrom":"1.20.1","jar":"1.7.10"}`)
-	writeFile(t, filepath.Join(instanceDir, instanceID+".jar"), "client-jar-bytes")
-	writeFile(t, filepath.Join(versionsRoot, "1.20.1", "1.20.1.json"), `{"id":"1.20.1"}`)
-	writeFile(t, filepath.Join(versionsRoot, "1.20.1", "1.20.1.jar"), "vanilla-jar")
-	writeFile(t, filepath.Join(versionsRoot, "1.7.10", "1.7.10.json"), `{"id":"1.7.10"}`)
-	writeFile(t, filepath.Join(versionsRoot, "1.7.10", "1.7.10.jar"), "old-jar")
+	contentDirectory := buildFakeWorld(t, world)
 
-	stubPath := filepath.Join(t.TempDir(), "stub.exe")
-	writeFile(t, stubPath, "STUB")
-	t.Setenv(stubEnvKey, stubPath)
-
-	launcherPath := filepath.Join(t.TempDir(), "NekoLauncher.exe")
-	writeFile(t, launcherPath, "LAUNCHER")
-	previous := launcherExecutable
-	launcherExecutable = func() (string, error) { return launcherPath, nil }
-	defer func() { launcherExecutable = previous }()
-
-	outputPath := filepath.Join(t.TempDir(), "Jar-Setup.exe")
+	outputPath := filepath.Join(t.TempDir(), "Demo-Setup.exe")
+	forgeID := "1.20.1-forge-47.2.0"
 	if _, err := ExportSolo(t.Context(), SoloExportOptions{
-		PackName:         "Jar Field Pack",
+		PackName:         "提取测试包",
+		PackVersion:      "1.0.0",
 		MinecraftVersion: "1.20.1",
-		IncludedPaths:    []string{},
-		ContentDirectory: instanceDir,
-		VersionDirectory: instanceDir,
-		VersionID:        instanceID,
+		LoaderName:       "Forge",
+		LoaderVersion:    "47.2.0",
+		IncludedPaths:    []string{"mods/jei.jar", "options.txt"},
+		ContentDirectory: contentDirectory,
+		VersionID:        forgeID,
 	}, outputPath, nil); err != nil {
-		t.Fatalf("ExportSolo 失败：%v", err)
+		t.Fatalf("导出失败：%v", err)
 	}
 
-	reader, _ := readSoloPayload(t, outputPath)
-	for _, required := range []string{
-		"minecraft/versions/" + instanceID + "/" + instanceID + ".json",
-		"minecraft/versions/1.20.1/1.20.1.json",
-		"minecraft/versions/1.7.10/1.7.10.json",
-	} {
-		if !zipHasEntry(reader, required) {
-			t.Fatalf("载荷缺少描述文件 %s", required)
+	mrpackPath := filepath.Join(t.TempDir(), "extracted.mrpack")
+	if err := ExtractSoloPack(outputPath, mrpackPath); err != nil {
+		t.Fatalf("提取失败：%v", err)
+	}
+	reader, err := zip.OpenReader(mrpackPath)
+	if err != nil {
+		t.Fatalf("提取结果不是有效 zip：%v", err)
+	}
+	defer reader.Close()
+	if !zipHasEntry(&reader.Reader, "modrinth.index.json") {
+		t.Fatal("提取结果缺少 modrinth.index.json")
+	}
+	if !zipHasEntry(&reader.Reader, "overrides/mods/jei.jar") {
+		t.Fatal("提取结果缺少 overrides 内容")
+	}
+	for _, forbidden := range []string{"manifest.json", "files/NekoLauncher.exe", "files/portable.flag"} {
+		if zipHasEntry(&reader.Reader, forbidden) {
+			t.Fatalf("提取结果不该包含启动器条目 %s", forbidden)
 		}
 	}
-	for _, forbidden := range []string{
-		"minecraft/versions/" + instanceID + "/" + instanceID + ".jar",
-		"minecraft/versions/1.20.1/1.20.1.jar",
-		"minecraft/versions/1.7.10/1.7.10.jar",
-	} {
-		if zipHasEntry(reader, forbidden) {
-			t.Fatalf("载荷不得包含客户端本体 %s", forbidden)
-		}
+
+	// ImportSoloExe：转存出的临时 mrpack 同样是标准 Modrinth 结构
+	imported, err := ImportSoloExe(outputPath)
+	if err != nil {
+		t.Fatalf("导入转存失败：%v", err)
+	}
+	defer os.Remove(imported)
+	if filepath.Ext(imported) != ".mrpack" || !strings.Contains(imported, "solo-import-") {
+		t.Fatalf("临时 mrpack 路径不符：%s", imported)
+	}
+	importedReader, err := zip.OpenReader(imported)
+	if err != nil {
+		t.Fatalf("转存结果不是有效 zip：%v", err)
+	}
+	defer importedReader.Close()
+	if !zipHasEntry(&importedReader.Reader, "modrinth.index.json") {
+		t.Fatal("转存结果缺少 modrinth.index.json")
 	}
 }
 
-// v2 在线安装包：exe 只含 stub + 远程清单 + v2 尾标；载荷 zip 落在输出旁待上传。
-func TestExportSoloRemoteEndToEnd(t *testing.T) {
-	storage := t.TempDir()
-	if err := config.SetStorageDirectory(storage); err != nil {
-		t.Fatalf("重定向存储目录失败：%v", err)
+// 非 NekoSolo 的 exe（无有效尾标）不能被提取/导入。
+func TestExtractSoloPackRejectsForeignExe(t *testing.T) {
+	foreign := filepath.Join(t.TempDir(), "not-solo.exe")
+	writeFile(t, foreign, "MZ... definitely not a NekoSolo installer")
+	if err := ExtractSoloPack(foreign, filepath.Join(t.TempDir(), "out.mrpack")); err == nil {
+		t.Fatal("非 NekoSolo exe 应被拒绝")
 	}
+	if _, err := ImportSoloExe(foreign); err == nil {
+		t.Fatal("非 NekoSolo exe 应被拒绝导入")
+	}
+}
+
+// 在线安装包（v2 尾标）：exe 只含 stub + 远程清单 + 尾标；载荷 zip（v3 布局）
+// 落在输出旁待上传。
+func TestExportSoloRemoteEndToEnd(t *testing.T) {
+	buildExportWorld(t)
+	stubModrinthResolver(t, false)
 	world := t.TempDir()
-	versionsRoot, contentDirectory, _ := buildFakeWorld(t, world)
-
-	stubBytes := "FAKE-STUB-PE-IMAGE"
-	stubPath := filepath.Join(t.TempDir(), "NekoSolo.Installer.exe")
-	writeFile(t, stubPath, stubBytes)
-	t.Setenv(stubEnvKey, stubPath)
-
-	launcherBytes := "FAKE-NEKOLAUNCHER-EXE"
-	launcherPath := filepath.Join(t.TempDir(), "NekoLauncher.exe")
-	writeFile(t, launcherPath, launcherBytes)
-	previous := launcherExecutable
-	launcherExecutable = func() (string, error) { return launcherPath, nil }
-	defer func() { launcherExecutable = previous }()
+	contentDirectory := buildFakeWorld(t, world)
 
 	outputPath := filepath.Join(t.TempDir(), "Demo-Setup.exe")
 	options := SoloExportOptions{
@@ -437,7 +333,6 @@ func TestExportSoloRemoteEndToEnd(t *testing.T) {
 		MinecraftVersion:   "1.20.1",
 		IncludedPaths:      []string{"mods/jei.jar", "config"},
 		ContentDirectory:   contentDirectory,
-		VersionDirectory:   filepath.Join(versionsRoot, "1.20.1-forge-47.2.0"),
 		VersionID:          "1.20.1-forge-47.2.0",
 		RemoteDistribution: true,
 		PayloadURL:         "https://github.com/acme/pack/releases/download/v1/payload.zip",
@@ -484,7 +379,8 @@ func TestExportSoloRemoteEndToEnd(t *testing.T) {
 		t.Fatalf("远程清单字段不符：%+v", remote)
 	}
 
-	// 载荷 zip 本身可按清单校验（模拟安装器下载后的校验路径）
+	// 载荷 zip 本身可按清单校验（模拟安装器下载后的校验路径），
+	// 且布局是 v3（modrinth.index.json + files/，无 minecraft/、jre/）
 	payloadData, err := os.ReadFile(result.PayloadPath)
 	if err != nil {
 		t.Fatalf("读取载荷 zip 失败：%v", err)
@@ -492,51 +388,38 @@ func TestExportSoloRemoteEndToEnd(t *testing.T) {
 	if int64(len(payloadData)) != remote.PayloadSize || crc32.ChecksumIEEE(payloadData) != remote.PayloadCRC32 {
 		t.Fatal("载荷 zip 大小或 CRC 与清单不符")
 	}
-	if _, err := zip.NewReader(bytes.NewReader(payloadData), int64(len(payloadData))); err != nil {
+	payloadReader, err := zip.NewReader(bytes.NewReader(payloadData), int64(len(payloadData)))
+	if err != nil {
 		t.Fatalf("载荷 zip 无效：%v", err)
+	}
+	if !zipHasEntry(payloadReader, "modrinth.index.json") || !zipHasEntry(payloadReader, "files/NekoLauncher.exe") {
+		t.Fatal("远程载荷应为 v3 布局")
 	}
 }
 
-func TestExportSoloWithoutJavaAndIcon(t *testing.T) {
-	if err := config.SetStorageDirectory(t.TempDir()); err != nil {
-		t.Fatalf("重定向存储目录失败：%v", err)
-	}
+func TestExportSoloWithIcon(t *testing.T) {
+	buildExportWorld(t)
+	stubModrinthResolver(t, false)
 	world := t.TempDir()
-	versionsRoot, contentDirectory, _ := buildFakeWorld(t, world)
-
-	stubPath := filepath.Join(t.TempDir(), "stub.exe")
-	writeFile(t, stubPath, "STUB")
-	t.Setenv(stubEnvKey, stubPath)
-
-	launcherPath := filepath.Join(t.TempDir(), "NekoLauncher.exe")
-	writeFile(t, launcherPath, "LAUNCHER")
-	previous := launcherExecutable
-	launcherExecutable = func() (string, error) { return launcherPath, nil }
-	defer func() { launcherExecutable = previous }()
+	contentDirectory := buildFakeWorld(t, world)
 
 	iconPath := filepath.Join(t.TempDir(), "icon.png")
 	writeFile(t, iconPath, "fake-png")
 
 	outputPath := filepath.Join(t.TempDir(), "Demo-Setup.exe")
 	forgeID := "1.20.1-forge-47.2.0"
-	// 勾选捆绑 Java 但从未配置过首选 Java：应跳过并给出警告
-	result, err := ExportSolo(t.Context(), SoloExportOptions{
-		PackName:         "NoJava Pack",
+	_, err := ExportSolo(t.Context(), SoloExportOptions{
+		PackName:         "Icon Pack",
 		PackVersion:      "1.0.0",
 		MinecraftVersion: "1.20.1",
 		IncludedPaths:    []string{"mods/jei.jar"},
 		ContentDirectory: contentDirectory,
-		VersionDirectory: filepath.Join(versionsRoot, forgeID),
 		VersionID:        forgeID,
 		IconPngPath:      iconPath,
-		BundleJava:       true,
 		SimpleMode:       false,
 	}, outputPath, nil)
 	if err != nil {
 		t.Fatalf("ExportSolo 失败：%v", err)
-	}
-	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "Java") {
-		t.Fatalf("未捆绑 Java 时应有警告：%v", result.Warnings)
 	}
 
 	reader, _ := readSoloPayload(t, outputPath)
@@ -544,33 +427,42 @@ func TestExportSoloWithoutJavaAndIcon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("清单解析失败：%v", err)
 	}
-	if manifest.HasJava || manifest.IconPath != "icon.png" || manifest.SimpleMode {
-		t.Fatalf("清单字段不符：%+v", manifest)
+	if manifest.IconPath != "overrides/icon.png" {
+		t.Fatalf("清单图标路径不符：%+v", manifest)
 	}
-	if !zipHasEntry(reader, "icon.png") {
-		t.Fatal("载荷缺少图标条目")
-	}
-	if zipHasEntry(reader, "jre/bin/java.exe") {
-		t.Fatal("未勾选捆绑时不应有 jre 条目")
+	if !zipHasEntry(reader, "overrides/icon.png") {
+		t.Fatal("载荷缺少 overrides/icon.png")
 	}
 	// VersionID 省略时回退为 VersionDirectory 的目录名
-	if manifest.VersionID != forgeID {
-		t.Fatalf("VersionID 回退失败：%q", manifest.VersionID)
+	options := SoloExportOptions{
+		PackName:         "Icon Pack",
+		MinecraftVersion: "1.20.1",
+		IncludedPaths:    []string{"mods/jei.jar"},
+		ContentDirectory: contentDirectory,
+		VersionDirectory: filepath.Join(world, "versions", forgeID),
+	}
+	if _, err := ExportSolo(t.Context(), options, outputPath, nil); err != nil {
+		t.Fatalf("重导出失败：%v", err)
+	}
+	reader2, _ := readSoloPayload(t, outputPath)
+	manifest2, err := ParseManifest([]byte(zipEntryText(t, reader2, "manifest.json")))
+	if err != nil {
+		t.Fatalf("清单解析失败：%v", err)
+	}
+	if manifest2.VersionID != forgeID {
+		t.Fatalf("VersionID 回退失败：%q", manifest2.VersionID)
 	}
 }
 
 func TestExportSoloFailures(t *testing.T) {
-	storage := t.TempDir()
-	if err := config.SetStorageDirectory(storage); err != nil {
-		t.Fatalf("重定向存储目录失败：%v", err)
-	}
+	buildExportWorld(t)
 	world := t.TempDir()
-	versionsRoot, contentDirectory, _ := buildFakeWorld(t, world)
+	contentDirectory := buildFakeWorld(t, world)
 	forgeID := "1.20.1-forge-47.2.0"
 
 	// 输出扩展名必须是 .exe
 	if _, err := ExportSolo(t.Context(), SoloExportOptions{PackName: "x", MinecraftVersion: "1.20.1",
-		ContentDirectory: contentDirectory, VersionDirectory: filepath.Join(versionsRoot, forgeID)},
+		ContentDirectory: contentDirectory, VersionID: forgeID},
 		filepath.Join(t.TempDir(), "out.zip"), nil); err == nil {
 		t.Fatal("非 .exe 输出应被拒绝")
 	}
@@ -578,7 +470,7 @@ func TestExportSoloFailures(t *testing.T) {
 	// 模板缺失：清掉环境变量后必须报错并提示构建方式
 	t.Setenv(stubEnvKey, "")
 	_, err := ExportSolo(t.Context(), SoloExportOptions{PackName: "x", MinecraftVersion: "1.20.1",
-		ContentDirectory: contentDirectory, VersionDirectory: filepath.Join(versionsRoot, forgeID)},
+		ContentDirectory: contentDirectory, VersionID: forgeID},
 		filepath.Join(t.TempDir(), "out.exe"), nil)
 	if err == nil || !strings.Contains(err.Error(), "NEKOSOLO_STUB") {
 		t.Fatalf("缺少模板时的报错应给出指引，实际：%v", err)
@@ -587,25 +479,60 @@ func TestExportSoloFailures(t *testing.T) {
 	// 环境变量指向不存在的文件
 	t.Setenv(stubEnvKey, filepath.Join(t.TempDir(), "missing.exe"))
 	_, err = ExportSolo(t.Context(), SoloExportOptions{PackName: "x", MinecraftVersion: "1.20.1",
-		ContentDirectory: contentDirectory, VersionDirectory: filepath.Join(versionsRoot, forgeID)},
+		ContentDirectory: contentDirectory, VersionID: forgeID},
 		filepath.Join(t.TempDir(), "out.exe"), nil)
 	if err == nil || !strings.Contains(err.Error(), "NEKOSOLO_STUB") {
 		t.Fatalf("模板不存在时应报错，实际：%v", err)
 	}
 
-	// 版本 json 缺失
-	t.Setenv(stubEnvKey, "")
-	broken := t.TempDir()
-	brokenID := "1.20.1-broken"
-	brokenDir := filepath.Join(broken, "versions", brokenID)
-	if err := os.MkdirAll(brokenDir, 0o755); err != nil {
-		t.Fatalf("创建目录失败：%v", err)
-	}
+	// 无法确定实例名
 	_, err = ExportSolo(t.Context(), SoloExportOptions{PackName: "x", MinecraftVersion: "1.20.1",
-		ContentDirectory: contentDirectory, VersionDirectory: brokenDir, VersionID: brokenID},
+		ContentDirectory: contentDirectory},
 		filepath.Join(t.TempDir(), "out.exe"), nil)
-	if err == nil || !errors.Is(err, os.ErrNotExist) && !strings.Contains(err.Error(), brokenID+".json") {
-		t.Fatalf("版本 json 缺失应报错，实际：%v", err)
+	if err == nil || !strings.Contains(err.Error(), "版本目录") {
+		t.Fatalf("实例名缺失应报错，实际：%v", err)
+	}
+}
+
+// TestExportSoloReplacesQuestionMarkInOutputPath 输出路径（整合包名/版本号拼出来的
+// 文件名）里的 '?' 换成 '0'：Windows 不允许文件名带 '?'，不换的话作者只会看到
+// "点了保存什么都没生成"。
+func TestExportSoloReplacesQuestionMarkInOutputPath(t *testing.T) {
+	buildExportWorld(t)
+	stubModrinthResolver(t, false)
+	world := t.TempDir()
+	contentDirectory := buildFakeWorld(t, world)
+
+	forgeID := "1.20.1-forge-47.2.0"
+	directory := t.TempDir()
+	outputPath := filepath.Join(directory, "我的包?.exe")
+	expected := filepath.Join(directory, "我的包0.exe")
+
+	result, err := ExportSolo(t.Context(), SoloExportOptions{
+		PackName:         "我的包?",
+		PackVersion:      "1.0.0",
+		MinecraftVersion: "1.20.1",
+		LoaderName:       "Forge",
+		LoaderVersion:    "47.2.0",
+		IncludedPaths:    []string{"mods/jei.jar", "options.txt"},
+		ContentDirectory: contentDirectory,
+		VersionID:        forgeID,
+	}, outputPath, nil)
+	if err != nil {
+		t.Fatalf("导出失败：%v", err)
+	}
+	if result.OutputPath != expected {
+		t.Errorf("导出结果路径 = %q，期望 %q", result.OutputPath, expected)
+	}
+	if _, err := os.Stat(expected); err != nil {
+		t.Fatalf("产物未落在替换后的路径：%v", err)
+	}
+	if _, err := os.Stat(outputPath); err == nil {
+		t.Errorf("不该留下带 '?' 的产物：%s", outputPath)
+	}
+	// 临时文件与载荷都从输出路径派生，改名后不该有残留
+	if leftovers, _ := filepath.Glob(filepath.Join(directory, "*.nekosolo-tmp*")); len(leftovers) != 0 {
+		t.Errorf("残留临时文件：%v", leftovers)
 	}
 }
 
@@ -636,3 +563,4 @@ func TestFindStubTemplateCandidates(t *testing.T) {
 		t.Fatalf("环境变量指定的模板应优先，实际：%s, %v", found, err)
 	}
 }
+

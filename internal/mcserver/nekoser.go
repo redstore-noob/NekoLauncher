@@ -106,38 +106,44 @@ func ExportServer(id, destZip string) error {
 	reporter := &transferReporter{serverID: id, phase: "export", total: totalBytes}
 
 	var written int64
+	// 任一步失败都清掉半成品压缩包：残包留 in 目标路径会被当成"导出成功过"，
+	// 用户拿去恢复时才炸。
+	failCleanup := func(cause error) error {
+		_ = writer.Close()
+		_ = os.Remove(destZip)
+
+		return cause
+	}
 	for _, task := range tasks {
 		header := &zip.FileHeader{Name: filepath.ToSlash(task.rel), Method: zip.Deflate}
 		target, err := writer.CreateHeader(header)
 		if err != nil {
-			writer.Close()
-
-			return err
+			return failCleanup(err)
 		}
 		source, err := os.Open(task.path)
 		if err != nil {
-			writer.Close()
-
-			return err
+			return failCleanup(err)
 		}
 		_, copyErr := io.Copy(target, source)
 		source.Close()
 		if copyErr != nil {
-			writer.Close()
-
-			return copyErr
+			return failCleanup(copyErr)
 		}
 		written += task.size
 		reporter.report(written, false)
 	}
 	reporter.report(written, true)
 
-	return writer.Close()
+	if closeErr := writer.Close(); closeErr != nil {
+		return failCleanup(closeErr)
+	}
+
+	return nil
 }
 
 // ImportNekoser 从 .nekoser 包恢复服务器，返回新服务器 id。
 // 包内必须含 server.json（合法性的锚点）；id 撞名时自动另起目录。
-func ImportNekoser(zipPath string) (string, error) {
+func ImportNekoser(zipPath string) (id string, err error) {
 	reader, err := zip.OpenReader(zipPath)
 	if err != nil {
 		return "", fmt.Errorf("不是有效的 .nekoser 压缩包：%w", err)
@@ -180,11 +186,18 @@ func ImportNekoser(zipPath string) (string, error) {
 	if name == "" {
 		name = "server"
 	}
-	id := uniqueServerDirectory(name)
+	id = uniqueServerDirectory(name)
 	dir := filepath.Join(ServerRootDirectory(), id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
+	// 中途失败回滚半成品目录：没有 server.json 的目录在列表里不可见、
+	// 启动器内删不掉，只能让用户手动找目录（可能数百 MB）。
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(dir)
+		}
+	}()
 
 	var totalBytes int64
 	for _, file := range entries {

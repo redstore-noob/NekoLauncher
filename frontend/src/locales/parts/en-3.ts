@@ -313,6 +313,26 @@ const dict: Record<string, string> = {
   "CurseForge API Key": "CurseForge API Key",
   "搜索走后端绑定：官方接口失败时会自动改用国内镜像，仍失败才是网络问题；稍后重试即可。":
     "Search runs through the backend binding: if the official API fails it switches to the domestic mirror automatically, so a failure here means both were unreachable — retry later.",
+  下载中心: "Download Center",
+  游戏本体: "Game",
+  内容资源: "Content",
+  清除已完成: "Clear finished",
+  总进度: "Total progress",
+  "{0} 个进行中": "{0} in progress",
+  前往下载页查看: "Open the Download page",
+  "下载中，点击查看": "Downloading — click to view",
+  "{0} 正在下载，进度见右下角的下载中心":
+    "{0} is downloading — see the Download Center at the bottom right for progress",
+  查看进度: "View progress",
+  "已开始下载，进度见右下角的下载中心":
+    "Download started — see the Download Center at the bottom right for progress",
+  "已加入下载任务，进度见右下角的下载中心":
+    "Added to download tasks — see the Download Center at the bottom right for progress",
+  "任务已在右下角下载中心运行，可在此暂停 / 取消 / 查看进度":
+    "The task is running in the Download Center at the bottom right, where you can pause / cancel it and watch progress",
+  播放列表: "Play queue",
+  正在播放: "Now playing",
+  检查模组冲突和更新: "Check mod conflicts and updates",
 };
 
 export default dict;

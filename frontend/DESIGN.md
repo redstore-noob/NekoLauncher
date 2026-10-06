@@ -43,14 +43,29 @@
 
 Wails 透明窗口：`html, body, #root` 背景保持透明，由 `BackgroundLayer` 负责壁纸与压暗。
 
+**无卡版式**（实例页 / 账户页 / 下载页）：这几页的内容区不铺 `nya-panel` 外壳，列表行也不铺
+每行底色（`nya-row` 只该出现在弹窗内部），结构改由留白 + `nya-border` 细线（两栏之间 `md:border-l`
+或 `xl:border-l`，窄窗口换成 `border-b` / `border-t`；区块之间同理）+ 小号大写区块标题
+（`text-[11px] font-semibold uppercase tracking-wider text-gray-400`）承担；选中态是一条主题色
+低透明度色带（`bg-primary/10`）配左侧 3px 强调线（`w-[3px] bg-primary`，账户页列表行），不用边框、
+阴影或 `ring` 抬升。分段切换 `SegmentedTabs`（胶囊轨道 + 主色滑块）在这些位置一律换成文字形态：
+页面主标签用下划线（`border-b-2` + `text-primary`），行内小筛选（资源平台、Java 提供商）用字重与
+灰阶切换（选中 `font-semibold text-gray-900 dark:text-gray-100`，未选 `text-gray-400`）。
+整块透明表面靠 `.nya-bg-scrim` 压暗层保证在壁纸上可读，弹窗与浮层仍按上表取玻璃表面。
+
 ## 3. 形状、字号、间距
 
-- 圆角阶梯：卡片 `rounded-3xl`（1.5rem）；面板/输入框 `radius="lg"`；浮层 `0.875rem`；
-  图标磁贴 `rounded-2xl`；小按钮/滑条内元素 `rounded-lg`。不再使用 `< 0.5rem` 的碎圆角。
+- 圆角阶梯：**表面一律小圆角 `rounded-lg`（0.5rem）**——卡片、主页右侧大面板（启动页 /
+  组件盒，两者同一外壳滑动互换，圆角必须一致）、弹窗表面、面板/输入框 `radius="lg"`、
+  图标磁贴、面板内的次级区块与浮层通知（下载浮标 / NekoAlert）都走这一档。不再使用
+  `rounded-xl` / `rounded-2xl` / `rounded-3xl`；`rounded-md` / `rounded-sm` 只用于气泡尾角
+  这类局部收角，不作为整块表面圆角；胶囊与圆形（`rounded-full`）不受此约束。
+- 拖动小组件时的删除区覆盖层（`DeleteZoneOverlay`）圆角跟随所在面板，遮罩层用
+  `nya-delete-mask` + `backdrop-blur-*`，文字提示层浮在遮罩之上。
 - 字号：数值展示 `text-2xl font-bold tabular-nums`；正文 `text-sm`；辅助/说明 `text-[11px]~text-xs`
   且用 `text-gray-400`（暗色 `dark:text-gray-400` 系）；卡片小标题 `text-[11px] font-semibold uppercase tracking-wider`。
 - 卡片内距 `p-5`，内部纵向间距 `gap-3`。
-- 图标磁贴统一 `size-10 rounded-2xl bg-primary/15 text-primary`，不使用彩色渐变底。
+- 图标磁贴统一 `size-10 rounded-lg bg-primary/15 text-primary`，不使用彩色渐变底。
 - 滚动条全局隐藏，需要滚动的容器加 `nya-scroll`（6px 细滚动条）。
 
 ## 4. 动效

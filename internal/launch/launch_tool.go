@@ -118,6 +118,7 @@ func (l *OfflineMinecraftLauncher) Launch(
 		VersionId:                options.VersionId,
 		Username:                 options.Account.AccountUsername(),
 		RequiredJavaMajorVersion: plan.RequiredJavaMajorVersion,
+		Provenance:               plan.Provenance,
 	}
 	go func() {
 		waitErr := command.Wait()
@@ -315,7 +316,8 @@ func (l *OfflineMinecraftLauncher) createPlan(
 			"Java override did not resolve to the requested compatible executable.")
 	}
 
-	arguments, err := l.argumentBuilder.Build(
+	var provenance *LaunchProvenanceReport
+	arguments, err := l.argumentBuilder.buildWithProvenance(
 		profile,
 		options,
 		nativeDirectory,
@@ -324,7 +326,8 @@ func (l *OfflineMinecraftLauncher) createPlan(
 		transform.PrependJvmArguments,
 		transform.AppendJvmArguments,
 		transform.PrependGameArguments,
-		transform.AppendGameArguments)
+		transform.AppendGameArguments,
+		&provenance)
 	if err != nil {
 		TryDeleteDirectory(nativeDirectory)
 		return nil, err
@@ -373,6 +376,8 @@ func (l *OfflineMinecraftLauncher) createPlan(
 		RemovedEnvironmentVariables: transform.RemovedEnvironmentVariables,
 		WrapperCommand:              wrapperCommand,
 		ProcessPriority:             options.ProcessPriority,
+		// 溯源报告：options.CollectProvenance 为 false 时为 nil（纯旁路，零成本）
+		Provenance: provenance,
 	}, nil
 }
 

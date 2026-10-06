@@ -8,7 +8,7 @@ import type { network } from "../../../wailsjs/go/models";
 import React, { useEffect, useState } from "react";
 import { Button, Input, Select, SelectItem } from "@heroui/react";
 
-import { popoverMotionProps } from "../../lib/motion";
+import { selectPopoverProps } from "../../lib/motion";
 import {
   GetProxySettings,
   SaveProxySettings,
@@ -102,7 +102,7 @@ const NetworkSection: React.FC = () => {
       <SettingRow label={t("代理模式")}>
         <Select
           className="w-40 min-w-0 max-w-full [&_*]:min-w-0"
-          popoverProps={{ motionProps: popoverMotionProps }}
+          popoverProps={selectPopoverProps}
           selectedKeys={[mode]}
           size="sm"
           onSelectionChange={(keys) =>

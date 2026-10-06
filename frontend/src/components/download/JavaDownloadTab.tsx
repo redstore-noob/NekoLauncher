@@ -8,7 +8,7 @@
 import type { download } from "../../../wailsjs/go/models";
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Button, Chip, Input, Progress, Spinner } from "@heroui/react";
+import { Button, Chip, Input, Spinner } from "@heroui/react";
 import {
   ArrowClockwise20Regular as RefreshIcon,
   CheckmarkCircle20Regular,
@@ -18,7 +18,6 @@ import {
   WindowDevTools20Regular,
 } from "@fluentui/react-icons";
 
-import SegmentedTabs from "../../components/segmented-tabs";
 import {
   DeleteJavaRuntime,
   GetInstalledJavaRuntimes,
@@ -31,6 +30,7 @@ import {
   SaveJava,
 } from "../../../wailsjs/go/bindings/ConfigAPI";
 import { EventsOn } from "../../../wailsjs/runtime/runtime";
+import { notify } from "../overlay/dialog";
 import { t } from "../../i18n";
 
 // 顺序必须与 Go JavaVendor 枚举一致：Zulu=0 / Oracle=1 / Temurin=2
@@ -93,7 +93,6 @@ const JavaDownloadTab: React.FC = () => {
   >([]);
   const [globalJavaPath, setGlobalJavaPath] = useState("");
   const [globalJavaVersion, setGlobalJavaVersion] = useState("");
-  const [javaProgressPercent, setJavaProgressPercent] = useState(0);
   const [javaInstalling, setJavaInstalling] = useState(false);
 
   // ---------- 查询与安装 ----------
@@ -133,12 +132,14 @@ const JavaDownloadTab: React.FC = () => {
   const installJava = async () => {
     if (!javaSelection) return;
     setJavaInstalling(true);
-    setJavaProgressPercent(0);
     setJavaStatusText(
       t("开始安装 {0}…", {
         "0": javaSelection.DisplayName ?? `Java ${javaSelection.MajorVersion}`,
       }),
     );
+    // 进度统一在右下角下载中心（Java 安装在 Go 侧注册为 kind=java 内容任务），
+    // 页面内不再渲染独立进度条，只给一条轻提示。
+    notify.info(t("已开始下载，进度见右下角的下载中心"));
     try {
       await InstallJavaRuntime(javaSelection);
       setJavaStatusText(t("安装完成。"));
@@ -185,7 +186,6 @@ const JavaDownloadTab: React.FC = () => {
       (p: { Percentage?: number; Detail?: string } | null) => {
         if (p) {
           setJavaInstalling(true);
-          setJavaProgressPercent(Math.min(100, p.Percentage ?? 0));
           setJavaStatusText(p.Detail ?? "");
         }
       },
@@ -232,13 +232,13 @@ const JavaDownloadTab: React.FC = () => {
     normalizePath(runtime.JavaExecutablePath) === normalizePath(globalJavaPath);
 
   const sectionTitle =
-    "text-[13px] font-semibold text-gray-600 dark:text-gray-300";
+    "text-[11px] font-semibold tracking-wider text-gray-400 uppercase";
 
   return (
-    <div className="flex flex-col gap-3">
-      {/* 当前全局 Java 状态条 */}
-      <div className="flex items-center gap-3 rounded-2xl border nya-border nya-panel px-4 py-2.5 shadow-sm backdrop-blur-md">
-        <span className="flex size-9 flex-none items-center justify-center rounded-xl bg-primary/15 text-primary">
+    <div className="flex flex-col gap-4">
+      {/* 当前全局 Java 状态条（无卡：一行图标 + 文字，不铺面板） */}
+      <div className="flex items-center gap-3">
+        <span className="flex size-9 flex-none items-center justify-center rounded-lg bg-primary/15 text-primary">
           <WindowDevTools20Regular />
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -258,10 +258,10 @@ const JavaDownloadTab: React.FC = () => {
         ) : null}
       </div>
 
-      {/* 双列：下载新运行时 / 已安装 */}
-      <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-2">
+      {/* 双列：下载新运行时 / 已安装（无卡：窄窗口用横线分隔，宽窗口左右隔一条竖线） */}
+      <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 xl:grid-cols-2">
         {/* 左列：下载新运行时 */}
-        <div className="flex flex-col gap-3 rounded-2xl border nya-border nya-panel p-4 shadow-sm backdrop-blur-md">
+        <div className="nya-border flex flex-col gap-3 border-b pb-5 xl:border-b-0 xl:pb-0">
           <div className="flex items-center justify-between gap-3">
             <div className={sectionTitle}>{t("下载新运行时")}</div>
             <Button
@@ -276,18 +276,23 @@ const JavaDownloadTab: React.FC = () => {
             </Button>
           </div>
 
-          {/* 提供商切换（分段按钮，比下拉更直观；主色滑块滑动） */}
-          <SegmentedTabs
-            className="flex items-center gap-1 self-start rounded-full border nya-border bg-default-100/60 p-1"
-            itemClassName="px-3 py-1.5 text-[12px]"
-            items={JAVA_VENDORS.map((vendor) => ({
-              key: vendor,
-              label: vendor,
-            }))}
-            layoutId="java-vendor-tab"
-            value={javaVendor}
-            onChange={setJavaVendor}
-          />
+          {/* 提供商切换（无卡：文字切换，不再铺胶囊轨道） */}
+          <div className="flex flex-wrap items-center gap-4">
+            {JAVA_VENDORS.map((vendor) => (
+              <button
+                key={vendor}
+                className={`cursor-pointer text-[13px] transition-colors ${
+                  vendor === javaVendor
+                    ? "font-semibold text-gray-900 dark:text-gray-100"
+                    : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+                }`}
+                type="button"
+                onClick={() => setJavaVendor(vendor)}
+              >
+                {vendor}
+              </button>
+            ))}
+          </div>
 
           {/* 搜索 + 大版本快捷筛选 */}
           <div className="flex items-center gap-2">
@@ -336,8 +341,8 @@ const JavaDownloadTab: React.FC = () => {
             </div>
           ) : null}
 
-          {/* 候选版本列表 */}
-          <div className="nya-scroll flex max-h-[300px] min-h-[140px] flex-col gap-1.5 overflow-y-auto rounded-xl bg-default-100/60 p-2">
+          {/* 候选版本列表（无卡：不铺底色方框，行靠 hover 色带与选中带区分） */}
+          <div className="nya-scroll flex max-h-[300px] min-h-[140px] flex-col gap-1 overflow-y-auto pr-1">
             {javaLoading ? (
               <div className="flex items-center justify-center gap-2 py-8 text-xs text-gray-400">
                 <Spinner size="sm" /> {t("正在获取")} {javaVendor}{" "}
@@ -358,10 +363,10 @@ const JavaDownloadTab: React.FC = () => {
                 return (
                   <button
                     key={`${candidate.MajorVersion}-${candidate.BuildVersion}-${index}`}
-                    className={`flex cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2 text-left transition-colors ${
+                    className={`flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors ${
                       selected
-                        ? "bg-primary/10 ring-2 ring-primary/50"
-                        : "nya-panel hover:bg-default-100"
+                        ? "bg-primary/10"
+                        : "hover:bg-default-100/70 dark:hover:bg-white/5"
                     }`}
                     onClick={() => setJavaSelection(candidate)}
                   >
@@ -407,11 +412,9 @@ const JavaDownloadTab: React.FC = () => {
             </Button>
           </div>
           {javaInstalling ? (
-            <Progress
-              aria-label={t("Java 安装进度")}
-              size="sm"
-              value={javaProgressPercent}
-            />
+            <div className="text-[11px] text-gray-400">
+              {t("实时进度与剩余时间见右下角的下载中心")}
+            </div>
           ) : null}
           {javaStatusText ? (
             <div className="truncate text-xs text-primary">
@@ -420,18 +423,13 @@ const JavaDownloadTab: React.FC = () => {
           ) : null}
         </div>
 
-        {/* 右列：已安装的运行时 */}
-        <div className="flex flex-col gap-2 rounded-2xl border nya-border nya-panel p-4 shadow-sm backdrop-blur-md">
+        {/* 右列：已安装的运行时（无卡：宽窗口只与左列隔一条竖线） */}
+        <div className="nya-border flex flex-col gap-2 xl:border-l xl:pl-6">
           <div className={sectionTitle}>{t("已安装的运行时")}</div>
           {javaRuntimes.length === 0 ? (
-            <div className="flex flex-col items-center gap-2 py-8 text-center text-gray-400">
-              <div className="flex size-12 items-center justify-center rounded-2xl bg-default-100/80">
-                <WindowDevTools20Regular className="h-6 w-6" />
-              </div>
-              <span className="text-xs leading-relaxed">
-                {t("暂无托管 Java 运行时")}
-              </span>
-            </div>
+            <p className="py-2 text-xs text-gray-400">
+              {t("暂无托管 Java 运行时")}
+            </p>
           ) : (
             <div className="nya-scroll flex max-h-[430px] flex-col gap-2 overflow-y-auto pr-0.5">
               {javaRuntimes.map((runtime) => {
@@ -440,10 +438,8 @@ const JavaDownloadTab: React.FC = () => {
                 return (
                   <div
                     key={runtime.DirectoryPath}
-                    className={`flex items-center gap-3 rounded-xl px-3.5 py-2.5 ${
-                      inUse
-                        ? "bg-primary/10 ring-1 ring-primary/30"
-                        : "bg-default-100/80"
+                    className={`flex items-center gap-3 rounded-lg px-3 py-2.5 ${
+                      inUse ? "bg-primary/10" : ""
                     }`}
                   >
                     <span className="flex-none items-center gap-1 rounded-full bg-primary/15 px-2.5 py-0.5 text-[12px] font-semibold text-primary">

@@ -41,8 +41,6 @@ export function IsPortableMode():Promise<boolean>;
 
 export function LoadGlobalLaunchSettings():Promise<config.GlobalLaunchSettings>;
 
-export function MigrateRenamedVersion(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string):Promise<void>;
-
 export function RemoveJava(arg1:string):Promise<boolean>;
 
 export function RemoveProfileFolder(arg1:string):Promise<boolean>;
@@ -52,8 +50,6 @@ export function SaveDefaultVersionIsolation(arg1:any):Promise<void>;
 export function SaveGameDirectory(arg1:string):Promise<boolean>;
 
 export function SaveGlobalLaunchSettings(arg1:config.GlobalLaunchSettings):Promise<boolean>;
-
-export function SaveGlobalWindowSize(arg1:number,arg2:number):Promise<boolean>;
 
 export function SaveJava(arg1:string,arg2:string):Promise<boolean>;
 

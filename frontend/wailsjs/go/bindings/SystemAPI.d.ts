@@ -6,6 +6,8 @@ import {context} from '../models';
 
 export function AddLog(arg1:string,arg2:string):Promise<boolean>;
 
+export function ApplyDesktopWallpaper(arg1:string):Promise<void>;
+
 export function ClearLogs():Promise<number>;
 
 export function ClearResourcePackDraft():Promise<void>;
@@ -15,6 +17,8 @@ export function ExitLauncher():Promise<void>;
 export function ExportCurrentLog(arg1:string):Promise<void>;
 
 export function ExportResourcePack(arg1:string,arg2:Array<bindings.ResourcePackFile>):Promise<string>;
+
+export function FetchRssFeed(arg1:string):Promise<Array<bindings.RssFeedItem>>;
 
 export function GetAcrylicBackdropEnabled():Promise<boolean>;
 
@@ -27,6 +31,8 @@ export function GetDesktopWallpaperPath():Promise<string>;
 export function GetDeviceId():Promise<string>;
 
 export function GetFormattedVersion():Promise<string>;
+
+export function GetLinuxWallpaperTools():Promise<bindings.LinuxWallpaperTools>;
 
 export function GetWallpaperEngineWallpaper():Promise<bindings.WallpaperEngineWallpaper>;
 
@@ -43,6 +49,8 @@ export function LoadResourcePackDraft():Promise<bindings.ResourcePackDraft>;
 export function OpenInExplorer(arg1:string):Promise<void>;
 
 export function OpenPath(arg1:string):Promise<void>;
+
+export function ReadSecret(arg1:string):Promise<string>;
 
 export function ReadTextFile(arg1:string):Promise<string>;
 
@@ -61,6 +69,8 @@ export function SetAcrylicBackdropEnabled(arg1:boolean):Promise<boolean>;
 export function SetClipboard(arg1:string):Promise<void>;
 
 export function Startup(arg1:context.Context):Promise<void>;
+
+export function StoreSecret(arg1:string,arg2:string):Promise<boolean>;
 
 export function WriteLog(arg1:string,arg2:string):Promise<boolean>;
 

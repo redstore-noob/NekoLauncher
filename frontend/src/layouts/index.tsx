@@ -14,6 +14,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import type { launch } from "../../wailsjs/go/models";
+
 import React, { useEffect, useRef, useState } from "react";
 import { Button, Checkbox, Modal, ModalContent } from "@heroui/react";
 import { ArrowMinimize20Regular, Power20Regular } from "@fluentui/react-icons";
@@ -21,7 +23,9 @@ import { ArrowMinimize20Regular, Power20Regular } from "@fluentui/react-icons";
 import { TitleBar } from "../components/title-bar.tsx";
 import AutoUpdateNotice from "../components/AutoUpdateNotice";
 import DownloadCenter from "../components/download/DownloadCenter";
+import FileDropOverlay from "../components/FileDropOverlay";
 import ErrorBoundary from "../components/ErrorBoundary";
+import SceneWallpaperRenderer from "../components/SceneWallpaperRenderer";
 import MicrosoftLoginProgress from "../components/microsoft-login-progress";
 import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
 import SwitchTransition, {
@@ -34,8 +38,19 @@ import {
 } from "../../wailsjs/go/bindings/SystemAPI";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { onNavigate } from "../lib/navigation";
+import { prefetchIdlePages } from "../lib/lazy";
+import { startAudioBridge } from "../lib/audioBridge";
+import { notify } from "../components/overlay/dialog";
+import { notifyCrashIfNeeded } from "../lib/crashNotice";
+import { GetLaunchSnapshot } from "../../wailsjs/go/bindings/LauncherAPI";
 import { extractThemeColor } from "../lib/monet";
-import { DEFAULT_PAGE_ID, loadPlugins, PageHost } from "../plugin";
+import { isLinuxPlatform } from "../lib/platform";
+import {
+  DEFAULT_PAGE_ID,
+  hydratePluginGrants,
+  loadPlugins,
+  PageHost,
+} from "../plugin";
 import { t } from "../i18n";
 import { useThemeColor } from "../theme-color";
 
@@ -70,20 +85,47 @@ const BaseColorLayer: React.FC = () => {
 // 背景层：图源/不透明度/模糊均由设置页驱动（layouts/background.tsx）；
 // 负 margin + 放大，避免 blur 在边缘露出透明缝隙；url 为空（纯白/图源未就绪）时不渲染。
 // WE 视频壁纸额外铺一层 <video> 播放原视频，解码失败时回落到底层预览图；
-// WE 网页壁纸铺一层 sandbox iframe（入口经 /wwwallpaper 路由提供）。
+// WE 网页壁纸铺一层 sandbox iframe（入口经 /wwwallpaper 路由提供）；
+// WE 场景壁纸铺一层 SceneWallpaperRenderer（three.js 完整渲染：多图层/动画/粒子），
+// 场景首帧就绪前保留静态提取图垫底，失败则一直用静态图。
 // 底色由 BaseColorLayer 单独垫底，这里只管"背景不透明度"自身的混色。
 const BackgroundLayer: React.FC = () => {
-  const { url, videoUrl, webUrl, webInteractive, blur, opacity, scrim } =
-    useBackground();
+  const {
+    url,
+    videoUrl,
+    webUrl,
+    webInteractive,
+    blur,
+    opacity,
+    scrim,
+    sceneWallpaper,
+    sceneResolution,
+    sceneFps,
+  } = useBackground();
   const [videoFailed, setVideoFailed] = useState(false);
-
-  // 压暗度只管 scrim 罩色强度，模糊只由"背景模糊"滑杆控制，两个滑杆互不影响
-  const totalBlur = blur;
+  // 场景渲染失败(如 WebGL 不可用)时永久回退静态图,避免轮询反复重建
+  const [sceneFailed, setSceneFailed] = useState(false);
+  // 场景首帧就绪后隐藏静态垫底图,省一份重复绘制
+  const [sceneReady, setSceneReady] = useState(false);
+  const activeScene = sceneWallpaper && !sceneFailed ? sceneWallpaper : null;
 
   useEffect(() => {
     setVideoFailed(false);
   }, [videoUrl]);
-  if (!url && !videoUrl && !webUrl) return null;
+  useEffect(() => {
+    // 换壁纸载荷时重置就绪标记,让新场景同样经历"静态图垫底 → 首帧接管"
+    setSceneReady(false);
+    setSceneFailed(false);
+  }, [sceneWallpaper?.Entry]);
+
+  // 压暗度只管 scrim 罩色强度，模糊只由"背景模糊"滑杆控制，两个滑杆互不影响
+  // Linux 的 WebKitGTK 对动态图源（视频/网页/场景壁纸）做全屏 blur 意味着逐帧
+  // 重栅格化整窗，成本爆炸：动态背景下一律关掉模糊；静态图是一次性栅格化可
+  // 缓存，保留（半径已在 background.tsx 里压到 16px）。
+  const totalBlur =
+    isLinuxPlatform() && (videoUrl || webUrl || activeScene) ? 0 : blur;
+
+  if (!url && !videoUrl && !webUrl && !activeScene) return null;
 
   return (
     <div
@@ -93,12 +135,21 @@ const BackgroundLayer: React.FC = () => {
         opacity: opacity / 100,
       }}
     >
-      {url && (
+      {url && !sceneReady && (
         <div
           // key 随图源变化 → 换图时重挂载、重放淡入，避免硬切闪一下
           key={url}
           className="absolute inset-0 bg-cover bg-center bg-no-repeat nya-bg-fade"
           style={{ backgroundImage: `url("${url}")` }}
+        />
+      )}
+      {activeScene && (
+        <SceneWallpaperRenderer
+          fpsCap={sceneFps}
+          payload={activeScene}
+          pixelRatio={sceneResolution}
+          onError={() => setSceneFailed(true)}
+          onReady={() => setSceneReady(true)}
         />
       )}
       {videoUrl && !videoFailed && (
@@ -114,16 +165,21 @@ const BackgroundLayer: React.FC = () => {
         />
       )}
       {webUrl && (
-        // 网页壁纸是创意工坊里的任意 HTML：sandbox 只给 allow-scripts，
-        // 刻意不给 allow-same-origin —— 否则它能拿到启动器源站的 localStorage
-        // 与 window.go 绑定，等于把后端 API 全交给壁纸。
-        // 默认也不接收鼠标事件，避免壁纸吃掉界面点击（设置页可开"允许交互"）。
+        // 网页壁纸是创意工坊里的任意 HTML：sandbox 配置需要平衡安全与功能。
+        // allow-scripts + allow-same-origin: Canvas/WebGL/AudioContext 等 API 在
+        //   opaque origin 下大量受限(部分壁纸直接空白),WE 壁纸本身也是全功能
+        //   运行,这里保持同源;启动器自身不存放敏感凭据到 window 上。
+        // allow-modals: 部分壁纸用 alert 排错,不给会抛异常。
+        // allow-forms: 少量壁纸带搜索/表单控件(文档兼容性要求)。
+        // 不给 allow-popups/allow-top-navigation:壁纸不该能开窗口或跳走宿主。
+        // 用户属性与 WE API polyfill 由后端注入入口 HTML(先于壁纸脚本执行),
+        // ?v= 是属性指纹,用户在 WE 里改配置后 iframe 重挂载、新配置生效。
         <iframe
           key={webUrl}
           className={`absolute inset-0 h-full w-full border-0 nya-bg-fade ${
             webInteractive ? "pointer-events-auto" : "pointer-events-none"
           }`}
-          sandbox="allow-scripts"
+          sandbox="allow-scripts allow-modals allow-same-origin allow-forms"
           src={webUrl}
           title={t("网页壁纸")}
         />
@@ -220,8 +276,8 @@ const WindowReveal: React.FC = () => {
 // 桌面透出程度由窗口不透明度决定（窗口创建为可透明，见 main.go）。
 const Shell: React.FC = () => {
   const [activeKey, setActiveKey] = useState<string>(DEFAULT_PAGE_ID);
-  // 自动隐藏时内容区顶到窗口左缘，侧边栏改为悬浮弹出、不再占位
-  const { autoHide } = useSidebarSettings();
+  // 自动隐藏时内容区顶到窗口边缘，侧边栏改为悬浮弹出、不再占位
+  const { autoHide, placement, style } = useSidebarSettings();
   // 订阅页面列表：S 模式下只剩五个页面，主页改标「启动」；插件加载后自动跟上
   const pages = useShellPages();
 
@@ -254,7 +310,48 @@ const Shell: React.FC = () => {
 
   // 插件在首帧之后加载，避免拖慢启动；注册表变更后界面自动跟上
   useEffect(() => {
-    void loadPlugins();
+    // 先水合权限开关再加载插件：插件激活时就会调 API，那时候授权表必须已经是
+    // 用户当前的选择（否则默认值会在启动瞬间短暂放行）
+    void hydratePluginGrants().finally(() => loadPlugins());
+    // 页面 chunk 空闲预取：首屏定型后逐个预热懒加载页面，切页零等待
+    prefetchIdlePages();
+    // 音频桥在应用根启动（幂等）：只靠主页卡片/音乐页挂载时启动的话，
+    // 首屏不是主页时 Go 侧 PlayTrack 发出的 music:play 会无人接
+    startAudioBridge();
+  }, []);
+
+  // NekoSolo 首启补全部分失败：后端会保住待装标记下次启动重试，
+  // 这里把失败项浮到底部警示条，别让"mod 没装全"只有日志知道
+  useEffect(
+    () =>
+      EventsOn(
+        "solo:completionIssue",
+        (payload: { pack?: string; total?: number; failures?: string[] }) => {
+          const detail = (payload?.failures ?? []).slice(0, 2).join("；");
+
+          notify.warning(
+            t("整合包「{0}」有 {1} 项内容安装失败，下次启动将自动重试。", {
+              "0": payload?.pack || "NekoSolo",
+              "1": String(payload?.total ?? 0),
+            }) + (detail ? ` ${detail}` : ""),
+            8000,
+          );
+        },
+      ),
+    [],
+  );
+
+  // 崩溃提示在应用根全局订阅（通知函数自带 Revision 去重）：
+  // 放在主页的话切页即卸载，从实例页启动后崩溃的弹窗会永久丢失
+  useEffect(() => {
+    // 应用启动时也补查一次快照：覆盖"事件先于订阅到达"的窗口
+    void GetLaunchSnapshot()
+      .then((snapshot) => notifyCrashIfNeeded(snapshot))
+      .catch(() => undefined);
+
+    return EventsOn("launch:changed", (snapshot: launch.GameLaunchSnapshot) => {
+      notifyCrashIfNeeded(snapshot);
+    });
   }, []);
 
   // 主页小组件等通过导航总线请求切页
@@ -285,9 +382,28 @@ const Shell: React.FC = () => {
         {/*全局左侧栏*/}
         <Sidebar activeKey={activeKey} onNavigate={setActiveKey} />
 
-        {/*内容区（自动隐藏时不再为收起的侧边栏留位）*/}
+        {/*内容区（自动隐藏时不再为收起的侧边栏留位；按停靠边让位：
+         * 岛式 = 面板尺寸 + 12px 边距，陆式 = 贴边只留面板尺寸）*/}
         <div
-          className={`flex-1 relative overflow-hidden ${autoHide ? "ml-0" : "ml-16"}`}
+          className={`flex-1 relative overflow-hidden ${
+            autoHide
+              ? ""
+              : placement === "left"
+                ? style === "land"
+                  ? "ml-16"
+                  : "ml-[76px]"
+                : placement === "right"
+                  ? style === "land"
+                    ? "mr-16"
+                    : "mr-[76px]"
+                  : placement === "top"
+                    ? style === "land"
+                      ? "mt-14"
+                      : "mt-[68px]"
+                    : style === "land"
+                      ? "mb-14"
+                      : "mb-[68px]"
+          }`}
         >
           {/* 按页 key 做滑动切换；页面出错只丢这一页，不会把整个界面带走 */}
           <SwitchTransition
@@ -304,6 +420,9 @@ const Shell: React.FC = () => {
 
       {/*全局下载中心（跨页面常驻：游戏安装 + 内容下载统一展示，类 KDE 通知样式）*/}
       <DownloadCenter onOpenDownloads={() => setActiveKey("download")} />
+
+      {/*全局文件拖放安装：拖 .jar / .zip / .mrpack 进窗口即可装进实例*/}
+      <FileDropOverlay />
 
       {/*内嵌微软登录进度（登录页跳转往返会重载 SPA，浮层全局挂载接力显示）*/}
       <MicrosoftLoginProgress />

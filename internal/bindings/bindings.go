@@ -67,6 +67,7 @@ func New() *API {
 // 音乐播放器事件 → Wails EventsEmit 等在这里完成。
 func (a *API) init() {
 	a.wireInstance()
+	a.wireSolo()
 	a.wireMusic()
 	a.wireModName()
 }

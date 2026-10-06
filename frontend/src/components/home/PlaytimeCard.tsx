@@ -77,7 +77,7 @@ const PlaytimeCard: React.FC<{
           ))}
         </ul>
       ) : (
-        <div className="nya-enter nya-stagger-1 rounded-2xl bg-black/5 px-4 py-3 text-center text-xs leading-relaxed text-gray-400 dark:bg-white/5">
+        <div className="nya-enter nya-stagger-1 rounded-lg bg-black/5 px-4 py-3 text-center text-xs leading-relaxed text-gray-400 dark:bg-white/5">
           {t("暂无记录")}
         </div>
       )}

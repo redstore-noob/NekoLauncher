@@ -1,6 +1,7 @@
 /*
- * 服务器页（开服）：左列 = 选中服务器的详情（占用/控制台/properties 配置/
- * 文件编辑/资源导入），右列 = 服务器列表。
+ * 服务器页（开服）：指挥中心单页流 —— 顶部状态横幅（运行数/总数/在线玩家 +
+ * 新建/导入/刷新）→ 横贯页顶的服务器列表面板（筛选标签 + 搜索）→ 选中服务器的
+ * 详情下挂在同页（控制台/配置/文件/资源导入/内容/玩家/备份/启动参数），不弹窗不跳转。
  *
  * 后端走 ServerHostAPI（internal/mcserver）：进程管理、配置读写、文件与
  * 存档/模组/插件导入均为真实实现；创建时强制 EULA 确认（同意才写 eula=true）。
@@ -13,6 +14,7 @@ type ServerProperty = mcserver.Property;
 type ServerSummary = mcserver.ServerInfo;
 
 import React, {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -36,7 +38,6 @@ import {
   ArrowExportLtr20Regular,
   ArrowImport20Regular,
   ArrowLeft20Regular,
-  Delete20Regular,
   Folder20Regular,
   Server20Regular,
   ArrowDownload20Regular,
@@ -45,7 +46,7 @@ import {
   Person20Regular,
   Search20Regular,
 } from "@fluentui/react-icons";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, type Variants } from "framer-motion";
 
 import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
 import CodeFileModal from "../components/CodeFileModal";
@@ -53,7 +54,23 @@ import { confirm, notify } from "../components/overlay/dialog";
 import SwitchTransition, {
   useSwitchDirection,
 } from "../components/screen-transition";
-import { listItemVariants } from "../lib/motion";
+import { selectPopoverProps } from "../lib/motion";
+import { TRANSITION_EASINGS } from "../lib/motion";
+
+/* 左列列表项专用进出场：只做透明度，不动 height（与实例页同款） */
+const LIST_FADE: Variants = {
+  enter: { opacity: 0 },
+  center: {
+    opacity: 1,
+    transition: { duration: 0.25, ease: TRANSITION_EASINGS.easeOut },
+  },
+  exit: {
+    opacity: 0,
+    transition: { duration: 0.2, ease: TRANSITION_EASINGS.easeIn },
+  },
+};
+
+import { startVisiblePoll } from "../lib/visibility";
 import { t } from "../i18n";
 import { GetJavaPaths } from "../../wailsjs/go/bindings/ConfigAPI";
 import {
@@ -524,7 +541,12 @@ const LEVEL_TAG_CLASS: Record<string, string> = {
   OTHER: "text-gray-500 dark:text-gray-500",
 };
 
-function ConsoleLine({ line }: { line: string }) {
+/**
+ * 控制台单行日志（memo）。
+ * 每秒 PollServer 都会刷新控制台，500 行时逐行重新解析+重渲染是掉帧大头；
+ * 行文本没变就跳过渲染（日志只追加，历史行内容稳定）。
+ */
+const ConsoleLine = memo(function ConsoleLine({ line }: { line: string }) {
   const { time, tag, level, body } = parseConsoleLine(line);
   const bodyClass = RE_CHAT_LINE.test(body.trimStart())
     ? "text-emerald-700 dark:text-emerald-700"
@@ -540,7 +562,7 @@ function ConsoleLine({ line }: { line: string }) {
       <span className={bodyClass}>{body}</span>
     </div>
   );
-}
+});
 
 function statusChip(status: string): ReactNode {
   if (status === "running") {
@@ -586,7 +608,6 @@ const ServersPage: React.FC = () => {
     MemoryMB: number;
     LogLines: string[];
   } | null>(null);
-  const cursorRef = useRef(0);
 
   // 控制台
   const [command, setCommand] = useState("");
@@ -696,14 +717,84 @@ const ServersPage: React.FC = () => {
 
   const selected = servers.find((server) => server.ID === selectedId) ?? null;
 
+  // 指挥中心单页流：列表侧的筛选标签与搜索（只影响展示，不动轮询与选中逻辑）
+  const [serverFilter, setServerFilter] = useState<
+    "all" | "running" | "stopped"
+  >("all");
+  const [serverSearch, setServerSearch] = useState("");
+  const filteredServers = useMemo(() => {
+    const query = serverSearch.trim().toLowerCase();
+
+    return servers.filter((server) => {
+      if (serverFilter === "running" && server.Status === "stopped")
+        return false;
+      if (serverFilter === "stopped" && server.Status !== "stopped")
+        return false;
+      if (
+        query &&
+        !`${server.Name} ${server.MCVersion} ${server.Core}`
+          .toLowerCase()
+          .includes(query)
+      )
+        return false;
+
+      return true;
+    });
+  }, [servers, serverFilter, serverSearch]);
+  const runningCount = useMemo(
+    () => servers.filter((server) => server.Status !== "stopped").length,
+    [servers],
+  );
+  const playersOnline = useMemo(
+    () =>
+      servers.reduce(
+        (sum, server) =>
+          server.Status === "running" ? sum + server.Players : sum,
+        0,
+      ),
+    [servers],
+  );
+
+  // 列表刷新：并发去重 + 失败可见 + 指数退避。
+  // 之前失败被 catch 吞掉，后端持续挂掉时用户永远看着旧列表且零提示。
+  const listInFlightRef = useRef(false);
+  const listFailStreakRef = useRef(0);
+  const listRetryAtRef = useRef(0);
+  const listErrorShownRef = useRef(false);
+
   const refreshList = useCallback(async () => {
+    if (listInFlightRef.current) return; // 初始加载/3 秒轮询/操作后刷新可能撞车
+    listInFlightRef.current = true;
     try {
       const list = await ListServers();
 
       // 防御非数组返回（纯浏览器 mock / 后端异常），避免下方 servers.find 崩溃
       setServers(Array.isArray(list) ? list : []);
-    } catch {
-      /* 列表轮询失败不打扰用户 */
+      if (listErrorShownRef.current) {
+        listErrorShownRef.current = false;
+        notify.success(t("服务器列表已恢复"));
+      }
+      listFailStreakRef.current = 0;
+      listRetryAtRef.current = 0;
+    } catch (ex) {
+      listFailStreakRef.current += 1;
+      const backoff = Math.min(
+        3000 * 2 ** (listFailStreakRef.current - 1),
+        30000,
+      );
+
+      listRetryAtRef.current = Date.now() + backoff;
+      // 只提示一次，之后安静退避（3s→6s→12s→…封顶 30s），避免刷屏
+      if (!listErrorShownRef.current) {
+        listErrorShownRef.current = true;
+        notify.error(
+          t("服务器列表刷新失败：{0}（将降低重试频率，恢复后自动继续）", {
+            "0": (ex as Error)?.message ?? ex,
+          }),
+        );
+      }
+    } finally {
+      listInFlightRef.current = false;
     }
   }, []);
 
@@ -805,31 +896,41 @@ const ServersPage: React.FC = () => {
     };
   }, [createOpen, eulaStep, form.core, form.mcVersion]);
 
-  // 列表状态轮询
-  useEffect(() => {
-    const timer = window.setInterval(() => void refreshList(), 3000);
+  // 列表状态轮询（刷新失败时按 listRetryAtRef 退避，手动操作不受影响；
+  // 窗口隐藏时暂停，回前台立即补一拍）
+  useEffect(
+    () =>
+      startVisiblePoll(() => {
+        if (Date.now() < listRetryAtRef.current) return;
+        void refreshList();
+      }, 3000),
+    [refreshList],
+  );
 
-    return () => window.clearInterval(timer);
-  }, [refreshList]);
-
-  // 选中服务器的日志/占用轮询
+  // 选中服务器的日志/占用轮询。
+  // 游标与在途标记都是 effect 局部：1 秒节拍遇慢响应时，两次 PollServer 会带
+  // 同一游标并发（日志重复/乱序），且旧服务器的游标会污染切换后的新服务器。
   useEffect(() => {
     if (!selectedId) {
       setRuntime(null);
 
       return;
     }
-    cursorRef.current = 0;
-    setRuntime(null);
-    const timer = window.setInterval(async () => {
-      try {
-        const snapshot = await PollServer(selectedId, cursorRef.current);
+    let cursor = 0;
+    let inFlight = false;
 
-        cursorRef.current = snapshot.NextCursor;
+    setRuntime(null);
+    const tick = async () => {
+      if (inFlight) return; // 上一拍还没回来：跳过本拍而不是并发补发
+      inFlight = true;
+      try {
+        const snapshot = await PollServer(selectedId, cursor);
+
+        cursor = snapshot.NextCursor;
         if (
           snapshot.Status === "stopped" &&
           !snapshot.LogLines.length &&
-          cursorRef.current === 0
+          cursor === 0
         ) {
           setRuntime(null);
 
@@ -848,23 +949,36 @@ const ServersPage: React.FC = () => {
               merged.length > 500 ? merged.slice(merged.length - 500) : merged,
           };
         });
-        setServers((prev) =>
-          prev.map((server) =>
-            server.ID === selectedId
-              ? {
-                  ...server,
-                  Status: snapshot.Status,
-                  Players: snapshot.Players,
-                }
-              : server,
-          ),
-        );
+        // 状态/人数没变就保持数组引用不变：每秒都换新数组会让列表页白白重渲染
+        setServers((prev) => {
+          const idx = prev.findIndex((server) => server.ID === selectedId);
+
+          if (idx < 0) return prev;
+          const target = prev[idx];
+
+          if (
+            target.Status === snapshot.Status &&
+            target.Players === snapshot.Players
+          )
+            return prev;
+          const next = [...prev];
+
+          next[idx] = {
+            ...target,
+            Status: snapshot.Status,
+            Players: snapshot.Players,
+          };
+
+          return next;
+        });
       } catch {
         /* 服务器被删等场景：忽略 */
+      } finally {
+        inFlight = false;
       }
-    }, 1000);
+    };
 
-    return () => window.clearInterval(timer);
+    return startVisiblePoll(tick, 1000);
   }, [selectedId]);
 
   // 控制台自动滚动
@@ -1698,1218 +1812,69 @@ const ServersPage: React.FC = () => {
     }
   };
 
-  const tabButton = (key: TabKey, label: string) => (
-    <button
-      className={`cursor-pointer rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors ${
-        tab === key
-          ? "bg-primary/15 text-primary"
-          : "text-gray-500 hover:bg-default-100 dark:text-gray-400 dark:hover:bg-gray-800"
-      }`}
-      onClick={() => setTab(key)}
-    >
-      {label}
-    </button>
-  );
-
-  // 折叠区分隔行（配置分组同款交互）：收起高级项用，展开后原样展示全部控件
-  const collapseToggle = (
-    open: boolean,
-    label: string,
-    onToggle: () => void,
-  ) => (
-    <button
-      className="flex w-full cursor-pointer items-center justify-between rounded-xl px-1 py-1 text-left"
-      onClick={onToggle}
-    >
-      <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-        {label}
-      </span>
-      <span
-        className={`text-[11px] text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
-      >
-        ▾
-      </span>
-    </button>
-  );
-
   return (
-    <div className="relative flex h-full w-full gap-3 overflow-hidden p-3">
-      {/* ============ 左列：选中服务器的详情（圆角毛玻璃浮层） ============ */}
-      <div className="nya-panel flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border nya-border">
-        {!selected || !selectedId ? (
-          <div className="flex flex-1 items-center justify-center p-8">
-            <div className="max-w-sm rounded-3xl border border-dashed border-gray-300/80 px-8 py-10 text-center text-xs leading-relaxed text-gray-400 dark:border-gray-700">
-              {t("未选择服务器")}
-            </div>
-          </div>
-        ) : (
-          <>
-            {/* 详情头部：名称 + 状态 + 占用 */}
-            <div className="flex flex-none flex-col gap-2 px-5 pb-2 pt-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex size-9 flex-none items-center justify-center rounded-xl bg-primary/15 text-primary">
-                  <Server20Regular />
-                </div>
-                <span className="truncate text-lg font-semibold text-gray-800 dark:text-gray-200">
-                  {selected.Name}
-                </span>
-                {statusChip(selected.Status)}
-                {selected.Status === "running" ? (
-                  <span className="text-xs text-gray-400 tabular-nums">
-                    {t("在线玩家")} {selected.Players}/{selected.MaxPlayers}
-                  </span>
-                ) : null}
-                <div className="ml-auto flex items-center gap-1.5">
-                  {selected.Status === "stopped" ? (
-                    <Button
-                      color="primary"
-                      isDisabled={busy}
-                      size="sm"
-                      variant="flat"
-                      onPress={() => void doStart(selected)}
-                    >
-                      {t("启动")}
-                    </Button>
-                  ) : (
-                    <>
-                      <Button
-                        color="danger"
-                        isDisabled={busy || selected.Status === "stopping"}
-                        isLoading={selected.Status === "stopping"}
-                        size="sm"
-                        variant="flat"
-                        onPress={() => void doStop(selected)}
-                      >
-                        {selected.Status === "stopping"
-                          ? t("停止中")
-                          : t("停止")}
-                      </Button>
-                      {selected.Status !== "stopping" ? (
-                        <>
-                          <Button
-                            isDisabled={busy}
-                            size="sm"
-                            variant="light"
-                            onPress={() => void doRestart(selected)}
-                          >
-                            {t("重启")}
-                          </Button>
-                          <Button
-                            color="danger"
-                            isDisabled={busy}
-                            size="sm"
-                            variant="light"
-                            onPress={() => void doStop(selected, true)}
-                          >
-                            {t("强制停止")}
-                          </Button>
-                        </>
-                      ) : null}
-                    </>
-                  )}
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
-                <span>{CORE_LABELS[selected.Core] ?? selected.Core}</span>
-                <span>·</span>
-                <span>{selected.MCVersion}</span>
-                <span>·</span>
-                <span>
-                  {t("端口")} {selected.Port}
-                </span>
-                {runtime && selected.Status !== "stopped" ? (
-                  <>
-                    <span>·</span>
-                    <span className="tabular-nums">
-                      {t("CPU 占用")} {runtime.CPUPercent.toFixed(1)}%
-                    </span>
-                    <span>·</span>
-                    <span className="tabular-nums">
-                      {t("内存占用")} {runtime.MemoryMB.toFixed(0)} MB
-                    </span>
-                  </>
-                ) : null}
-              </div>
-            </div>
-
-            {/* Tab 栏 */}
-            <div className="flex flex-none items-center gap-1 px-5 pb-1">
-              {tabButton("console", t("控制台"))}
-              {tabButton("config", t("配置"))}
-              {tabButton("files", t("文件"))}
-              {tabButton("import", t("资源导入"))}
-              {tabButton("content", t("内容"))}
-              {tabButton("players", t("玩家"))}
-              {tabButton("backup", t("备份"))}
-              {tabButton("java", t("启动参数"))}
-            </div>
-
-            {/* Tab 内容 */}
-            <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-5">
-              <SwitchTransition
-                activeKey={tab}
-                className="flex min-h-full flex-col"
-                direction={tabDirection}
-                variant="instance"
-              >
-                {/* 控制台 */}
-                {tab === "console" ? (
-                  <div className="flex h-full min-h-[280px] flex-col gap-2">
-                    <div
-                      ref={consoleRef}
-                      className="nya-scroll min-h-0 flex-1 overflow-y-auto rounded-2xl border border-gray-500/40 bg-gray-500/40 p-3 font-mono text-[11px] leading-relaxed text-gray-700 backdrop-blur-xl dark:border-white/40 dark:bg-white/80 dark:text-gray-800"
-                    >
-                      {logLength === 0 ? (
-                        <div className="py-6 text-center text-gray-500 dark:text-gray-500">
-                          {selected.Status === "stopped"
-                            ? t("服务器未运行")
-                            : t("暂无日志")}
-                        </div>
-                      ) : (
-                        runtime?.LogLines.map((line, index) => (
-                          <ConsoleLine
-                            key={`${index}-${line.slice(0, 20)}`}
-                            line={line}
-                          />
-                        ))
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <Button
-                        isDisabled={selected.Status !== "running"}
-                        size="sm"
-                        variant="flat"
-                        onPress={() => void sendCommand("list")}
-                      >
-                        {t("列出玩家")}
-                      </Button>
-                      <Button
-                        isDisabled={selected.Status !== "running"}
-                        size="sm"
-                        variant="flat"
-                        onPress={() => void sendCommand("save-all")}
-                      >
-                        {t("保存世界")}
-                      </Button>
-                      <Input
-                        className="min-w-0 flex-1"
-                        isDisabled={selected.Status !== "running"}
-                        placeholder={
-                          selected.Status === "running"
-                            ? t("输入指令")
-                            : t("服务器未运行")
-                        }
-                        size="sm"
-                        value={command}
-                        variant="bordered"
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") void sendCommand();
-                        }}
-                        onValueChange={setCommand}
-                      />
-                      <Button
-                        isDisabled={selected.Status !== "running"}
-                        size="sm"
-                        variant="flat"
-                        onPress={() => void sendCommand()}
-                      >
-                        {t("发送")}
-                      </Button>
-                    </div>
-                  </div>
-                ) : null}
-
-                {/* 配置（server.properties） */}
-                {tab === "config" ? (
-                  <div className="flex flex-col gap-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        color="primary"
-                        isDisabled={dirtyCount === 0}
-                        size="sm"
-                        variant="flat"
-                        onPress={() => void saveProperties()}
-                      >
-                        {t("保存修改")}
-                        {dirtyCount > 0 ? ` (${dirtyCount})` : ""}
-                      </Button>
-                      {selected.Status !== "stopped" ? (
-                        <span className="text-[11px] text-warning">
-                          {t("服务器运行中时修改不会生效，请先停止。")}
-                        </span>
-                      ) : null}
-                    </div>
-                    {groupedProperties.map((group) => {
-                      const collapsed = collapsedGroups[group.id] ?? false;
-
-                      return (
-                        <div
-                          key={group.id}
-                          className={`rounded-2xl border ${
-                            group.id === "quick"
-                              ? "border-primary/30"
-                              : "border-gray-100 dark:border-gray-800/60"
-                          }`}
-                        >
-                          <button
-                            className="flex w-full cursor-pointer items-center justify-between px-4 py-2.5 text-left"
-                            onClick={() =>
-                              setCollapsedGroups((prev) => ({
-                                ...prev,
-                                [group.id]: !collapsed,
-                              }))
-                            }
-                          >
-                            <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                              {group.title}
-                            </span>
-                            <span className="text-[11px] text-gray-400">
-                              {group.items.length}
-                            </span>
-                          </button>
-                          <AnimatePresence initial={false}>
-                            {!collapsed ? (
-                              <motion.div
-                                animate={{ height: "auto", opacity: 1 }}
-                                className="overflow-hidden"
-                                exit={{ height: 0, opacity: 0 }}
-                                initial={{ height: 0, opacity: 0 }}
-                                transition={{
-                                  duration: 0.2,
-                                  ease: "easeInOut",
-                                }}
-                              >
-                                <div className="flex flex-col gap-2 border-t border-gray-100 px-4 py-3 dark:border-gray-800/60">
-                                  {group.items.length === 0 ? (
-                                    <div className="text-center text-[11px] text-gray-400">
-                                      {t("没有可显示的配置项")}
-                                    </div>
-                                  ) : (
-                                    group.items.map((property) => {
-                                      const value =
-                                        propsDirty[property.Key] ??
-                                        property.Value;
-                                      const meta = PROPERTY_META[property.Key];
-                                      const update = (next: string) =>
-                                        setPropsDirty((prev) => ({
-                                          ...prev,
-                                          [property.Key]: next,
-                                        }));
-
-                                      return (
-                                        <div
-                                          key={property.Key}
-                                          className="flex items-center gap-3"
-                                        >
-                                          <span
-                                            className="min-w-0 flex-1"
-                                            title={property.Key}
-                                          >
-                                            <span className="block truncate text-[12px] text-gray-600 dark:text-gray-300">
-                                              {meta
-                                                ? t(meta.label)
-                                                : property.Key}
-                                            </span>
-                                            {meta?.desc ? (
-                                              <span className="block truncate text-[10px] leading-tight text-gray-400 dark:text-gray-500">
-                                                {t(meta.desc)}
-                                              </span>
-                                            ) : null}
-                                          </span>
-                                          {isBooleanValue(property.Value) ? (
-                                            <Switch
-                                              isSelected={value === "true"}
-                                              size="sm"
-                                              onValueChange={(checked) =>
-                                                update(
-                                                  checked ? "true" : "false",
-                                                )
-                                              }
-                                            />
-                                          ) : (
-                                            <Input
-                                              className="max-w-[240px] flex-none"
-                                              size="sm"
-                                              value={value}
-                                              variant="bordered"
-                                              onValueChange={update}
-                                            />
-                                          )}
-                                        </div>
-                                      );
-                                    })
-                                  )}
-                                </div>
-                              </motion.div>
-                            ) : null}
-                          </AnimatePresence>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
-
-                {/* 文件 */}
-                {tab === "files" ? (
-                  <div className="flex flex-col gap-2">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      {filesPath ? (
-                        <Button
-                          isIconOnly
-                          aria-label={t("上一级")}
-                          size="sm"
-                          variant="flat"
-                          onPress={() => {
-                            const parent = filesPath
-                              .split("/")
-                              .slice(0, -1)
-                              .join("/");
-
-                            setFilesPath(parent);
-                            setEditorFile(null);
-                            void loadFiles(selectedId, parent);
-                          }}
-                        >
-                          <ArrowLeft20Regular />
-                        </Button>
-                      ) : null}
-                      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-gray-400">
-                        /{filesPath}
-                      </span>
-                      <Button
-                        size="sm"
-                        startContent={<Folder20Regular />}
-                        variant="flat"
-                        onPress={() =>
-                          void (async () => {
-                            try {
-                              await OpenPath(`mc-servers/${selectedId}`);
-                            } catch {
-                              notify.error(t("打开文件夹失败"));
-                            }
-                          })()
-                        }
-                      >
-                        {t("打开服务器目录")}
-                      </Button>
-                    </div>
-                    <div className="rounded-2xl border border-gray-100 dark:border-gray-800/60">
-                      {files.length === 0 ? (
-                        <div className="py-6 text-center text-[11px] text-gray-400">
-                          {t("文件夹为空")}
-                        </div>
-                      ) : (
-                        files.map((file) => (
-                          <button
-                            key={file.Name}
-                            className="flex w-full cursor-pointer items-center gap-2 px-4 py-1.5 text-left text-[12px] transition-colors hover:bg-default-100 dark:hover:bg-gray-800"
-                            onClick={() => {
-                              if (file.IsDir) {
-                                const next = filesPath
-                                  ? `${filesPath}/${file.Name}`
-                                  : file.Name;
-
-                                setFilesPath(next);
-                                setEditorFile(null);
-                                void loadFiles(selectedId, next);
-                              } else {
-                                void openFile(file.Name);
-                              }
-                            }}
-                          >
-                            <span className="w-4 flex-none text-center">
-                              {file.IsDir ? "📁" : "📄"}
-                            </span>
-                            <span className="min-w-0 flex-1 truncate text-gray-700 dark:text-gray-300">
-                              {file.Name}
-                            </span>
-                            {!file.IsDir ? (
-                              <span className="flex-none text-[10px] text-gray-400 tabular-nums">
-                                {formatSize(file.Size)}
-                              </span>
-                            ) : null}
-                          </button>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-
-                {/* 资源导入 */}
-                {tab === "import" ? (
-                  <div className="flex flex-col gap-3">
-                    <div className="flex items-center gap-3 rounded-2xl border border-primary/30 px-4 py-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                          {t("导出 NekoSer 包")}
-                        </div>
-                        <div className="truncate text-[11px] text-gray-400">
-                          {t(
-                            "迁移/备份整包服务器（含存档与配置）；需先停止服务器",
-                          )}
-                        </div>
-                      </div>
-                      <Button
-                        isDisabled={selected.Status !== "stopped"}
-                        size="sm"
-                        startContent={<ArrowExportLtr20Regular />}
-                        variant="flat"
-                        onPress={() => void exportNekoser()}
-                      >
-                        {t("导出")}
-                      </Button>
-                    </div>
-                    {[
-                      {
-                        key: "world" as const,
-                        title: t("导入存档"),
-                        hint: t("选择存档压缩包（zip），解压到当前世界目录"),
-                        enabled: true,
-                      },
-                      {
-                        key: "mod" as const,
-                        title: t("导入模组"),
-                        hint: t(
-                          "复制 mod jar 到 mods/ 目录（仅 Fabric/NeoForge）",
-                        ),
-                        enabled:
-                          selected.Core === "fabric" ||
-                          selected.Core === "neoforge",
-                      },
-                      {
-                        key: "plugin" as const,
-                        title: t("导入插件"),
-                        hint: t("复制插件 jar 到 plugins/ 目录（仅 Paper）"),
-                        enabled: selected.Core === "paper",
-                      },
-                    ].map((item) => (
-                      <div
-                        key={item.key}
-                        className="flex items-center gap-3 rounded-2xl border border-gray-100 px-4 py-3 dark:border-gray-800/60"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                            {item.title}
-                          </div>
-                          <div className="truncate text-[11px] text-gray-400">
-                            {item.hint}
-                          </div>
-                        </div>
-                        <Button
-                          isDisabled={!item.enabled}
-                          size="sm"
-                          variant="flat"
-                          onPress={() => void importVia(item.key)}
-                        >
-                          {t("选择文件")}
-                        </Button>
-                      </div>
-                    ))}
-                    <div className="text-[11px] text-gray-400">
-                      {t("导入完成后重启服务器生效。")}
-                    </div>
-                  </div>
-                ) : null}
-
-                {/* JVM 启动参数 */}
-                {/* 服务端内容（mods / plugins） */}
-                {tab === "content" ? (
-                  <div className="flex flex-col gap-3">
-                    <div className="flex flex-col gap-3 rounded-2xl border nya-border p-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                          {contentKind === "plugins"
-                            ? t("从 Modrinth 安装插件")
-                            : t("从 Modrinth 安装模组")}
-                        </span>
-                        <span className="text-[11px] text-gray-400">
-                          {t("只列适配 {0} 的版本", {
-                            "0": `${selected.Core} ${selected.MCVersion}`,
-                          })}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5">
-                        <Input
-                          className="min-w-0 flex-1"
-                          placeholder={t("搜索名称，例如 sodium / essentials")}
-                          size="sm"
-                          value={contentQuery}
-                          variant="bordered"
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") void searchContent();
-                          }}
-                          onValueChange={setContentQuery}
-                        />
-                        <Button
-                          isLoading={contentSearching}
-                          size="sm"
-                          startContent={
-                            contentSearching ? undefined : <Search20Regular />
-                          }
-                          variant="flat"
-                          onPress={() => void searchContent()}
-                        >
-                          {t("搜索")}
-                        </Button>
-                      </div>
-
-                      {contentError ? (
-                        <span className="text-[11px] text-danger">
-                          {contentError}
-                        </span>
-                      ) : null}
-
-                      {contentResults.length > 0 ? (
-                        <div className="nya-scroll flex max-h-64 flex-col gap-1 overflow-y-auto">
-                          {contentResults.map((project) => (
-                            <div
-                              key={project.project_id}
-                              className="flex items-center gap-2 rounded-xl border nya-border px-3 py-1.5"
-                            >
-                              <span className="min-w-0 flex-1">
-                                <span className="block truncate text-[12px] text-gray-700 dark:text-gray-300">
-                                  {project.title}
-                                </span>
-                                <span className="block truncate text-[10px] text-gray-400">
-                                  {project.description}
-                                </span>
-                              </span>
-                              <Button
-                                isDisabled={contentInstalling !== ""}
-                                isLoading={
-                                  contentInstalling === project.project_id
-                                }
-                                size="sm"
-                                variant="flat"
-                                onPress={() => void installContent(project)}
-                              >
-                                {t("安装")}
-                              </Button>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div className="flex flex-col gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                          {contentKind === "plugins"
-                            ? t("已安装插件")
-                            : t("已安装模组")}
-                        </span>
-                        <span className="text-[11px] text-gray-400">
-                          {contentEntries.length} {t("个")}
-                        </span>
-                        <span className="ml-auto text-[11px] text-gray-400">
-                          {t("改动在重启服务器后生效")}
-                        </span>
-                        <Button
-                          isLoading={contentLoading}
-                          size="sm"
-                          startContent={
-                            contentLoading ? undefined : <ArrowSync20Regular />
-                          }
-                          variant="light"
-                          onPress={() => void refreshContent()}
-                        >
-                          {t("刷新")}
-                        </Button>
-                      </div>
-
-                      {contentEntries.length === 0 ? (
-                        <div className="rounded-2xl border border-dashed border-gray-300/80 px-4 py-6 text-center text-[11px] text-gray-400 dark:border-gray-700">
-                          {t("暂无内容，可从上方搜索安装")}
-                        </div>
-                      ) : (
-                        contentEntries.map((entry) => (
-                          <div
-                            key={entry.FileName}
-                            className="flex flex-wrap items-center gap-2 rounded-2xl border nya-border px-3.5 py-2.5"
-                          >
-                            <Switch
-                              aria-label={entry.Name}
-                              color="primary"
-                              isDisabled={contentBusy}
-                              isSelected={entry.Enabled}
-                              size="sm"
-                              onValueChange={(value) =>
-                                void toggleContent(entry, value)
-                              }
-                            />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-[12px] text-gray-700 dark:text-gray-300">
-                                {entry.Name}
-                              </span>
-                              <span className="block truncate font-mono text-[10px] text-gray-400">
-                                {entry.FileName} ·{" "}
-                                {formatSize(Number(entry.SizeBytes))}
-                              </span>
-                            </span>
-                            <Button
-                              color="danger"
-                              isDisabled={contentBusy}
-                              size="sm"
-                              variant="light"
-                              onPress={() => void removeContent(entry)}
-                            >
-                              {t("删除")}
-                            </Button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-
-                {/* 玩家与权限 */}
-                {tab === "players" ? (
-                  <div className="flex flex-col gap-3">
-                    {/* 在线 + 广播 */}
-                    <div className="flex flex-col gap-3 rounded-2xl border nya-border p-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                          {t("在线玩家")}
-                        </span>
-                        <span className="text-[11px] text-gray-400">
-                          {players?.Running
-                            ? (players?.Online?.length ?? 0) > 0
-                              ? `${players?.Online?.length ?? 0} ${t("人")}`
-                              : t("当前没有玩家在线")
-                            : t("服务器未运行（在线列表需要 RCON）")}
-                        </span>
-                        <Button
-                          className="ml-auto"
-                          isLoading={playerLoading}
-                          size="sm"
-                          startContent={
-                            playerLoading ? undefined : <ArrowSync20Regular />
-                          }
-                          variant="light"
-                          onPress={() => void refreshPlayers()}
-                        >
-                          {t("刷新")}
-                        </Button>
-                      </div>
-
-                      <div className="flex flex-wrap gap-1.5">
-                        {(players?.Online ?? []).map((name) => (
-                          <span
-                            key={name}
-                            className="flex items-center gap-1.5 rounded-full border nya-border px-2.5 py-1 text-[11px]"
-                          >
-                            <Person20Regular />
-                            {name}
-                            <button
-                              className="cursor-pointer text-gray-400 hover:text-danger"
-                              onClick={() => void kickPlayer(name)}
-                            >
-                              {t("踢出")}
-                            </button>
-                            <button
-                              className="cursor-pointer text-gray-400 hover:text-danger"
-                              onClick={() => void banPlayer(name)}
-                            >
-                              {t("封禁")}
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-
-                      <div className="flex items-center gap-1.5">
-                        <Input
-                          className="min-w-0 flex-1"
-                          isDisabled={!players?.Running}
-                          placeholder={t("输入要广播的内容")}
-                          size="sm"
-                          value={broadcast}
-                          variant="bordered"
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") void sendBroadcast();
-                          }}
-                          onValueChange={setBroadcast}
-                        />
-                        <Button
-                          isDisabled={!players?.Running || !broadcast.trim()}
-                          size="sm"
-                          variant="flat"
-                          onPress={() => void sendBroadcast()}
-                        >
-                          {t("广播")}
-                        </Button>
-                      </div>
-                    </div>
-
-                    {/* 名单 */}
-                    <div className="flex flex-col gap-3 rounded-2xl border nya-border p-4">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                          {t("白名单")}
-                        </span>
-                        <Switch
-                          aria-label={t("白名单")}
-                          color="primary"
-                          isDisabled={!players}
-                          isSelected={!!players?.WhitelistEnabled}
-                          size="sm"
-                          onValueChange={(value) => void toggleWhitelist(value)}
-                        />
-                        <span className="text-[11px] text-gray-400">
-                          {players?.Running
-                            ? t("服务器运行中：改动会作为指令立即生效。")
-                            : t(
-                                "服务器已停止：改动直接写入名单文件（离线 UUID 自动补齐）。",
-                              )}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-1.5">
-                        <Input
-                          className="min-w-0 flex-1"
-                          placeholder={t("玩家名（1–16 位字母、数字或下划线）")}
-                          size="sm"
-                          value={playerName}
-                          variant="bordered"
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") void addWhitelist();
-                          }}
-                          onValueChange={setPlayerName}
-                        />
-                        <Button
-                          isDisabled={!playerName.trim()}
-                          size="sm"
-                          variant="flat"
-                          onPress={() => void addWhitelist()}
-                        >
-                          {t("加入白名单")}
-                        </Button>
-                        <Button
-                          isDisabled={!playerName.trim()}
-                          size="sm"
-                          variant="flat"
-                          onPress={() => void makeOp(playerName.trim())}
-                        >
-                          {t("设为管理员")}
-                        </Button>
-                      </div>
-
-                      {[
-                        {
-                          key: "whitelist",
-                          title: t("白名单"),
-                          items: (players?.Whitelist ?? []).map((item) => ({
-                            name: item.name,
-                            detail: item.uuid,
-                            remove: () => void removeWhitelist(item.name),
-                          })),
-                        },
-                        {
-                          key: "ops",
-                          title: t("管理员（OP）"),
-                          items: (players?.Ops ?? []).map((item) => ({
-                            name: item.name,
-                            detail: `${t("权限等级")} ${item.level}`,
-                            remove: () => void removeOp(item.name),
-                          })),
-                        },
-                        {
-                          key: "banned",
-                          title: t("封禁名单"),
-                          items: (players?.Banned ?? []).map((item) => ({
-                            name: item.name,
-                            detail: item.reason || t("无理由"),
-                            remove: () => void unbanPlayer(item.name),
-                          })),
-                        },
-                      ].map((group) => (
-                        <div key={group.key} className="flex flex-col gap-1.5">
-                          <span className="text-[12px] font-medium text-gray-600 dark:text-gray-300">
-                            {group.title} · {group.items.length}
-                          </span>
-                          {group.items.length === 0 ? (
-                            <span className="text-[11px] text-gray-400">
-                              {t("（空）")}
-                            </span>
-                          ) : (
-                            <div className="flex flex-col gap-1">
-                              {group.items.map((item) => (
-                                <div
-                                  key={`${group.key}-${item.name}`}
-                                  className="flex items-center gap-2 rounded-xl border nya-border px-3 py-1.5"
-                                >
-                                  <span className="min-w-0 flex-1 truncate text-[12px] text-gray-700 dark:text-gray-300">
-                                    {item.name}
-                                  </span>
-                                  <span className="truncate font-mono text-[10px] text-gray-400">
-                                    {item.detail}
-                                  </span>
-                                  <Button
-                                    color="danger"
-                                    isDisabled={playerBusy}
-                                    size="sm"
-                                    variant="light"
-                                    onPress={item.remove}
-                                  >
-                                    {t("移除")}
-                                  </Button>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
-                {/* 备份 */}
-                {tab === "backup" ? (
-                  <div className="flex flex-col gap-3">
-                    {/* 策略 */}
-                    <div className="flex flex-col gap-3 rounded-2xl border nya-border p-4">
-                      <div className="flex flex-wrap items-center gap-3">
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                            {t("自动备份")}
-                          </div>
-                          <div className="text-[11px] text-gray-400">
-                            {t(
-                              "开启后每 {0} 小时自动备份一次；每次备份前都会先把世界刷盘。",
-                              { "0": String(backupSettings.IntervalHours) },
-                            )}
-                          </div>
-                        </div>
-                        <Switch
-                          aria-label={t("自动备份")}
-                          color="primary"
-                          isSelected={backupSettings.Enabled}
-                          size="sm"
-                          onValueChange={(value) =>
-                            setBackupSettings((prev) => ({
-                              ...prev,
-                              Enabled: value,
-                            }))
-                          }
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-3 gap-3">
-                        <Input
-                          label={t("间隔（小时）")}
-                          min={1}
-                          size="sm"
-                          type="number"
-                          value={String(backupSettings.IntervalHours)}
-                          variant="bordered"
-                          onValueChange={(value) =>
-                            setBackupSettings((prev) => ({
-                              ...prev,
-                              IntervalHours: Math.max(1, Number(value) || 1),
-                            }))
-                          }
-                        />
-                        <Input
-                          label={t("保留份数（0 = 不限）")}
-                          min={0}
-                          size="sm"
-                          type="number"
-                          value={String(backupSettings.KeepCount)}
-                          variant="bordered"
-                          onValueChange={(value) =>
-                            setBackupSettings((prev) => ({
-                              ...prev,
-                              KeepCount: Math.max(0, Number(value) || 0),
-                            }))
-                          }
-                        />
-                        <Input
-                          label={t("保留天数（0 = 不限）")}
-                          min={0}
-                          size="sm"
-                          type="number"
-                          value={String(backupSettings.KeepDays)}
-                          variant="bordered"
-                          onValueChange={(value) =>
-                            setBackupSettings((prev) => ({
-                              ...prev,
-                              KeepDays: Math.max(0, Number(value) || 0),
-                            }))
-                          }
-                        />
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          color="primary"
-                          isLoading={backupBusy}
-                          size="sm"
-                          startContent={
-                            backupBusy ? undefined : <ArrowDownload20Regular />
-                          }
-                          variant="flat"
-                          onPress={() => void runBackupNow()}
-                        >
-                          {t("立即备份")}
-                        </Button>
-                        <Button
-                          isDisabled={backupBusy}
-                          size="sm"
-                          startContent={<CheckmarkCircle20Regular />}
-                          variant="flat"
-                          onPress={() => void saveBackupSettings()}
-                        >
-                          {t("保存备份策略")}
-                        </Button>
-                        <span className="text-[11px] text-gray-400">
-                          {selected.Status === "stopped"
-                            ? t("服务器已停止，备份会直接打包目录。")
-                            : t(
-                                "服务器运行中：将先暂停世界写入（save-off）再打包，完成后自动恢复。",
-                              )}
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* 列表 */}
-                    <div className="flex flex-col gap-2">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                          {t("备份列表")}
-                        </span>
-                        <span className="text-[11px] text-gray-400">
-                          {backups.length} {t("份")}
-                        </span>
-                        <Button
-                          className="ml-auto"
-                          isLoading={backupLoading}
-                          size="sm"
-                          startContent={
-                            backupLoading ? undefined : <ArrowSync20Regular />
-                          }
-                          variant="light"
-                          onPress={() => void refreshBackups()}
-                        >
-                          {t("刷新")}
-                        </Button>
-                      </div>
-
-                      {backups.length === 0 ? (
-                        <div className="rounded-2xl border border-dashed border-gray-300/80 px-4 py-6 text-center text-[11px] text-gray-400 dark:border-gray-700">
-                          {t("暂无备份")}
-                        </div>
-                      ) : (
-                        backups.map((item) => (
-                          <div
-                            key={item.Name}
-                            className="flex flex-wrap items-center gap-2 rounded-2xl border nya-border px-3.5 py-2.5"
-                          >
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate font-mono text-[12px] text-gray-700 dark:text-gray-300">
-                                {item.Name}
-                              </span>
-                              <span className="block text-[10px] text-gray-400">
-                                {new Date(
-                                  Number(item.CreatedAt) * 1000,
-                                ).toLocaleString()}{" "}
-                                · {formatSize(Number(item.SizeBytes))}
-                              </span>
-                            </span>
-                            <Chip
-                              color={item.Hot ? "warning" : "default"}
-                              size="sm"
-                              variant="flat"
-                            >
-                              {item.Hot ? t("热备份") : t("冷备份")}
-                            </Chip>
-                            <Button
-                              isDisabled={backupBusy}
-                              size="sm"
-                              variant="flat"
-                              onPress={() => void restoreBackup(item.Name)}
-                            >
-                              {t("恢复")}
-                            </Button>
-                            <Button
-                              color="danger"
-                              isDisabled={backupBusy}
-                              size="sm"
-                              variant="light"
-                              onPress={() => void removeBackup(item.Name)}
-                            >
-                              {t("删除")}
-                            </Button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-
-                {/* 启动参数 */}
-                {tab === "java" ? (
-                  <div className="flex flex-col gap-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        color="primary"
-                        size="sm"
-                        variant="flat"
-                        onPress={() => void saveLaunchOptions()}
-                      >
-                        {t("保存启动参数")}
-                      </Button>
-                      {selected.Status !== "stopped" ? (
-                        <span className="text-[11px] text-warning">
-                          {t("服务器运行中时修改不会生效，请先停止。")}
-                        </span>
-                      ) : null}
-                    </div>
-
-                    {/* 崩溃自动重启 */}
-                    <div className="flex items-center gap-3 rounded-2xl border nya-border px-4 py-3">
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                          {t("崩溃自动重启")}
-                        </div>
-                        <div className="text-[11px] text-gray-400">
-                          {t(
-                            "进程异常退出时自动重新启动（10 分钟内最多 3 次，手动停止不触发）",
-                          )}
-                        </div>
-                      </div>
-                      <Switch
-                        aria-label={t("崩溃自动重启")}
-                        color="primary"
-                        isSelected={autoRestart}
-                        size="sm"
-                        onValueChange={(value) => void toggleAutoRestart(value)}
-                      />
-                    </div>
-                    {/* 内存 */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        endContent={
-                          <span className="text-[11px] text-gray-400">MB</span>
-                        }
-                        isInvalid={
-                          !!launchMemoryMax && Number(launchMemoryMax) <= 0
-                        }
-                        label={t("最大内存（-Xmx，0 = 不限制）")}
-                        size="sm"
-                        type="number"
-                        value={launchMemoryMax}
-                        variant="bordered"
-                        onValueChange={setLaunchMemoryMax}
-                      />
-                      <Input
-                        endContent={
-                          <span className="text-[11px] text-gray-400">MB</span>
-                        }
-                        isInvalid={
-                          !!launchMemoryMin &&
-                          Number(launchMemoryMin) >
-                            (Number(launchMemoryMax) || Infinity)
-                        }
-                        label={t("初始内存（-Xms，0 = 不设置）")}
-                        size="sm"
-                        type="number"
-                        value={launchMemoryMin}
-                        variant="bordered"
-                        onValueChange={setLaunchMemoryMin}
-                      />
-                    </div>
-
-                    {/* 高级参数（额外 JVM 参数 + 命令行预览）：默认收起 */}
-                    {collapseToggle(jvmAdvancedOpen, t("高级参数"), () =>
-                      setJvmAdvancedOpen((v) => !v),
-                    )}
-                    <AnimatePresence initial={false}>
-                      {jvmAdvancedOpen ? (
-                        <motion.div
-                          animate={{ height: "auto", opacity: 1 }}
-                          className="overflow-hidden"
-                          exit={{ height: 0, opacity: 0 }}
-                          initial={{ height: 0, opacity: 0 }}
-                          transition={{ duration: 0.2, ease: "easeInOut" }}
-                        >
-                          <div className="flex flex-col gap-3 pb-1">
-                            {/* 预设 + 额外参数 */}
-                            <div>
-                              <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
-                                <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                                  {t("额外 JVM 参数（每行一个）")}
-                                </span>
-                                <div className="flex gap-1.5">
-                                  <Button
-                                    size="sm"
-                                    variant="flat"
-                                    onPress={() =>
-                                      setLaunchExtraArgs(AIKAR_FLAGS.join("\n"))
-                                    }
-                                  >
-                                    {t("Aikar 优化参数")}
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="light"
-                                    onPress={() => setLaunchExtraArgs("")}
-                                  >
-                                    {t("清空")}
-                                  </Button>
-                                </div>
-                              </div>
-                              <Textarea
-                                classNames={{ input: "font-mono text-[11px]" }}
-                                minRows={4}
-                                placeholder={t("如 -XX:+UseG1GC")}
-                                size="sm"
-                                value={launchExtraArgs}
-                                variant="bordered"
-                                onValueChange={setLaunchExtraArgs}
-                              />
-                              <div className="mt-1 text-[11px] text-gray-400">
-                                {t(
-                                  "预设为社区标准的 Aikar GC 调优参数，适合 12GB 以下的堆。",
-                                )}
-                              </div>
-                            </div>
-
-                            {/* 命令行预览 */}
-                            <div>
-                              <div className="mb-1 text-[13px] font-semibold text-gray-700 dark:text-gray-300">
-                                {t("启动命令预览")}
-                              </div>
-                              <div className="nya-scroll overflow-x-auto rounded-2xl bg-black/85 p-3 font-mono text-[11px] leading-relaxed text-gray-200 dark:bg-white/80 dark:text-gray-800">
-                                {launchPreview}
-                              </div>
-                            </div>
-                          </div>
-                        </motion.div>
-                      ) : null}
-                    </AnimatePresence>
-                  </div>
-                ) : null}
-              </SwitchTransition>
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* ============ 右列：服务器列表（圆角毛玻璃浮层，与左列一致） ============ */}
-      <div className="nya-panel flex w-[340px] flex-none flex-col overflow-hidden rounded-2xl border nya-border">
-        <div className="flex flex-none items-center justify-between px-4 pb-2 pt-4">
-          <h1 className="text-lg font-semibold text-gray-800 dark:text-gray-200">
-            {t("服务器")}
-          </h1>
-          <div className="flex items-center gap-1.5">
-            <Button
-              isIconOnly
-              aria-label={t("导入 .nekoser 服务器包")}
+    <div className="relative h-full w-full flex flex-col overflow-hidden">
+      {/* ============ 指挥横幅：汇总状态 + 全局动作 ============ */}
+      <div className="px-6 pt-5 pb-1 flex-shrink-0">
+        <div className="rounded-large border nya-border nya-panel px-4 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
+          {/* 状态徽章即筛选器（再点一次取消）；在线玩家只做展示 */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Chip
+              className="cursor-pointer"
+              color={serverFilter === "running" ? "success" : "default"}
               size="sm"
-              variant="light"
+              variant={serverFilter === "running" ? "solid" : "flat"}
+              onClick={() =>
+                setServerFilter(serverFilter === "running" ? "all" : "running")
+              }
+            >
+              {t("运行中 {0}", { "0": runningCount })}
+            </Chip>
+            <Chip
+              className="cursor-pointer"
+              size="sm"
+              variant={serverFilter === "all" ? "solid" : "flat"}
+              onClick={() => setServerFilter("all")}
+            >
+              {t("共 {0} 台服务器", { "0": servers.length })}
+            </Chip>
+            <Chip
+              className="cursor-pointer"
+              size="sm"
+              variant={serverFilter === "stopped" ? "solid" : "flat"}
+              onClick={() =>
+                setServerFilter(serverFilter === "stopped" ? "all" : "stopped")
+              }
+            >
+              {t("已停止 {0}", { "0": servers.length - runningCount })}
+            </Chip>
+            <Chip
+              color={playersOnline > 0 ? "primary" : "default"}
+              size="sm"
+              variant="flat"
+            >
+              {t("在线玩家 {0}", { "0": playersOnline })}
+            </Chip>
+          </div>
+
+          <div className="flex-1" />
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="sm"
+              startContent={<ArrowSync20Regular />}
+              variant="flat"
+              onPress={() => void refreshList()}
+            >
+              {t("刷新")}
+            </Button>
+            <Button
+              size="sm"
+              startContent={<ArrowImport20Regular />}
+              variant="flat"
               onPress={() => void importNekoser()}
             >
-              <ArrowImport20Regular />
+              {t("导入服务器包")}
             </Button>
             <Button
               color="primary"
@@ -2922,107 +1887,1298 @@ const ServersPage: React.FC = () => {
             </Button>
           </div>
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
-          {servers.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-gray-300/80 px-4 py-8 text-center text-[11px] text-gray-400 dark:border-gray-700">
-              {t("暂无服务器")}
-            </div>
-          ) : (
-            <div className="flex flex-col gap-2">
+      </div>
+
+      {/* 主体：左右两栏布局 —— 左列服务器列表，右列详情面板 */}
+      <div className="flex-1 min-h-0 flex gap-4 px-6 pb-5">
+        {/* ============ 左列：服务器列表面板 ============ */}
+        <div className="nya-panel flex w-[360px] min-h-0 flex-shrink-0 flex-col overflow-hidden rounded-large border nya-border p-2">
+          <div className="flex flex-none items-center gap-2 px-2 pb-1.5 pt-1">
+            <span className="text-[11px] text-gray-400">
+              {filteredServers.length} / {servers.length}
+            </span>
+            <div className="flex-1" />
+            <Input
+              aria-label={t("搜索服务器")}
+              className="w-40 max-w-full"
+              size="sm"
+              startContent={<Search20Regular className="h-4 w-4" />}
+              value={serverSearch}
+              variant="flat"
+              onValueChange={setServerSearch}
+            />
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto flex flex-col gap-0.5">
+            {servers.length === 0 ? (
+              <div className="flex flex-1 items-center justify-center p-6 text-center text-[11px] text-gray-400">
+                {t("暂无服务器，点击横幅右侧「新建服务器」开始")}
+              </div>
+            ) : filteredServers.length === 0 ? (
+              <div className="px-4 py-6 text-center text-[11px] text-gray-400">
+                {t("没有符合筛选条件的服务器")}
+              </div>
+            ) : (
               <AnimatePresence initial={false}>
-                {servers.map((server) => (
+                {filteredServers.map((server) => (
                   <motion.div
                     key={server.ID}
                     layout
                     animate="center"
-                    className="overflow-hidden"
                     exit="exit"
                     initial="enter"
-                    variants={listItemVariants}
+                    variants={LIST_FADE}
                   >
                     <button
-                      className={`w-full cursor-pointer rounded-2xl border px-3 py-2.5 text-left transition-colors ${
+                      className={`flex w-full cursor-pointer flex-col gap-1 rounded-lg px-2.5 py-2 text-left transition-colors ${
                         server.ID === selectedId
-                          ? "border-primary/40 bg-primary/10"
-                          : "border-transparent hover:bg-default-100 dark:hover:bg-gray-800"
+                          ? "bg-primary/10 font-semibold text-blue-600 dark:text-blue-300"
+                          : "text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800"
                       }`}
-                      onClick={(event) => {
-                        // 内嵌的启动/停止/删除按钮不触发选中
-                        const inner = (event.target as HTMLElement).closest(
-                          "button",
-                        );
-
-                        if (inner && inner !== event.currentTarget) return;
-                        setSelectedId(server.ID);
-                      }}
+                      onClick={() => setSelectedId(server.ID)}
                     >
                       <div className="flex items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-gray-800 dark:text-gray-200">
+                        <span className="min-w-0 flex-1 truncate text-[13px]">
                           {server.Name}
                         </span>
                         {statusChip(server.Status)}
                       </div>
-                      <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-gray-400">
+                      <div className="flex items-center gap-1.5 text-[10px] font-normal text-gray-400">
                         <span>{CORE_LABELS[server.Core] ?? server.Core}</span>
                         <span>·</span>
                         <span>{server.MCVersion}</span>
                         <span>·</span>
-                        <span>
-                          {t("端口")} {server.Port}
-                        </span>
-                      </div>
-                      <div className="mt-1.5 flex items-center justify-between">
+                        <span>:{server.Port}</span>
                         {server.Status === "running" ? (
-                          <span className="text-[10px] text-gray-400 tabular-nums">
-                            {t("在线玩家")} {server.Players}/{server.MaxPlayers}
-                          </span>
-                        ) : (
-                          <span />
-                        )}
-                        <div className="flex items-center gap-1">
-                          {server.Status === "stopped" ? (
-                            <Button
-                              size="sm"
-                              variant="light"
-                              onPress={() => {
-                                void doStart(server);
-                              }}
-                            >
-                              {t("启动")}
-                            </Button>
-                          ) : (
-                            <Button
-                              color="danger"
-                              isDisabled={server.Status === "stopping"}
-                              size="sm"
-                              variant="light"
-                              onPress={() => {
-                                void doStop(server);
-                              }}
-                            >
-                              {t("停止")}
-                            </Button>
-                          )}
-                          <Button
-                            isIconOnly
-                            aria-label={t("删除服务器")}
-                            color="danger"
-                            isDisabled={server.Status !== "stopped"}
-                            size="sm"
-                            variant="light"
-                            onPress={() => {
-                              void doDelete(server);
-                            }}
-                          >
-                            <Delete20Regular />
-                          </Button>
-                        </div>
+                          <>
+                            <span>·</span>
+                            <span className="tabular-nums">
+                              {server.Players}/{server.MaxPlayers}
+                            </span>
+                          </>
+                        ) : null}
                       </div>
                     </button>
                   </motion.div>
                 ))}
               </AnimatePresence>
+            )}
+          </div>
+        </div>
+
+        {/* ============ 右列：详情面板 ============ */}
+        <div className="nya-panel flex min-w-0 flex-1 flex-col overflow-hidden rounded-large border nya-border">
+          {!selected || !selectedId ? (
+            <div className="flex flex-1 items-center justify-center p-8">
+              <span className="text-xs leading-relaxed text-gray-400">
+                {t("点击左侧列表中的服务器，即可查看控制台与配置")}
+              </span>
             </div>
+          ) : (
+            <>
+              {/* 详情头部：名称 + 状态 + 占用 + 操作按钮 */}
+              <div className="flex flex-none flex-col gap-2 border-b nya-border px-5 pb-3 pt-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="truncate text-lg font-semibold text-gray-800 dark:text-gray-200">
+                    {selected.Name}
+                  </span>
+                  {statusChip(selected.Status)}
+                  {selected.Status === "running" ? (
+                    <span className="text-xs text-gray-400 tabular-nums">
+                      {t("在线")} {selected.Players}/{selected.MaxPlayers}
+                    </span>
+                  ) : null}
+                  <div className="ml-auto flex items-center gap-1.5">
+                    {selected.Status === "stopped" ? (
+                      <Button
+                        color="primary"
+                        isDisabled={busy}
+                        size="sm"
+                        variant="flat"
+                        onPress={() => void doStart(selected)}
+                      >
+                        {t("启动")}
+                      </Button>
+                    ) : (
+                      <>
+                        <Button
+                          color="danger"
+                          isDisabled={busy || selected.Status === "stopping"}
+                          isLoading={selected.Status === "stopping"}
+                          size="sm"
+                          variant="flat"
+                          onPress={() => void doStop(selected)}
+                        >
+                          {selected.Status === "stopping"
+                            ? t("停止中")
+                            : t("停止")}
+                        </Button>
+                        {selected.Status !== "stopping" ? (
+                          <>
+                            <Button
+                              isDisabled={busy}
+                              size="sm"
+                              variant="light"
+                              onPress={() => void doRestart(selected)}
+                            >
+                              {t("重启")}
+                            </Button>
+                            <Button
+                              color="danger"
+                              isDisabled={busy}
+                              size="sm"
+                              variant="light"
+                              onPress={() => void doStop(selected, true)}
+                            >
+                              {t("强制停止")}
+                            </Button>
+                          </>
+                        ) : null}
+                      </>
+                    )}
+                    <Button
+                      color="danger"
+                      isDisabled={selected.Status !== "stopped"}
+                      size="sm"
+                      variant="light"
+                      onPress={() => void doDelete(selected)}
+                    >
+                      {t("删除")}
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-400">
+                  <span>{CORE_LABELS[selected.Core] ?? selected.Core}</span>
+                  <span>·</span>
+                  <span>{selected.MCVersion}</span>
+                  <span>·</span>
+                  <span>
+                    {t("端口")} {selected.Port}
+                  </span>
+                  {runtime && selected.Status !== "stopped" ? (
+                    <>
+                      <span>·</span>
+                      <span className="tabular-nums">
+                        {t("CPU")} {runtime.CPUPercent.toFixed(1)}%
+                      </span>
+                      <span>·</span>
+                      <span className="tabular-nums">
+                        {t("内存")} {runtime.MemoryMB.toFixed(0)} MB
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Tab 栏 */}
+              <div className="flex flex-none items-center gap-5 px-5 pb-1 pt-2">
+                {(
+                  [
+                    ["console", t("控制台")],
+                    ["config", t("配置")],
+                    ["files", t("文件")],
+                    ["import", t("资源导入")],
+                    ["content", t("内容")],
+                    ["players", t("玩家")],
+                    ["backup", t("备份")],
+                    ["java", t("启动参数")],
+                  ] as const
+                ).map(([key, label]) => (
+                  <button
+                    key={key}
+                    className={`cursor-pointer border-b-2 px-0.5 pt-1 pb-2 text-[13px] transition-colors ${
+                      tab === key
+                        ? "border-blue-500 font-semibold text-blue-600 dark:text-blue-300"
+                        : "border-transparent text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-gray-100"
+                    }`}
+                    onClick={() => setTab(key)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Tab 内容 */}
+              <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-5 pb-5 pt-2">
+                <SwitchTransition
+                  activeKey={tab}
+                  className="flex min-h-full flex-col"
+                  direction={tabDirection}
+                  variant="instance"
+                >
+                  {/* 控制台 */}
+                  {tab === "console" ? (
+                    <div className="flex h-full min-h-[280px] flex-col gap-2">
+                      <div
+                        ref={consoleRef}
+                        className="nya-scroll min-h-0 flex-1 overflow-y-auto rounded-lg border border-gray-500/40 bg-gray-500/40 p-3 font-mono text-[11px] leading-relaxed text-gray-700 backdrop-blur-xl dark:border-white/40 dark:bg-white/80 dark:text-gray-800"
+                      >
+                        {logLength === 0 ? (
+                          <div className="py-6 text-center text-gray-500 dark:text-gray-500">
+                            {selected.Status === "stopped"
+                              ? t("服务器未运行")
+                              : t("暂无日志")}
+                          </div>
+                        ) : (
+                          runtime?.LogLines.map((line, index) => (
+                            <ConsoleLine
+                              key={`${index}-${line.slice(0, 20)}`}
+                              line={line}
+                            />
+                          ))
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          isDisabled={selected.Status !== "running"}
+                          size="sm"
+                          variant="flat"
+                          onPress={() => void sendCommand("list")}
+                        >
+                          {t("列出玩家")}
+                        </Button>
+                        <Button
+                          isDisabled={selected.Status !== "running"}
+                          size="sm"
+                          variant="flat"
+                          onPress={() => void sendCommand("save-all")}
+                        >
+                          {t("保存世界")}
+                        </Button>
+                        <Input
+                          className="min-w-0 flex-1"
+                          isDisabled={selected.Status !== "running"}
+                          placeholder={
+                            selected.Status === "running"
+                              ? t("输入指令")
+                              : t("服务器未运行")
+                          }
+                          size="sm"
+                          value={command}
+                          variant="bordered"
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") void sendCommand();
+                          }}
+                          onValueChange={setCommand}
+                        />
+                        <Button
+                          isDisabled={selected.Status !== "running"}
+                          size="sm"
+                          variant="flat"
+                          onPress={() => void sendCommand()}
+                        >
+                          {t("发送")}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* 配置（server.properties） */}
+                  {tab === "config" ? (
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          color="primary"
+                          isDisabled={dirtyCount === 0}
+                          size="sm"
+                          variant="flat"
+                          onPress={() => void saveProperties()}
+                        >
+                          {t("保存修改")}
+                          {dirtyCount > 0 ? ` (${dirtyCount})` : ""}
+                        </Button>
+                        {selected.Status !== "stopped" ? (
+                          <span className="text-[11px] text-warning">
+                            {t("服务器运行中时修改不会生效，请先停止。")}
+                          </span>
+                        ) : null}
+                      </div>
+                      {groupedProperties.map((group) => {
+                        const collapsed = collapsedGroups[group.id] ?? false;
+
+                        return (
+                          <div
+                            key={group.id}
+                            className={`rounded-lg border ${
+                              group.id === "quick"
+                                ? "border-primary/30"
+                                : "border-gray-100 dark:border-gray-800/60"
+                            }`}
+                          >
+                            <button
+                              className="flex w-full cursor-pointer items-center justify-between px-4 py-2.5 text-left"
+                              onClick={() =>
+                                setCollapsedGroups((prev) => ({
+                                  ...prev,
+                                  [group.id]: !collapsed,
+                                }))
+                              }
+                            >
+                              <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                                {group.title}
+                              </span>
+                              <span className="text-[11px] text-gray-400">
+                                {group.items.length}
+                              </span>
+                            </button>
+                            <AnimatePresence initial={false}>
+                              {!collapsed ? (
+                                <motion.div
+                                  animate={{ height: "auto", opacity: 1 }}
+                                  className="overflow-hidden"
+                                  exit={{ height: 0, opacity: 0 }}
+                                  initial={{ height: 0, opacity: 0 }}
+                                  transition={{
+                                    duration: 0.2,
+                                    ease: "easeInOut",
+                                  }}
+                                >
+                                  <div className="flex flex-col gap-2 border-t border-gray-100 px-4 py-3 dark:border-gray-800/60">
+                                    {group.items.length === 0 ? (
+                                      <div className="text-center text-[11px] text-gray-400">
+                                        {t("没有可显示的配置项")}
+                                      </div>
+                                    ) : (
+                                      group.items.map((property) => {
+                                        const value =
+                                          propsDirty[property.Key] ??
+                                          property.Value;
+                                        const meta =
+                                          PROPERTY_META[property.Key];
+                                        const update = (next: string) =>
+                                          setPropsDirty((prev) => ({
+                                            ...prev,
+                                            [property.Key]: next,
+                                          }));
+
+                                        return (
+                                          <div
+                                            key={property.Key}
+                                            className="flex items-center gap-3"
+                                          >
+                                            <span
+                                              className="min-w-0 flex-1"
+                                              title={property.Key}
+                                            >
+                                              <span className="block truncate text-[12px] text-gray-600 dark:text-gray-300">
+                                                {meta
+                                                  ? t(meta.label)
+                                                  : property.Key}
+                                              </span>
+                                              {meta?.desc ? (
+                                                <span className="block truncate text-[10px] leading-tight text-gray-400 dark:text-gray-500">
+                                                  {t(meta.desc)}
+                                                </span>
+                                              ) : null}
+                                            </span>
+                                            {isBooleanValue(property.Value) ? (
+                                              <Switch
+                                                isSelected={value === "true"}
+                                                size="sm"
+                                                onValueChange={(checked) =>
+                                                  update(
+                                                    checked ? "true" : "false",
+                                                  )
+                                                }
+                                              />
+                                            ) : (
+                                              <Input
+                                                className="max-w-[240px] flex-none"
+                                                size="sm"
+                                                value={value}
+                                                variant="bordered"
+                                                onValueChange={update}
+                                              />
+                                            )}
+                                          </div>
+                                        );
+                                      })
+                                    )}
+                                  </div>
+                                </motion.div>
+                              ) : null}
+                            </AnimatePresence>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  {/* 文件 */}
+                  {tab === "files" ? (
+                    <div className="flex flex-col gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {filesPath ? (
+                          <Button
+                            isIconOnly
+                            aria-label={t("上一级")}
+                            size="sm"
+                            variant="flat"
+                            onPress={() => {
+                              const parent = filesPath
+                                .split("/")
+                                .slice(0, -1)
+                                .join("/");
+
+                              setFilesPath(parent);
+                              setEditorFile(null);
+                              void loadFiles(selectedId, parent);
+                            }}
+                          >
+                            <ArrowLeft20Regular />
+                          </Button>
+                        ) : null}
+                        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-gray-400">
+                          /{filesPath}
+                        </span>
+                        <Button
+                          size="sm"
+                          startContent={<Folder20Regular />}
+                          variant="flat"
+                          onPress={() =>
+                            void (async () => {
+                              try {
+                                await OpenPath(`mc-servers/${selectedId}`);
+                              } catch {
+                                notify.error(t("打开文件夹失败"));
+                              }
+                            })()
+                          }
+                        >
+                          {t("打开服务器目录")}
+                        </Button>
+                      </div>
+                      <div className="rounded-lg border border-gray-100 dark:border-gray-800/60">
+                        {files.length === 0 ? (
+                          <div className="py-6 text-center text-[11px] text-gray-400">
+                            {t("文件夹为空")}
+                          </div>
+                        ) : (
+                          files.map((file) => (
+                            <button
+                              key={file.Name}
+                              className="flex w-full cursor-pointer items-center gap-2 px-4 py-1.5 text-left text-[12px] transition-colors hover:bg-default-100 dark:hover:bg-gray-800"
+                              onClick={() => {
+                                if (file.IsDir) {
+                                  const next = filesPath
+                                    ? `${filesPath}/${file.Name}`
+                                    : file.Name;
+
+                                  setFilesPath(next);
+                                  setEditorFile(null);
+                                  void loadFiles(selectedId, next);
+                                } else {
+                                  void openFile(file.Name);
+                                }
+                              }}
+                            >
+                              <span className="w-4 flex-none text-center">
+                                {file.IsDir ? "📁" : "📄"}
+                              </span>
+                              <span className="min-w-0 flex-1 truncate text-gray-700 dark:text-gray-300">
+                                {file.Name}
+                              </span>
+                              {!file.IsDir ? (
+                                <span className="flex-none text-[10px] text-gray-400 tabular-nums">
+                                  {formatSize(file.Size)}
+                                </span>
+                              ) : null}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* 资源导入 */}
+                  {tab === "import" ? (
+                    <div className="flex flex-col gap-3">
+                      <div className="flex items-center gap-3 rounded-lg border border-primary/30 px-4 py-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                            {t("导出 NekoSer 包")}
+                          </div>
+                          <div className="truncate text-[11px] text-gray-400">
+                            {t(
+                              "迁移/备份整包服务器（含存档与配置）；需先停止服务器",
+                            )}
+                          </div>
+                        </div>
+                        <Button
+                          isDisabled={selected.Status !== "stopped"}
+                          size="sm"
+                          startContent={<ArrowExportLtr20Regular />}
+                          variant="flat"
+                          onPress={() => void exportNekoser()}
+                        >
+                          {t("导出")}
+                        </Button>
+                      </div>
+                      {[
+                        {
+                          key: "world" as const,
+                          title: t("导入存档"),
+                          hint: t("选择存档压缩包（zip），解压到当前世界目录"),
+                          enabled: true,
+                        },
+                        {
+                          key: "mod" as const,
+                          title: t("导入模组"),
+                          hint: t(
+                            "复制 mod jar 到 mods/ 目录（仅 Fabric/NeoForge）",
+                          ),
+                          enabled:
+                            selected.Core === "fabric" ||
+                            selected.Core === "neoforge",
+                        },
+                        {
+                          key: "plugin" as const,
+                          title: t("导入插件"),
+                          hint: t("复制插件 jar 到 plugins/ 目录（仅 Paper）"),
+                          enabled: selected.Core === "paper",
+                        },
+                      ].map((item) => (
+                        <div
+                          key={item.key}
+                          className="flex items-center gap-3 rounded-lg border border-gray-100 px-4 py-3 dark:border-gray-800/60"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                              {item.title}
+                            </div>
+                            <div className="truncate text-[11px] text-gray-400">
+                              {item.hint}
+                            </div>
+                          </div>
+                          <Button
+                            isDisabled={!item.enabled}
+                            size="sm"
+                            variant="flat"
+                            onPress={() => void importVia(item.key)}
+                          >
+                            {t("选择文件")}
+                          </Button>
+                        </div>
+                      ))}
+                      <div className="text-[11px] text-gray-400">
+                        {t("导入完成后重启服务器生效。")}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* JVM 启动参数 */}
+                  {/* 服务端内容（mods / plugins） */}
+                  {tab === "content" ? (
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-col gap-3 rounded-lg border nya-border p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                            {contentKind === "plugins"
+                              ? t("从 Modrinth 安装插件")
+                              : t("从 Modrinth 安装模组")}
+                          </span>
+                          <span className="text-[11px] text-gray-400">
+                            {t("只列适配 {0} 的版本", {
+                              "0": `${selected.Core} ${selected.MCVersion}`,
+                            })}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            className="min-w-0 flex-1"
+                            placeholder={t(
+                              "搜索名称，例如 sodium / essentials",
+                            )}
+                            size="sm"
+                            value={contentQuery}
+                            variant="bordered"
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") void searchContent();
+                            }}
+                            onValueChange={setContentQuery}
+                          />
+                          <Button
+                            isLoading={contentSearching}
+                            size="sm"
+                            startContent={
+                              contentSearching ? undefined : <Search20Regular />
+                            }
+                            variant="flat"
+                            onPress={() => void searchContent()}
+                          >
+                            {t("搜索")}
+                          </Button>
+                        </div>
+
+                        {contentError ? (
+                          <span className="text-[11px] text-danger">
+                            {contentError}
+                          </span>
+                        ) : null}
+
+                        {contentResults.length > 0 ? (
+                          <div className="nya-scroll flex max-h-64 flex-col gap-1 overflow-y-auto">
+                            {contentResults.map((project) => (
+                              <div
+                                key={project.project_id}
+                                className="flex items-center gap-2 rounded-lg border nya-border px-3 py-1.5"
+                              >
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-[12px] text-gray-700 dark:text-gray-300">
+                                    {project.title}
+                                  </span>
+                                  <span className="block truncate text-[10px] text-gray-400">
+                                    {project.description}
+                                  </span>
+                                </span>
+                                <Button
+                                  isDisabled={contentInstalling !== ""}
+                                  isLoading={
+                                    contentInstalling === project.project_id
+                                  }
+                                  size="sm"
+                                  variant="flat"
+                                  onPress={() => void installContent(project)}
+                                >
+                                  {t("安装")}
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                            {contentKind === "plugins"
+                              ? t("已安装插件")
+                              : t("已安装模组")}
+                          </span>
+                          <span className="text-[11px] text-gray-400">
+                            {contentEntries.length} {t("个")}
+                          </span>
+                          <span className="ml-auto text-[11px] text-gray-400">
+                            {t("改动在重启服务器后生效")}
+                          </span>
+                          <Button
+                            isLoading={contentLoading}
+                            size="sm"
+                            startContent={
+                              contentLoading ? undefined : (
+                                <ArrowSync20Regular />
+                              )
+                            }
+                            variant="light"
+                            onPress={() => void refreshContent()}
+                          >
+                            {t("刷新")}
+                          </Button>
+                        </div>
+
+                        {contentEntries.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-gray-300/80 px-4 py-6 text-center text-[11px] text-gray-400 dark:border-gray-700">
+                            {t("暂无内容，可从上方搜索安装")}
+                          </div>
+                        ) : (
+                          contentEntries.map((entry) => (
+                            <div
+                              key={entry.FileName}
+                              className="flex flex-wrap items-center gap-2 rounded-lg border nya-border px-3.5 py-2.5"
+                            >
+                              <Switch
+                                aria-label={entry.Name}
+                                color="primary"
+                                isDisabled={contentBusy}
+                                isSelected={entry.Enabled}
+                                size="sm"
+                                onValueChange={(value) =>
+                                  void toggleContent(entry, value)
+                                }
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate text-[12px] text-gray-700 dark:text-gray-300">
+                                  {entry.Name}
+                                </span>
+                                <span className="block truncate font-mono text-[10px] text-gray-400">
+                                  {entry.FileName} ·{" "}
+                                  {formatSize(Number(entry.SizeBytes))}
+                                </span>
+                              </span>
+                              <Button
+                                color="danger"
+                                isDisabled={contentBusy}
+                                size="sm"
+                                variant="light"
+                                onPress={() => void removeContent(entry)}
+                              >
+                                {t("删除")}
+                              </Button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* 玩家与权限 */}
+                  {tab === "players" ? (
+                    <div className="flex flex-col gap-3">
+                      {/* 在线 + 广播 */}
+                      <div className="flex flex-col gap-3 rounded-lg border nya-border p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                            {t("在线玩家")}
+                          </span>
+                          <span className="text-[11px] text-gray-400">
+                            {players?.Running
+                              ? (players?.Online?.length ?? 0) > 0
+                                ? `${players?.Online?.length ?? 0} ${t("人")}`
+                                : t("当前没有玩家在线")
+                              : t("服务器未运行（在线列表需要 RCON）")}
+                          </span>
+                          <Button
+                            className="ml-auto"
+                            isLoading={playerLoading}
+                            size="sm"
+                            startContent={
+                              playerLoading ? undefined : <ArrowSync20Regular />
+                            }
+                            variant="light"
+                            onPress={() => void refreshPlayers()}
+                          >
+                            {t("刷新")}
+                          </Button>
+                        </div>
+
+                        <div className="flex flex-wrap gap-1.5">
+                          {(players?.Online ?? []).map((name) => (
+                            <span
+                              key={name}
+                              className="flex items-center gap-1.5 rounded-full border nya-border px-2.5 py-1 text-[11px]"
+                            >
+                              <Person20Regular />
+                              {name}
+                              <button
+                                className="cursor-pointer text-gray-400 hover:text-danger"
+                                onClick={() => void kickPlayer(name)}
+                              >
+                                {t("踢出")}
+                              </button>
+                              <button
+                                className="cursor-pointer text-gray-400 hover:text-danger"
+                                onClick={() => void banPlayer(name)}
+                              >
+                                {t("封禁")}
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            className="min-w-0 flex-1"
+                            isDisabled={!players?.Running}
+                            placeholder={t("输入要广播的内容")}
+                            size="sm"
+                            value={broadcast}
+                            variant="bordered"
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") void sendBroadcast();
+                            }}
+                            onValueChange={setBroadcast}
+                          />
+                          <Button
+                            isDisabled={!players?.Running || !broadcast.trim()}
+                            size="sm"
+                            variant="flat"
+                            onPress={() => void sendBroadcast()}
+                          >
+                            {t("广播")}
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* 名单 */}
+                      <div className="flex flex-col gap-3 rounded-lg border nya-border p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                            {t("白名单")}
+                          </span>
+                          <Switch
+                            aria-label={t("白名单")}
+                            color="primary"
+                            isDisabled={!players}
+                            isSelected={!!players?.WhitelistEnabled}
+                            size="sm"
+                            onValueChange={(value) =>
+                              void toggleWhitelist(value)
+                            }
+                          />
+                          <span className="text-[11px] text-gray-400">
+                            {players?.Running
+                              ? t("服务器运行中：改动会作为指令立即生效。")
+                              : t(
+                                  "服务器已停止：改动直接写入名单文件（离线 UUID 自动补齐）。",
+                                )}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            className="min-w-0 flex-1"
+                            placeholder={t(
+                              "玩家名（1–16 位字母、数字或下划线）",
+                            )}
+                            size="sm"
+                            value={playerName}
+                            variant="bordered"
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") void addWhitelist();
+                            }}
+                            onValueChange={setPlayerName}
+                          />
+                          <Button
+                            isDisabled={!playerName.trim()}
+                            size="sm"
+                            variant="flat"
+                            onPress={() => void addWhitelist()}
+                          >
+                            {t("加入白名单")}
+                          </Button>
+                          <Button
+                            isDisabled={!playerName.trim()}
+                            size="sm"
+                            variant="flat"
+                            onPress={() => void makeOp(playerName.trim())}
+                          >
+                            {t("设为管理员")}
+                          </Button>
+                        </div>
+
+                        {[
+                          {
+                            key: "whitelist",
+                            title: t("白名单"),
+                            items: (players?.Whitelist ?? []).map((item) => ({
+                              name: item.name,
+                              detail: item.uuid,
+                              remove: () => void removeWhitelist(item.name),
+                            })),
+                          },
+                          {
+                            key: "ops",
+                            title: t("管理员（OP）"),
+                            items: (players?.Ops ?? []).map((item) => ({
+                              name: item.name,
+                              detail: `${t("权限等级")} ${item.level}`,
+                              remove: () => void removeOp(item.name),
+                            })),
+                          },
+                          {
+                            key: "banned",
+                            title: t("封禁名单"),
+                            items: (players?.Banned ?? []).map((item) => ({
+                              name: item.name,
+                              detail: item.reason || t("无理由"),
+                              remove: () => void unbanPlayer(item.name),
+                            })),
+                          },
+                        ].map((group) => (
+                          <div
+                            key={group.key}
+                            className="flex flex-col gap-1.5"
+                          >
+                            <span className="text-[12px] font-medium text-gray-600 dark:text-gray-300">
+                              {group.title} · {group.items.length}
+                            </span>
+                            {group.items.length === 0 ? (
+                              <span className="text-[11px] text-gray-400">
+                                {t("（空）")}
+                              </span>
+                            ) : (
+                              <div className="flex flex-col gap-1">
+                                {group.items.map((item) => (
+                                  <div
+                                    key={`${group.key}-${item.name}`}
+                                    className="flex items-center gap-2 rounded-lg border nya-border px-3 py-1.5"
+                                  >
+                                    <span className="min-w-0 flex-1 truncate text-[12px] text-gray-700 dark:text-gray-300">
+                                      {item.name}
+                                    </span>
+                                    <span className="truncate font-mono text-[10px] text-gray-400">
+                                      {item.detail}
+                                    </span>
+                                    <Button
+                                      color="danger"
+                                      isDisabled={playerBusy}
+                                      size="sm"
+                                      variant="light"
+                                      onPress={item.remove}
+                                    >
+                                      {t("移除")}
+                                    </Button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* 备份 */}
+                  {tab === "backup" ? (
+                    <div className="flex flex-col gap-3">
+                      {/* 策略 */}
+                      <div className="flex flex-col gap-3 rounded-lg border nya-border p-4">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                              {t("自动备份")}
+                            </div>
+                            <div className="text-[11px] text-gray-400">
+                              {t(
+                                "开启后每 {0} 小时自动备份一次；每次备份前都会先把世界刷盘。",
+                                { "0": String(backupSettings.IntervalHours) },
+                              )}
+                            </div>
+                          </div>
+                          <Switch
+                            aria-label={t("自动备份")}
+                            color="primary"
+                            isSelected={backupSettings.Enabled}
+                            size="sm"
+                            onValueChange={(value) =>
+                              setBackupSettings((prev) => ({
+                                ...prev,
+                                Enabled: value,
+                              }))
+                            }
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-3">
+                          <Input
+                            label={t("间隔（小时）")}
+                            min={1}
+                            size="sm"
+                            type="number"
+                            value={String(backupSettings.IntervalHours)}
+                            variant="bordered"
+                            onValueChange={(value) =>
+                              setBackupSettings((prev) => ({
+                                ...prev,
+                                IntervalHours: Math.max(1, Number(value) || 1),
+                              }))
+                            }
+                          />
+                          <Input
+                            label={t("保留份数（0 = 不限）")}
+                            min={0}
+                            size="sm"
+                            type="number"
+                            value={String(backupSettings.KeepCount)}
+                            variant="bordered"
+                            onValueChange={(value) =>
+                              setBackupSettings((prev) => ({
+                                ...prev,
+                                KeepCount: Math.max(0, Number(value) || 0),
+                              }))
+                            }
+                          />
+                          <Input
+                            label={t("保留天数（0 = 不限）")}
+                            min={0}
+                            size="sm"
+                            type="number"
+                            value={String(backupSettings.KeepDays)}
+                            variant="bordered"
+                            onValueChange={(value) =>
+                              setBackupSettings((prev) => ({
+                                ...prev,
+                                KeepDays: Math.max(0, Number(value) || 0),
+                              }))
+                            }
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            color="primary"
+                            isLoading={backupBusy}
+                            size="sm"
+                            startContent={
+                              backupBusy ? undefined : (
+                                <ArrowDownload20Regular />
+                              )
+                            }
+                            variant="flat"
+                            onPress={() => void runBackupNow()}
+                          >
+                            {t("立即备份")}
+                          </Button>
+                          <Button
+                            isDisabled={backupBusy}
+                            size="sm"
+                            startContent={<CheckmarkCircle20Regular />}
+                            variant="flat"
+                            onPress={() => void saveBackupSettings()}
+                          >
+                            {t("保存备份策略")}
+                          </Button>
+                          <span className="text-[11px] text-gray-400">
+                            {selected.Status === "stopped"
+                              ? t("服务器已停止，备份会直接打包目录。")
+                              : t(
+                                  "服务器运行中：将先暂停世界写入（save-off）再打包，完成后自动恢复。",
+                                )}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* 列表 */}
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                            {t("备份列表")}
+                          </span>
+                          <span className="text-[11px] text-gray-400">
+                            {backups.length} {t("份")}
+                          </span>
+                          <Button
+                            className="ml-auto"
+                            isLoading={backupLoading}
+                            size="sm"
+                            startContent={
+                              backupLoading ? undefined : <ArrowSync20Regular />
+                            }
+                            variant="light"
+                            onPress={() => void refreshBackups()}
+                          >
+                            {t("刷新")}
+                          </Button>
+                        </div>
+
+                        {backups.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-gray-300/80 px-4 py-6 text-center text-[11px] text-gray-400 dark:border-gray-700">
+                            {t("暂无备份")}
+                          </div>
+                        ) : (
+                          backups.map((item) => (
+                            <div
+                              key={item.Name}
+                              className="flex flex-wrap items-center gap-2 rounded-lg border nya-border px-3.5 py-2.5"
+                            >
+                              <span className="min-w-0 flex-1">
+                                <span className="block truncate font-mono text-[12px] text-gray-700 dark:text-gray-300">
+                                  {item.Name}
+                                </span>
+                                <span className="block text-[10px] text-gray-400">
+                                  {new Date(
+                                    Number(item.CreatedAt) * 1000,
+                                  ).toLocaleString()}{" "}
+                                  · {formatSize(Number(item.SizeBytes))}
+                                </span>
+                              </span>
+                              <Chip
+                                color={item.Hot ? "warning" : "default"}
+                                size="sm"
+                                variant="flat"
+                              >
+                                {item.Hot ? t("热备份") : t("冷备份")}
+                              </Chip>
+                              <Button
+                                isDisabled={backupBusy}
+                                size="sm"
+                                variant="flat"
+                                onPress={() => void restoreBackup(item.Name)}
+                              >
+                                {t("恢复")}
+                              </Button>
+                              <Button
+                                color="danger"
+                                isDisabled={backupBusy}
+                                size="sm"
+                                variant="light"
+                                onPress={() => void removeBackup(item.Name)}
+                              >
+                                {t("删除")}
+                              </Button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {/* 启动参数 */}
+                  {tab === "java" ? (
+                    <div className="flex flex-col gap-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          color="primary"
+                          size="sm"
+                          variant="flat"
+                          onPress={() => void saveLaunchOptions()}
+                        >
+                          {t("保存启动参数")}
+                        </Button>
+                        {selected.Status !== "stopped" ? (
+                          <span className="text-[11px] text-warning">
+                            {t("服务器运行中时修改不会生效，请先停止。")}
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {/* 崩溃自动重启 */}
+                      <div className="flex items-center gap-3 rounded-lg border nya-border px-4 py-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                            {t("崩溃自动重启")}
+                          </div>
+                          <div className="text-[11px] text-gray-400">
+                            {t(
+                              "进程异常退出时自动重新启动（10 分钟内最多 3 次，手动停止不触发）",
+                            )}
+                          </div>
+                        </div>
+                        <Switch
+                          aria-label={t("崩溃自动重启")}
+                          color="primary"
+                          isSelected={autoRestart}
+                          size="sm"
+                          onValueChange={(value) =>
+                            void toggleAutoRestart(value)
+                          }
+                        />
+                      </div>
+                      {/* 内存 */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <Input
+                          endContent={
+                            <span className="text-[11px] text-gray-400">
+                              MB
+                            </span>
+                          }
+                          isInvalid={
+                            !!launchMemoryMax && Number(launchMemoryMax) <= 0
+                          }
+                          label={t("最大内存（-Xmx，0 = 不限制）")}
+                          size="sm"
+                          type="number"
+                          value={launchMemoryMax}
+                          variant="bordered"
+                          onValueChange={setLaunchMemoryMax}
+                        />
+                        <Input
+                          endContent={
+                            <span className="text-[11px] text-gray-400">
+                              MB
+                            </span>
+                          }
+                          isInvalid={
+                            !!launchMemoryMin &&
+                            Number(launchMemoryMin) >
+                              (Number(launchMemoryMax) || Infinity)
+                          }
+                          label={t("初始内存（-Xms，0 = 不设置）")}
+                          size="sm"
+                          type="number"
+                          value={launchMemoryMin}
+                          variant="bordered"
+                          onValueChange={setLaunchMemoryMin}
+                        />
+                      </div>
+
+                      {/* 高级参数（额外 JVM 参数 + 命令行预览）：默认收起 */}
+                      <button
+                        className="flex w-full cursor-pointer items-center justify-between rounded-lg px-1 py-1 text-left"
+                        onClick={() => setJvmAdvancedOpen((v) => !v)}
+                      >
+                        <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                          {t("高级参数")}
+                        </span>
+                        <span
+                          className={`text-[11px] text-gray-400 transition-transform ${jvmAdvancedOpen ? "rotate-180" : ""}`}
+                        >
+                          ▾
+                        </span>
+                      </button>
+                      <AnimatePresence initial={false}>
+                        {jvmAdvancedOpen ? (
+                          <motion.div
+                            animate={{ height: "auto", opacity: 1 }}
+                            className="overflow-hidden"
+                            exit={{ height: 0, opacity: 0 }}
+                            initial={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.2, ease: "easeInOut" }}
+                          >
+                            <div className="flex flex-col gap-3 pb-1">
+                              {/* 预设 + 额外参数 */}
+                              <div>
+                                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                                  <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                                    {t("额外 JVM 参数（每行一个）")}
+                                  </span>
+                                  <div className="flex gap-1.5">
+                                    <Button
+                                      size="sm"
+                                      variant="flat"
+                                      onPress={() =>
+                                        setLaunchExtraArgs(
+                                          AIKAR_FLAGS.join("\n"),
+                                        )
+                                      }
+                                    >
+                                      {t("Aikar 优化参数")}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="light"
+                                      onPress={() => setLaunchExtraArgs("")}
+                                    >
+                                      {t("清空")}
+                                    </Button>
+                                  </div>
+                                </div>
+                                <Textarea
+                                  classNames={{
+                                    input: "font-mono text-[11px]",
+                                  }}
+                                  minRows={4}
+                                  placeholder={t("如 -XX:+UseG1GC")}
+                                  size="sm"
+                                  value={launchExtraArgs}
+                                  variant="bordered"
+                                  onValueChange={setLaunchExtraArgs}
+                                />
+                                <div className="mt-1 text-[11px] text-gray-400">
+                                  {t(
+                                    "预设为社区标准的 Aikar GC 调优参数，适合 12GB 以下的堆。",
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* 命令行预览 */}
+                              <div>
+                                <div className="mb-1 text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                                  {t("启动命令预览")}
+                                </div>
+                                <div className="nya-scroll overflow-x-auto rounded-lg bg-black/85 p-3 font-mono text-[11px] leading-relaxed text-gray-200 dark:bg-white/80 dark:text-gray-800">
+                                  {launchPreview}
+                                </div>
+                              </div>
+                            </div>
+                          </motion.div>
+                        ) : null}
+                      </AnimatePresence>
+                    </div>
+                  ) : null}
+                </SwitchTransition>
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -3043,7 +3199,7 @@ const ServersPage: React.FC = () => {
           >
             {eulaStep ? (
               <div className="flex flex-col gap-3">
-                <div className="rounded-2xl bg-warning/10 px-4 py-3 text-[12px] leading-relaxed text-gray-700 dark:text-gray-300">
+                <div className="rounded-lg bg-warning/10 px-4 py-3 text-[12px] leading-relaxed text-gray-700 dark:text-gray-300">
                   {t(
                     "创建服务器即代表你同意 Minecraft 最终用户许可协议（EULA）：不得将服务器用于商业盈利等用途。同意后启动器会自动在服务器目录写入 eula=true。",
                   )}
@@ -3099,7 +3255,7 @@ const ServersPage: React.FC = () => {
                     {CORE_OPTIONS.map((core) => (
                       <button
                         key={core}
-                        className={`cursor-pointer rounded-xl px-2 py-1.5 text-[12px] font-semibold transition-colors ${
+                        className={`cursor-pointer rounded-lg px-2 py-1.5 text-[12px] font-semibold transition-colors ${
                           form.core === core
                             ? "bg-primary/15 text-primary ring-1 ring-primary/40"
                             : "text-gray-600 hover:bg-default-100 dark:text-gray-300 dark:hover:bg-gray-800"
@@ -3119,6 +3275,7 @@ const ServersPage: React.FC = () => {
                     aria-label={t("MC 版本")}
                     isLoading={mcLoading}
                     items={mcVersions.map((v) => ({ key: v }))}
+                    popoverProps={selectPopoverProps}
                     selectedKeys={form.mcVersion ? [form.mcVersion] : []}
                     size="sm"
                     variant="bordered"
@@ -3145,7 +3302,7 @@ const ServersPage: React.FC = () => {
                     <span className="text-[12px] text-gray-500 dark:text-gray-400">
                       {t("服务端版本")}
                     </span>
-                    <div className="nya-scroll h-32 overflow-y-auto rounded-xl border border-gray-200 p-1 dark:border-gray-800">
+                    <div className="nya-scroll h-32 overflow-y-auto rounded-lg border border-gray-200 p-1 dark:border-gray-800">
                       {coreVersionLoading ? (
                         <div className="py-6 text-center text-[11px] text-gray-400">
                           {t("正在获取版本列表…")}
@@ -3180,9 +3337,19 @@ const ServersPage: React.FC = () => {
                     </div>
                   </div>
                 ) : null}
-                {collapseToggle(createAdvancedOpen, t("高级选项"), () =>
-                  setCreateAdvancedOpen((v) => !v),
-                )}
+                <button
+                  className="flex w-full cursor-pointer items-center justify-between rounded-lg px-1 py-1 text-left"
+                  onClick={() => setCreateAdvancedOpen((v) => !v)}
+                >
+                  <span className="text-[13px] font-semibold text-gray-700 dark:text-gray-300">
+                    {t("高级选项")}
+                  </span>
+                  <span
+                    className={`text-[11px] text-gray-400 transition-transform ${createAdvancedOpen ? "rotate-180" : ""}`}
+                  >
+                    ▾
+                  </span>
+                </button>
                 <AnimatePresence initial={false}>
                   {createAdvancedOpen ? (
                     <motion.div
@@ -3218,6 +3385,7 @@ const ServersPage: React.FC = () => {
                         </div>
                         <Select
                           label={t("Java 运行时")}
+                          popoverProps={selectPopoverProps}
                           selectedKeys={[form.javaPath || "__auto__"]}
                           size="sm"
                           variant="bordered"
@@ -3292,7 +3460,7 @@ const ServersPage: React.FC = () => {
         {transfer ? (
           <motion.div
             animate={{ opacity: 1, y: 0 }}
-            className="nya-panel absolute bottom-5 left-1/2 z-30 w-72 -translate-x-1/2 rounded-2xl border nya-border px-4 py-3"
+            className="nya-panel absolute bottom-5 left-1/2 z-30 w-72 -translate-x-1/2 rounded-large border nya-border px-4 py-3"
             exit={{ opacity: 0, y: 12 }}
             initial={{ opacity: 0, y: 12 }}
           >

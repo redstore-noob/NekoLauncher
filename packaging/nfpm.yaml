@@ -43,7 +43,9 @@ contents:
     file_info:
       mode: 0755
 
-  - src: build/appicon.png
+  # CI 在打包前用 ImageMagick 缩出 256x256 标准尺寸（build/appicon-256.png），
+  # 直接映射 1.4MB 原图会让图标槽位尺寸不符（与 AppImage 的 linuxdeploy 同款问题）。
+  - src: build/appicon-256.png
     dst: /usr/share/icons/hicolor/256x256/apps/neko-launcher.png
     file_info:
       mode: 0644

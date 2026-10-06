@@ -236,14 +236,15 @@ func TestForbiddenReportsAPIKeyHintWithoutFallback(t *testing.T) {
 	if got := mirror.count(); got != 0 {
 		t.Fatalf("镜像请求次数 = %d，期望 0（不该偷偷绕过用户的 Key）", got)
 	}
-	if !strings.Contains(err.Error(), "API Key") || !strings.Contains(err.Error(), APIKeyApplyURL) {
-		t.Fatalf("错误信息应说明 Key 有问题并给出申请地址：%s", err.Error())
+	if !strings.Contains(err.Error(), "API Key") || !strings.Contains(err.Error(), "限流") {
+		t.Fatalf("错误信息应说明内置 Key 无效或被限流：%s", err.Error())
 	}
 }
 
-// TestForbiddenWithoutKeyExplainsHowToConfigure 防的回归：
-// 完全没带 Key 时提示语写成"Key 无效"（用户以为配错了，其实根本没配）。
-func TestForbiddenWithoutKeyExplainsHowToConfigure(t *testing.T) {
+// TestForbiddenWithoutKeyExplainsBuiltinOnly 防的回归：
+// 完全没带 Key 时提示语写成"Key 无效"（用户以为内置 Key 出了问题，
+// 其实当前构建根本没注入）。
+func TestForbiddenWithoutKeyExplainsBuiltinOnly(t *testing.T) {
 	official := newStubEndpoint(t, http.StatusUnauthorized, "")
 	useStubEndpoints(t, official, nil)
 
@@ -251,8 +252,8 @@ func TestForbiddenWithoutKeyExplainsHowToConfigure(t *testing.T) {
 	if err == nil {
 		t.Fatal("401 必须报错")
 	}
-	if !strings.Contains(err.Error(), "需要 API Key") {
-		t.Fatalf("未配置 Key 时提示应说明「需要先在设置里填写」：%s", err.Error())
+	if !strings.Contains(err.Error(), "需要内置 API Key") {
+		t.Fatalf("未注入 Key 时提示应说明「当前构建未包含」：%s", err.Error())
 	}
 }
 
@@ -398,7 +399,7 @@ func TestHostHelpersDeriveFromConstants(t *testing.T) {
 	if got := MirrorHost(); got != "mod.mcimirror.top" {
 		t.Fatalf("MirrorHost = %q", got)
 	}
-	if !strings.Contains(APIKeyHint, APIKeyApplyURL) {
-		t.Fatal("未配置 Key 的引导里必须包含申请地址")
+	if !strings.Contains(APIKeyHint, "内置 API Key") {
+		t.Fatal("内置 Key 未生效的引导里必须说明 Key 的唯一来源")
 	}
 }

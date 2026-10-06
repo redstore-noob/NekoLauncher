@@ -14,8 +14,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import React, { useEffect, useState } from "react";
-import { Slider, Switch } from "@heroui/react";
+import React, { useEffect, useRef, useState } from "react";
+import { Switch } from "@heroui/react";
 
 import {
   GetMemorySliderMaximum,
@@ -26,6 +26,7 @@ import {
   GetSystemMemory,
 } from "../../../wailsjs/go/bindings/LauncherAPI";
 import { t } from "../../i18n";
+import { startVisiblePoll } from "../../lib/visibility";
 
 import Section, { SettingRow } from "./Section";
 
@@ -74,11 +75,11 @@ const MemorySection: React.FC = () => {
     };
 
     void refresh();
-    const timer = setInterval(() => void refresh(), 5000);
+    const stop = startVisiblePoll(() => void refresh(), 5000);
 
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      stop();
     };
   }, []);
 
@@ -87,6 +88,67 @@ const MemorySection: React.FC = () => {
 
     setSaveHint(ok ? t("已保存：{0} MB", { "0": mb }) : t("保存失败"));
     setTimeout(() => setSaveHint(""), 2000);
+  };
+
+  // ---- 单轨道内存条 ----
+  // 一整条轨道、两种颜色：琥珀色 = 系统已占用（垫底），主题色 = 分配给游戏的
+  // 内存（叠在上层、右端带手柄），右侧灰 = 剩余可用。不再用 HeroUI Slider +
+  // 外层绝对定位的组合——两边轨道高度对不齐，视觉上会裂成两条。
+  const MIN_MB = 512;
+  const trackRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+
+  const gamePct =
+    sliderMax > MIN_MB
+      ? Math.min(
+          100,
+          Math.max(0, ((memoryMb - MIN_MB) / (sliderMax - MIN_MB)) * 100),
+        )
+      : 0;
+  const usedPct =
+    systemTotalMb > 0 ? Math.min(100, (usedMb / sliderMax) * 100) : 0;
+
+  const valueFromPointer = (clientX: number) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+
+    if (!rect || rect.width === 0) return memoryMb;
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    const raw = MIN_MB + ratio * (sliderMax - MIN_MB);
+    const stepped = Math.round(raw / 256) * 256;
+
+    return Math.min(sliderMax, Math.max(MIN_MB, stepped));
+  };
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    draggingRef.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setMemoryMb(valueFromPointer(e.clientX));
+  };
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    setMemoryMb(valueFromPointer(e.clientX));
+  };
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    const final = valueFromPointer(e.clientX);
+
+    setMemoryMb(final);
+    void commit(final);
+  };
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // 步进 256MB，与拖拽吸附保持一致
+    const delta = e.shiftKey ? 1024 : 256;
+    let next: number | null = null;
+
+    if (e.key === "ArrowLeft" || e.key === "ArrowDown") next = memoryMb - delta;
+    if (e.key === "ArrowRight" || e.key === "ArrowUp") next = memoryMb + delta;
+    if (next === null) return;
+    e.preventDefault();
+    const clamped = Math.min(sliderMax, Math.max(MIN_MB, next));
+
+    setMemoryMb(clamped);
+    void commit(clamped);
   };
 
   return (
@@ -115,7 +177,7 @@ const MemorySection: React.FC = () => {
 
       <div className={`py-3 ${isAuto ? "opacity-50 pointer-events-none" : ""}`}>
         {isAuto ? (
-          <div className="mb-2 rounded-xl bg-default-100 px-3 py-2 text-xs text-gray-500 dark:bg-default-100/50">
+          <div className="mb-2 rounded-lg bg-default-100 px-3 py-2 text-xs text-gray-500 dark:bg-default-100/50">
             {t(
               "已开启自动调整：启动器按游戏版本与系统剩余内存自动分配，无需手动设置。",
             )}
@@ -129,8 +191,8 @@ const MemorySection: React.FC = () => {
             {memoryMb}MB
           </div>
         </div>
-        {/* 合并式占用条：同一条轨道上，琥珀色段 = 系统已占用（垫底），
-            主题色滑块 = 分配给游戏的内存，轨道右侧灰色 = 剩余可用 */}
+        {/* 单轨道双色内存条：琥珀 = 系统已占用（垫底），主题色 = 分配给游戏
+            （叠在上层、右端手柄），右侧灰 = 剩余可用 */}
         {systemTotalMb > 0 && (
           <div className="mb-1.5 flex items-center justify-between text-xs">
             <span className="text-gray-400">
@@ -141,34 +203,34 @@ const MemorySection: React.FC = () => {
             </span>
           </div>
         )}
-        <div className="relative">
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 top-1/2 h-2.5 -translate-y-1/2 overflow-hidden rounded-full bg-default-200/70"
-          >
+        <div
+          ref={trackRef}
+          aria-label={t("最大内存")}
+          aria-valuemax={sliderMax}
+          aria-valuemin={MIN_MB}
+          aria-valuenow={memoryMb}
+          className="relative flex h-8 cursor-pointer touch-none select-none items-center"
+          role="slider"
+          tabIndex={0}
+          onKeyDown={onKeyDown}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+        >
+          <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-default-200/70">
             <div
-              className="h-full rounded-full bg-amber-400 transition-[width] duration-500 dark:bg-amber-500/90"
-              style={{
-                width: `${Math.min(100, sliderMax > 0 ? (usedMb / sliderMax) * 100 : 0)}%`,
-              }}
+              className="absolute inset-y-0 left-0 rounded-full bg-amber-400 transition-[width] duration-500 dark:bg-amber-500/90"
+              style={{ width: `${usedPct}%` }}
+            />
+            <div
+              className="absolute inset-y-0 left-0 rounded-full bg-primary"
+              style={{ width: `${gamePct}%` }}
             />
           </div>
-          <Slider
-            showTooltip
-            aria-label={t("最大内存")}
-            classNames={{
-              track: "bg-transparent!",
-              filler: "bg-primary",
-            }}
-            color="primary"
-            fillOffset={512}
-            getValue={(v) => `${v} MB`}
-            maxValue={sliderMax}
-            minValue={512}
-            step={256}
-            value={memoryMb}
-            onChange={(v) => setMemoryMb(Array.isArray(v) ? v[0] : v)}
-            onChangeEnd={(v) => commit(Array.isArray(v) ? v[0] : v)}
+          {/* 手柄：压在轨道上，指向"分配给游戏"的右端 */}
+          <div
+            className="pointer-events-none absolute top-1/2 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary shadow ring-4 ring-primary/25"
+            style={{ left: `${gamePct}%` }}
           />
         </div>
         <div className="flex items-center justify-between mt-1 text-xs text-gray-400">

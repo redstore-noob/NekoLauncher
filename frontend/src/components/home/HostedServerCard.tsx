@@ -15,7 +15,13 @@
  */
 import type { mcserver } from "../../../wailsjs/go/models";
 
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Button, Select, SelectItem, Spinner } from "@heroui/react";
 import {
   ArrowClockwise20Regular as RefreshIcon,
@@ -25,6 +31,7 @@ import {
   Stop20Filled,
 } from "@fluentui/react-icons";
 
+import { selectPopoverProps } from "../../lib/motion";
 import {
   ListServers,
   PollServer,
@@ -33,7 +40,7 @@ import {
 } from "../../../wailsjs/go/bindings/ServerHostAPI";
 import { GetValue, SetValue } from "../../../wailsjs/go/bindings/ConfigAPI";
 import { navigateToPage } from "../../lib/navigation";
-import { popoverMotionProps } from "../../lib/motion";
+import { startVisiblePoll } from "../../lib/visibility";
 import { t } from "../../i18n";
 
 import HomeCard from "./HomeCard";
@@ -118,16 +125,34 @@ const HostedServerCard: React.FC = () => {
 
   const selected = servers.find((server) => server.ID === selectedId) ?? null;
 
+  // 缓存 Select 的 items，避免每次渲染都创建新数组导致闪烁
+  const serverItems = useMemo(
+    () =>
+      servers.map((server) => ({
+        key: server.ID,
+        label: `${server.Name}（${server.MCVersion}）`,
+      })),
+    [servers],
+  );
+
   // 状态轮询：选中服务器存在时定时拉快照（运行中才有指标，停止时清空）
   useEffect(() => {
     if (!selectedId) return;
     // 请求是异步的：切到别的服务器后，旧请求回来会把上一台的 CPU/内存
     // 写到新服务器的名字下面，所以回写前再核对一次当前选中的 id
     const requestId = selectedId;
+    // 游标跟随后端推进：卡片只消费 Status/Players/CPU/Memory，不需要日志行；
+    // 恒传 0 会让后端每秒把环形缓冲里全部日志行重新序列化一遍（纯浪费）。
+    // 在途标记防 1 秒节拍遇慢响应时并发重复拉取（与 servers.tsx 的游标页同款）。
+    let cursor = 0;
+    let inFlight = false;
     const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const snapshot = await PollServer(requestId, 0);
+        const snapshot = await PollServer(requestId, cursor);
 
+        cursor = snapshot.NextCursor ?? 0;
         if (!alive.current || requestId !== selectedIdRef.current) return;
         if (snapshot.Status === "stopped") setRuntime(null);
         else setRuntime(snapshot);
@@ -137,13 +162,14 @@ const HostedServerCard: React.FC = () => {
         if (alive.current && requestId === selectedIdRef.current) {
           setRuntime(null);
         }
+      } finally {
+        inFlight = false;
       }
     };
 
     void poll();
-    const timer = window.setInterval(() => void poll(), POLL_INTERVAL);
 
-    return () => window.clearInterval(timer);
+    return startVisiblePoll(() => void poll(), POLL_INTERVAL);
   }, [selectedId, refreshList]);
 
   const doStart = async () => {
@@ -197,8 +223,8 @@ const HostedServerCard: React.FC = () => {
       value={value}
     >
       {servers.length === 0 ? (
-        <div className="nya-enter flex flex-col items-center gap-1.5 rounded-2xl bg-black/5 px-3 py-5 text-center dark:bg-white/5">
-          <span className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+        <div className="nya-enter flex flex-col items-center gap-1.5 rounded-lg bg-black/5 px-3 py-5 text-center dark:bg-white/5">
+          <span className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Server20Regular className="h-5 w-5" />
           </span>
           <span className="text-xs leading-relaxed text-gray-400">
@@ -208,7 +234,7 @@ const HostedServerCard: React.FC = () => {
             className="h-7 text-xs"
             size="sm"
             variant="flat"
-            onPress={() => navigateToPage("multiplayer", "servers")}
+            onPress={() => navigateToPage("servers")}
           >
             {t("前往服务器页")}
           </Button>
@@ -220,13 +246,10 @@ const HostedServerCard: React.FC = () => {
             aria-label={t("选择服务器")}
             classNames={{
               trigger:
-                "min-h-9 rounded-xl bg-default-100/80 data-[hover=true]:bg-default-200",
+                "min-h-9 rounded-lg bg-default-100/80 data-[hover=true]:bg-default-200",
             }}
-            items={servers.map((server) => ({
-              key: server.ID,
-              label: `${server.Name}（${server.MCVersion}）`,
-            }))}
-            popoverProps={{ motionProps: popoverMotionProps }}
+            items={serverItems}
+            popoverProps={selectPopoverProps}
             selectedKeys={selected ? [selected.ID] : []}
             size="sm"
             variant="flat"
@@ -240,7 +263,7 @@ const HostedServerCard: React.FC = () => {
           </Select>
 
           {selected ? (
-            <div className="nya-enter flex flex-col gap-2.5 rounded-2xl bg-black/5 px-3 py-2.5 dark:bg-white/5">
+            <div className="nya-enter flex flex-col gap-2.5 rounded-lg bg-black/5 px-3 py-2.5 dark:bg-white/5">
               {/* 状态徽标 + 在线人数 */}
               <div className="flex min-w-0 items-center gap-1.5">
                 <span
@@ -306,7 +329,7 @@ const HostedServerCard: React.FC = () => {
                   isDisabled={status === "stopping"}
                   size="sm"
                   variant="light"
-                  onPress={() => navigateToPage("multiplayer", "servers")}
+                  onPress={() => navigateToPage("servers")}
                 >
                   <Open20Regular className="h-3.5 w-3.5" />
                   {t("管理")}

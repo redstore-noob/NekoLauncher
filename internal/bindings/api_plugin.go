@@ -58,6 +58,23 @@ type pluginManifest struct {
 	Capabilities map[string]bool `yaml:"capabilities,omitempty" json:"capabilities"`
 	// Settings 默认设置：首次加载时由前端种入插件 config（键为插件视角的裸键）。
 	Settings map[string]string `yaml:"settings,omitempty" json:"settings"`
+	// LaunchTransform 启动贡献（v1：仅 JVM / 游戏参数的**追加**）。
+	//
+	// 这是「插件 → 启动管线」的唯一通道，刻意做得很窄：
+	//   - 只支持追加参数，不支持改主类 / 换 Java / 动 classpath
+	//     （那些能力在 launch.MinecraftLaunchTransform 里存在，但开放给插件
+	//     等于把"启动一个不是 Minecraft 的进程"变成一行 YAML）；
+	//   - 需要 capabilities.launch-transform = true，且前端会在启动前展示
+	//     "这个插件想给本次启动加什么"让用户确认。
+	LaunchTransform *pluginLaunchTransform `yaml:"launchTransform,omitempty" json:"launchTransform,omitempty"`
+}
+
+// pluginLaunchTransform 插件声明的启动贡献。
+type pluginLaunchTransform struct {
+	// AppendJvmArguments 追加到 JVM 段末尾（主类之前）。支持启动器占位符。
+	AppendJvmArguments []string `yaml:"appendJvmArguments,omitempty" json:"appendJvmArguments"`
+	// AppendGameArguments 追加到游戏参数末尾。
+	AppendGameArguments []string `yaml:"appendGameArguments,omitempty" json:"appendGameArguments"`
 }
 
 // pluginEntryName 入口文件缺省名（清单 entry 字段可改写）。
@@ -100,12 +117,12 @@ type PluginInfo struct {
 	APIVersion  string
 	Entry       string
 	// IconFile 图标文件名（相对插件目录）；目录里没有图标时为空。
-	IconFile      string
-	Directory     string
-	SizeBytes     int64
-	FileCount     int
-	ModifiedAt    int64 // Unix 秒
-	Disabled      bool
+	IconFile   string
+	Directory  string
+	SizeBytes  int64
+	FileCount  int
+	ModifiedAt int64 // Unix 秒
+	Disabled   bool
 	// Dev 开发模式插件（入口为 JSX 源码，运行时编译），插件页可用它打标。
 	Dev bool
 	// Capabilities 已声明的权限键（只取值为 true 的，按字母排序），插件页展示用。

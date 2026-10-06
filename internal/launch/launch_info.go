@@ -104,11 +104,24 @@ type MinecraftLaunchOptions struct {
 	// Transform 已启用插件贡献的启动变换（Java 路径覆盖、类路径与参数前后插入、
 	// 环境变量等）。nil 等价于空变换，即不改变原有启动行为。
 	//
-	// 现状（可行性复检结论）：这条链路**还没有接线**——插件贡献目前只能通过
-	// 版本档案里的额外 JVM / 游戏参数生效，没有任何地方会填充 Transform，
-	// 启动时解析出来的永远是空变换。保留字段是为了不改动启动管线的公开签名，
-	// 但不要以为它能用（要接线需先有"插件贡献清单 → Transform"的转换层）。
+	// 接线状态：由绑定层经 LaunchTransformProvider 注入（launch_transform_provider.go），
+	// 未注入时启动管线取到空变换。
 	Transform *MinecraftLaunchTransform
+	// TransformPluginID 本次生效变换的来源插件 id（仅供溯源展示，不参与启动决策）。
+	// 空串表示变换不来自插件。
+	TransformPluginID string
+	// CollectProvenance 为 true 时额外记录每条最终参数的来历（launch_provenance.go）。
+	// 只影响"为什么这样启动"的展示，不改变任何下发参数。
+	CollectProvenance bool
+	// Provenance 装配完成后回填的溯源报告（CollectProvenance 为 true 时非 nil）。
+	// 由 Build 侧写入，调用方只读。
+	Provenance *LaunchProvenanceReport
+	// MemoryFromInstanceSettings 本次最大内存来自实例独立设置（供溯源归因）。
+	MemoryFromInstanceSettings bool
+	// MemoryIsAutomatic 本次最大内存由启动器按可用内存自动计算（供溯源归因）。
+	MemoryIsAutomatic bool
+	// UsingGlobalLaunchSettings 本次高级设置来自全局（而非实例独立设置），供溯源归因。
+	UsingGlobalLaunchSettings bool
 	// LogCallback 启动过程中的文本日志回调（如 Java 自动下载阶段的进度提示）；可为空。
 	LogCallback func(string)
 	// GameOutputCallback 游戏进程 stdout/stderr 行回调（Go 移植新增：C# 由
@@ -141,6 +154,9 @@ type MinecraftLaunchPlan struct {
 	WrapperCommand []string
 	// ProcessPriority 游戏进程优先级；空串或 "normal" 表示不调整。
 	ProcessPriority string
+	// Provenance 本次启动的参数溯源报告（options.CollectProvenance 为 false 时为 nil）。
+	// 只用于"为什么这样启动"的解释面板，不影响进程构造。
+	Provenance *LaunchProvenanceReport
 }
 
 // MinecraftLaunchResult Minecraft 实例启动后的结果。
@@ -153,6 +169,8 @@ type MinecraftLaunchResult struct {
 	VersionId                string
 	Username                 string
 	RequiredJavaMajorVersion *int
+	// Provenance 本次启动的参数溯源报告（未采集时为 nil）。
+	Provenance *LaunchProvenanceReport
 }
 
 // Pid 游戏进程 ID；进程未就绪时返回 0。

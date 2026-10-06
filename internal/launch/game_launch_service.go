@@ -71,6 +71,9 @@ type GameLaunchService struct {
 	launchId int64
 	// launchInProgress 0/1 启动互斥标记：同一时间只允许一次启动尝试。
 	launchInProgress atomic.Int32
+	// prepareStopRequested 准备阶段的取消请求（TryStopGame 在 Preparing 时置位）。
+	// launch 在各阶段边界检查：校验补全/凭据刷新/Java 下载都可能耗时数分钟。
+	prepareStopRequested atomic.Bool
 
 	gameProcess   *exec.Cmd
 	stopRequested bool
@@ -92,6 +95,26 @@ type GameLaunchService struct {
 	// GetLogText() 全量轮询（长日志每次重传 2000 行）。这里把行直接推给前端，
 	// 轮询退化为"重连兜底"。回调在日志追加之后、快照发布之前触发。
 	OnLogLine func(tag, line string)
+
+	// lastProvenance 最近一次成功启动的参数溯源报告（未采集时为 nil）。
+	// 与 gameProcess 同锁保护：读它的面板与启动流程是并发的。
+	lastProvenance *LaunchProvenanceReport
+	// lastLaunchVersionId 上述报告对应的版本 id（面板标题用）。
+	lastLaunchVersionId string
+}
+
+// LastProvenance 返回最近一次成功启动的参数溯源报告；从未启动过时为 nil。
+func (s *GameLaunchService) LastProvenance() *LaunchProvenanceReport {
+	s.gate.Lock()
+	defer s.gate.Unlock()
+	return s.lastProvenance
+}
+
+// LastLaunchVersionId 返回最近一次成功启动的版本 id（无记录时为空串）。
+func (s *GameLaunchService) LastLaunchVersionId() string {
+	s.gate.Lock()
+	defer s.gate.Unlock()
+	return s.lastLaunchVersionId
 }
 
 // NewGameLaunchService 构造启动服务；accountStore 为空时使用 auth.Shared。
@@ -122,13 +145,14 @@ func (s *GameLaunchService) GetLogText() string {
 }
 
 // LaunchSelected 启动当前选中的实例与账号（对应 C# LaunchSelectedAsync）。
-// serverHost/serverPort 非空时直接进服。
+// serverHost/serverPort 非空时直接进服，worldName 非空时直接进存档。
 func (s *GameLaunchService) LaunchSelected(
 	ctx context.Context,
 	serverHost string,
 	serverPort *int,
+	worldName string,
 ) LaunchResult {
-	return s.launch(ctx, "", serverHost, serverPort)
+	return s.launch(ctx, "", serverHost, serverPort, worldName)
 }
 
 // LaunchExplicit 以显式版本启动，不改变用户"当前选中"的实例（插件 API 使用）。
@@ -137,8 +161,9 @@ func (s *GameLaunchService) LaunchExplicit(
 	ctx context.Context,
 	versionID, serverHost string,
 	serverPort *int,
+	worldName string,
 ) LaunchResult {
-	return s.launch(ctx, versionID, serverHost, serverPort)
+	return s.launch(ctx, versionID, serverHost, serverPort, worldName)
 }
 
 // launch 统一启动入口：explicitVersionID 非空时按显式版本启动，为空时按当前选中。
@@ -146,6 +171,7 @@ func (s *GameLaunchService) launch(
 	ctx context.Context,
 	explicitVersionID, serverHost string,
 	serverPort *int,
+	worldName string,
 ) LaunchResult {
 	// 原子占位：结束（含异常）时在 finally 释放
 	if !s.launchInProgress.CompareAndSwap(0, 1) {
@@ -154,6 +180,8 @@ func (s *GameLaunchService) launch(
 		return FailedLaunch("游戏正在启动，请稍候。")
 	}
 	defer s.launchInProgress.Store(0)
+	// 上一次启动残留的取消请求（极窄窗口）不带入本次
+	s.prepareStopRequested.Store(false)
 
 	// 早期守卫统一走 fail：写文件日志 + 发布失败快照。
 	// 此前这些路径只返回结果不发快照——前端只在按钮下方显示一行小字、
@@ -218,6 +246,17 @@ func (s *GameLaunchService) launch(
 		return fail("请先选择账号。")
 	}
 
+	// prepareCancelled 准备阶段取消判定：用户点"停止"（prepareStopRequested）
+	// 或外层 ctx 取消（插件/自动化取消启动）都算。各耗时步骤的边界都会检查。
+	prepareCancelled := func() bool {
+		return ctx.Err() != nil || s.prepareStopRequested.Load()
+	}
+	abortCancelled := func() LaunchResult {
+		s.appendLog("启动操作已取消。", "LAUNCH")
+		s.publishFailure("启动已取消", "游戏启动操作已取消。", 0)
+		return FailedLaunch("游戏启动已取消。")
+	}
+
 	versionId := snap.SelectedVersionId
 	launchId := atomic.AddInt64(&s.launchId, 1)
 	s.resetLog()
@@ -247,24 +286,38 @@ func (s *GameLaunchService) launch(
 			s.appendLog("文件校验完成，所有文件正常。", "LAUNCH")
 		}
 	}
-
-	if err := ctx.Err(); err != nil {
-		s.appendLog("启动操作已取消。", "LAUNCH")
-		s.publishFailure("启动已取消", "游戏启动操作已取消。", 0)
-		return FailedLaunch("游戏启动已取消。")
+	// 校验补全里没有 ctx 检查点（下载器有自己的超时），这里统一收口
+	if prepareCancelled() {
+		s.prepareStopRequested.Store(false)
+		return abortCancelled()
 	}
 
-	// 校验所选账号凭据并准备启动用账号对象。
+	// 校验所选账号凭据并准备启动用账号对象（微软账号可能要走一轮刷新，
+	// 数十秒级）；此后 Java 下载、存档还原点都在 runLauncher 内完成。
+	s.publishPreparing(snap, selectedAccount, "正在校验账号凭据…")
 	launchAccount, prepareErr := s.prepareAccount(ctx, selectedAccount)
 	if prepareErr != nil {
+		if prepareCancelled() {
+			s.prepareStopRequested.Store(false)
+			return abortCancelled()
+		}
 		return s.reportPrepareFailure(prepareErr)
 	}
+	if prepareCancelled() {
+		s.prepareStopRequested.Store(false)
+		return abortCancelled()
+	}
 
-	options, optionsErr := s.buildLaunchOptions(snap, versionId, launchAccount, serverHost, serverPort)
+	s.publishPreparing(snap, selectedAccount, "正在准备 Java 运行时与存档还原点…")
+	options, optionsErr := s.buildLaunchOptions(snap, versionId, launchAccount, serverHost, serverPort, worldName)
 	if optionsErr != nil {
 		s.appendLog(fmt.Sprintf("启动失败：%v", optionsErr), "LAUNCH")
 		s.publishFailure("启动失败", optionsErr.Error(), 0)
 		return FailedLaunch(optionsErr.Error())
+	}
+	if prepareCancelled() {
+		s.prepareStopRequested.Store(false)
+		return abortCancelled()
 	}
 
 	return s.runLauncher(selectedAccount, launchAccount, *options, launchId)
@@ -415,6 +468,11 @@ func (s *GameLaunchService) runLauncher(
 	launchId int64,
 ) LaunchResult {
 	s.appendLog("正在解析版本、依赖库与 Java 运行时。", "LAUNCH")
+	// 启动前留还原点（时间机器）：在进程真正拉起之前，此刻的磁盘状态就是
+	// "玩家上一次退出的样子"。失败只记日志，绝不阻断启动。
+	if notice := runPreLaunchSnapshot(options.GameDirectory, options.VersionId); notice != "" {
+		s.appendLog(notice, "LAUNCH")
+	}
 	// 微软账号走正版分支（带在线会话校验），其余账号走离线/第三方分支
 	var result *MinecraftLaunchResult
 	var err error
@@ -434,6 +492,9 @@ func (s *GameLaunchService) runLauncher(
 	// 都依赖该引用；缺失会导致停止按钮失效、重复启动被放行、退出快照永不发布。
 	s.gate.Lock()
 	s.gameProcess = result.Cmd
+	// 记录本次启动的参数溯源，供"为什么这样启动"面板在运行中/退出后查看
+	s.lastProvenance = result.Provenance
+	s.lastLaunchVersionId = result.VersionId
 	s.gate.Unlock()
 
 	javaHint := describeJavaRequirement(result.RequiredJavaMajorVersion)

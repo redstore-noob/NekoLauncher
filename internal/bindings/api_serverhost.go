@@ -6,6 +6,7 @@ import (
 
 	"nekolauncher/internal/mcserver"
 	"nekolauncher/internal/models"
+	"nekolauncher/internal/tools"
 )
 
 // ServerHostAPI 开服：创建/启停/控制台/配置/文件/导入。
@@ -244,7 +245,7 @@ func (a *ServerHostAPI) ImportServerPlugin(id, jarPath string) error {
 
 // ExportServer 导出服务器为 .nekoser 包（zip 容器；运行中拒绝）。
 func (a *ServerHostAPI) ExportServer(id, destZip string) error {
-	return mcserver.ExportServer(id, destZip)
+	return mcserver.ExportServer(id, tools.SanitizeSavePath(destZip))
 }
 
 // ImportServerNekoser 从 .nekoser 包恢复服务器，返回新服务器 id。

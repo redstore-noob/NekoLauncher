@@ -59,6 +59,8 @@ import { ModalShell, modalBehaviorProps } from "../modal-shell";
 import { tooltipMotionProps } from "../../lib/motion";
 import { t } from "../../i18n";
 
+import CreatorToolShell from "./CreatorToolShell";
+
 /** 与 SkinPreview3D（懒加载块）共享的工具语义 */
 type Tool = "pencil" | "eraser" | "eyedropper";
 type SkinModel = "classic" | "slim";
@@ -103,7 +105,8 @@ const SKIN_REGIONS_64: Array<[number, number, number, number]> = [
 const SkinEditDialog: React.FC<{
   isOpen: boolean;
   onClose: () => void;
-}> = ({ isOpen, onClose }) => {
+  embedded?: boolean;
+}> = ({ isOpen, onClose, embedded }) => {
   const [sourceLabel, setSourceLabel] = useState("");
   const [mode, setMode] = useState<"paint" | "move">("paint");
   const [tool, setTool] = useState<Tool>("pencil");
@@ -520,6 +523,268 @@ const SkinEditDialog: React.FC<{
     </span>
   );
 
+  const renderBody = () => (
+    <div className="flex h-full min-h-0 flex-col gap-3">
+      {/* 工具栏：模式 / 工具 / 颜色 / 撤销 / 参考线 */}
+      <div className="nya-panel-inner nya-border flex flex-shrink-0 flex-wrap items-center gap-x-2 gap-y-2 rounded-medium border px-2.5 py-2">
+        <div className="flex overflow-hidden rounded-lg border nya-border">
+          {(
+            [
+              ["paint", t("绘画"), <PaintBrush20Regular key="p" />],
+              ["move", t("移动"), <ArrowMove20Regular key="m" />],
+            ] as const
+          ).map(([value, label, icon]) => (
+            <button
+              key={value}
+              aria-pressed={mode === value}
+              className={`flex cursor-pointer items-center gap-1 px-2.5 py-1 text-[12px] transition-colors ${
+                mode === value
+                  ? "bg-primary/15 font-semibold text-primary"
+                  : "text-gray-600 hover:bg-default-100 dark:text-gray-300 dark:hover:bg-gray-800"
+              }`}
+              type="button"
+              onClick={() => setMode(value)}
+            >
+              {icon}
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <span className="h-5 w-px bg-default-200" />
+
+        <div className="flex items-center gap-0.5">
+          {toolButton("pencil", t("画笔"), <PaintBrush20Regular />)}
+          {toolButton("eraser", t("橡皮"), <Eraser20Regular />)}
+          {toolButton("eyedropper", t("吸管"), <Color20Regular />)}
+        </div>
+
+        <span className="h-5 w-px bg-default-200" />
+
+        <div className="flex items-center gap-1.5">
+          <input
+            aria-label={t("画笔颜色")}
+            className="h-7 w-9 flex-none cursor-pointer rounded border nya-border bg-transparent"
+            type="color"
+            value={color}
+            onChange={(event) => setColor(event.target.value)}
+          />
+          <button
+            aria-expanded={showPalette}
+            className={`cursor-pointer rounded px-1.5 py-1 text-[11px] transition-colors ${
+              showPalette
+                ? "bg-primary/15 text-primary"
+                : "text-gray-500 hover:bg-default-100 dark:text-gray-400 dark:hover:bg-gray-800"
+            }`}
+            type="button"
+            onClick={() => setShowPalette((value) => !value)}
+          >
+            {t("色板")}
+          </button>
+          {showPalette ? (
+            <div className="flex flex-wrap items-center gap-0.5">
+              {PALETTE.map((preset) => (
+                <button
+                  key={preset}
+                  aria-label={t("选择颜色 {0}", { "0": preset })}
+                  className={`size-5 cursor-pointer rounded border transition-transform hover:scale-110 ${
+                    color === preset
+                      ? "border-gray-900 ring-2 ring-primary/40 dark:border-white"
+                      : "border-transparent"
+                  }`}
+                  style={{ backgroundColor: preset }}
+                  type="button"
+                  onClick={() => setColor(preset)}
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <span className="h-5 w-px bg-default-200" />
+
+        {iconToggle(
+          t("撤销"),
+          false,
+          undo,
+          <ArrowUndo20Regular />,
+          !hasImage || undoCount === 0,
+        )}
+        {iconToggle(
+          t("区域参考线"),
+          showGuides,
+          () => setShowGuides((value) => !value),
+          <Grid20Regular />,
+        )}
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-wrap gap-3">
+        {/* 左：2D 贴图画布 */}
+        <div className="nya-panel-inner nya-border flex min-h-0 min-w-[300px] flex-1 flex-col rounded-medium border p-3">
+          <div className="mb-2 flex flex-shrink-0 items-center justify-between">
+            <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
+              {t("2D 贴图")}
+            </span>
+          </div>
+          <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto">
+            <canvas
+              ref={viewCanvasRef}
+              aria-label={t("皮肤贴图画布")}
+              className={`h-auto max-w-full cursor-crosshair border nya-border bg-gray-50 [image-rendering:pixelated] dark:bg-gray-900 ${
+                hasImage ? "" : "opacity-40"
+              }`}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+            />
+          </div>
+        </div>
+
+        {/* 右：3D 预览 + 显示开关 + 来源/导出 */}
+        <div className="flex min-h-0 w-[320px] flex-none flex-col gap-2.5 overflow-y-auto">
+          <div className="nya-panel-inner nya-border flex min-h-[300px] flex-1 flex-col overflow-hidden rounded-medium border p-3">
+            <div className="mb-2 flex flex-shrink-0 items-center justify-between">
+              <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
+                {t("3D 预览")}
+              </span>
+            </div>
+            <div className="min-h-0 flex-1">
+              {previewUri ? (
+                <Suspense
+                  fallback={
+                    <div className="flex h-full min-h-[240px] w-full items-center justify-center text-xs text-gray-400">
+                      {t("正在加载 3D 渲染器…")}
+                    </div>
+                  }
+                >
+                  <SkinPreview3D
+                    capeUri={capeUri}
+                    model={model}
+                    moveMode={true}
+                    showCape={showCape}
+                    showInner={showInner}
+                    showOuter={showOuter}
+                    skinUri={previewUri}
+                    tool={tool}
+                    onStrokeEnd={() => {
+                      strokeUndoPushedRef.current = false;
+                      schedulePreview();
+                    }}
+                    onTexelPaint={paintFrom3D}
+                    onTexelPick={pickColorAt}
+                  />
+                </Suspense>
+              ) : (
+                <div className="flex h-full min-h-[240px] w-full items-center justify-center text-xs text-gray-400">
+                  {t("加载皮肤后显示 3D 预览")}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="nya-panel-inner nya-border flex flex-col gap-2 rounded-medium border p-3">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+              {layerSwitch(t("内层"), showInner, setShowInner, !hasImage)}
+              {layerSwitch(t("外层"), showOuter, setShowOuter, !hasImage)}
+              {capeUri ? layerSwitch(t("披风"), showCape, setShowCape) : null}
+            </div>
+            <div className="flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
+              <span>{t("模型")}</span>
+              <div className="flex overflow-hidden rounded-lg border nya-border">
+                {(["classic", "slim"] as const).map((value) => (
+                  <button
+                    key={value}
+                    aria-pressed={model === value}
+                    className={`cursor-pointer px-2.5 py-1 transition-colors ${
+                      model === value
+                        ? "bg-primary/15 font-semibold text-primary"
+                        : "text-gray-600 hover:bg-default-100 dark:text-gray-300 dark:hover:bg-gray-800"
+                    }`}
+                    type="button"
+                    onClick={() => setModel(value)}
+                  >
+                    {value === "classic" ? t("宽臂") : t("细臂")}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="nya-panel-inner nya-border flex flex-col gap-2 rounded-medium border p-3">
+            <div className="grid grid-cols-2 gap-1.5">
+              <Button
+                isDisabled={exporting}
+                size="sm"
+                variant="flat"
+                onPress={() => void loadFromAccount()}
+              >
+                {t("从当前账号")}
+              </Button>
+              <Button
+                isDisabled={exporting}
+                size="sm"
+                variant="flat"
+                onPress={() => void loadFromFile()}
+              >
+                {t("从本地文件")}
+              </Button>
+            </div>
+
+            {error && <div className="text-xs text-danger">{error}</div>}
+            {savedPath && !applied && (
+              <div className="break-all text-xs text-success">
+                {t("已导出：")}
+                {savedPath}
+              </div>
+            )}
+            {applied && <div className="text-xs text-success">{applied}</div>}
+
+            <Button
+              color="primary"
+              isDisabled={!hasImage}
+              isLoading={exporting}
+              size="sm"
+              onPress={() => void exportSkin()}
+            >
+              {t("导出皮肤 PNG")}
+            </Button>
+            {savedPath && accountOffline && (
+              <Button
+                size="sm"
+                variant="flat"
+                onPress={() => void applyToAccount()}
+              >
+                {t("设为")} {accountName || t("离线账号")} {t("的皮肤")}
+              </Button>
+            )}
+            {savedPath && !accountOffline && (
+              <Button
+                size="sm"
+                variant="light"
+                onPress={() => void OpenInExplorer(savedPath)}
+              >
+                {t("打开所在文件夹")}
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (embedded) {
+    return (
+      <CreatorToolShell
+        icon={<Person20Regular />}
+        subtitle={sourceLabel || t("2D 贴图与 3D 模型两边都能直接画")}
+        title={t("皮肤编辑")}
+        onBack={onClose}
+      >
+        {renderBody()}
+      </CreatorToolShell>
+    );
+  }
+
   return (
     <Modal isOpen={isOpen} size="4xl" onClose={onClose} {...modalBehaviorProps}>
       <ModalContent className="h-[88vh] max-h-[88vh]">
@@ -529,256 +794,7 @@ const SkinEditDialog: React.FC<{
           title={t("皮肤编辑")}
           onClose={onClose}
         >
-          <div className="flex h-full min-h-0 flex-col gap-3">
-            {/* 工具栏：模式 / 工具 / 颜色 / 撤销 / 参考线 */}
-            <div className="nya-panel-inner nya-border flex flex-shrink-0 flex-wrap items-center gap-x-2 gap-y-2 rounded-xl border px-2.5 py-2">
-              <div className="flex overflow-hidden rounded-lg border nya-border">
-                {(
-                  [
-                    ["paint", t("绘画"), <PaintBrush20Regular key="p" />],
-                    ["move", t("移动"), <ArrowMove20Regular key="m" />],
-                  ] as const
-                ).map(([value, label, icon]) => (
-                  <button
-                    key={value}
-                    aria-pressed={mode === value}
-                    className={`flex cursor-pointer items-center gap-1 px-2.5 py-1 text-[12px] transition-colors ${
-                      mode === value
-                        ? "bg-primary/15 font-semibold text-primary"
-                        : "text-gray-600 hover:bg-default-100 dark:text-gray-300 dark:hover:bg-gray-800"
-                    }`}
-                    type="button"
-                    onClick={() => setMode(value)}
-                  >
-                    {icon}
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              <span className="h-5 w-px bg-default-200" />
-
-              <div className="flex items-center gap-0.5">
-                {toolButton("pencil", t("画笔"), <PaintBrush20Regular />)}
-                {toolButton("eraser", t("橡皮"), <Eraser20Regular />)}
-                {toolButton("eyedropper", t("吸管"), <Color20Regular />)}
-              </div>
-
-              <span className="h-5 w-px bg-default-200" />
-
-              <div className="flex items-center gap-1.5">
-                <input
-                  aria-label={t("画笔颜色")}
-                  className="h-7 w-9 flex-none cursor-pointer rounded border nya-border bg-transparent"
-                  type="color"
-                  value={color}
-                  onChange={(event) => setColor(event.target.value)}
-                />
-                <button
-                  aria-expanded={showPalette}
-                  className={`cursor-pointer rounded px-1.5 py-1 text-[11px] transition-colors ${
-                    showPalette
-                      ? "bg-primary/15 text-primary"
-                      : "text-gray-500 hover:bg-default-100 dark:text-gray-400 dark:hover:bg-gray-800"
-                  }`}
-                  type="button"
-                  onClick={() => setShowPalette((value) => !value)}
-                >
-                  {t("色板")}
-                </button>
-                {showPalette ? (
-                  <div className="flex flex-wrap items-center gap-0.5">
-                    {PALETTE.map((preset) => (
-                      <button
-                        key={preset}
-                        aria-label={t("选择颜色 {0}", { "0": preset })}
-                        className={`size-5 cursor-pointer rounded border transition-transform hover:scale-110 ${
-                          color === preset
-                            ? "border-gray-900 ring-2 ring-primary/40 dark:border-white"
-                            : "border-transparent"
-                        }`}
-                        style={{ backgroundColor: preset }}
-                        type="button"
-                        onClick={() => setColor(preset)}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-
-              <span className="h-5 w-px bg-default-200" />
-
-              {iconToggle(
-                t("撤销"),
-                false,
-                undo,
-                <ArrowUndo20Regular />,
-                !hasImage || undoCount === 0,
-              )}
-              {iconToggle(
-                t("区域参考线"),
-                showGuides,
-                () => setShowGuides((value) => !value),
-                <Grid20Regular />,
-              )}
-            </div>
-
-            <div className="flex min-h-0 flex-1 flex-wrap gap-3">
-              {/* 左：2D 贴图画布 */}
-              <div className="nya-panel-inner nya-border flex min-h-0 min-w-[300px] flex-1 flex-col rounded-xl border p-3">
-                <div className="mb-2 flex flex-shrink-0 items-center justify-between">
-                  <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
-                    {t("2D 贴图")}
-                  </span>
-                </div>
-                <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto">
-                  <canvas
-                    ref={viewCanvasRef}
-                    aria-label={t("皮肤贴图画布")}
-                    className={`h-auto max-w-full cursor-crosshair border nya-border bg-gray-50 [image-rendering:pixelated] dark:bg-gray-900 ${
-                      hasImage ? "" : "opacity-40"
-                    }`}
-                    onPointerDown={handlePointerDown}
-                    onPointerMove={handlePointerMove}
-                    onPointerUp={handlePointerUp}
-                  />
-                </div>
-              </div>
-
-              {/* 右：3D 预览 + 显示开关 + 来源/导出 */}
-              <div className="flex min-h-0 w-[320px] flex-none flex-col gap-2.5 overflow-y-auto">
-                <div className="nya-panel-inner nya-border flex min-h-[300px] flex-1 flex-col overflow-hidden rounded-xl border p-3">
-                  <div className="mb-2 flex flex-shrink-0 items-center justify-between">
-                    <span className="text-[12px] font-semibold text-gray-600 dark:text-gray-300">
-                      {t("3D 预览")}
-                    </span>
-                  </div>
-                  <div className="min-h-0 flex-1">
-                    {previewUri ? (
-                      <Suspense
-                        fallback={
-                          <div className="flex h-full min-h-[240px] w-full items-center justify-center text-xs text-gray-400">
-                            {t("正在加载 3D 渲染器…")}
-                          </div>
-                        }
-                      >
-                        <SkinPreview3D
-                          capeUri={capeUri}
-                          model={model}
-                          moveMode={mode === "move"}
-                          showCape={showCape}
-                          showInner={showInner}
-                          showOuter={showOuter}
-                          skinUri={previewUri}
-                          tool={tool}
-                          onStrokeEnd={() => {
-                            strokeUndoPushedRef.current = false;
-                            schedulePreview();
-                          }}
-                          onTexelPaint={paintFrom3D}
-                          onTexelPick={pickColorAt}
-                        />
-                      </Suspense>
-                    ) : (
-                      <div className="flex h-full min-h-[240px] w-full items-center justify-center text-xs text-gray-400">
-                        {t("加载皮肤后显示 3D 预览")}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="nya-panel-inner nya-border flex flex-col gap-2 rounded-xl border p-3">
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-                    {layerSwitch(t("内层"), showInner, setShowInner, !hasImage)}
-                    {layerSwitch(t("外层"), showOuter, setShowOuter, !hasImage)}
-                    {capeUri
-                      ? layerSwitch(t("披风"), showCape, setShowCape)
-                      : null}
-                  </div>
-                  <div className="flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400">
-                    <span>{t("模型")}</span>
-                    <div className="flex overflow-hidden rounded-lg border nya-border">
-                      {(["classic", "slim"] as const).map((value) => (
-                        <button
-                          key={value}
-                          aria-pressed={model === value}
-                          className={`cursor-pointer px-2.5 py-1 transition-colors ${
-                            model === value
-                              ? "bg-primary/15 font-semibold text-primary"
-                              : "text-gray-600 hover:bg-default-100 dark:text-gray-300 dark:hover:bg-gray-800"
-                          }`}
-                          type="button"
-                          onClick={() => setModel(value)}
-                        >
-                          {value === "classic" ? t("宽臂") : t("细臂")}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="nya-panel-inner nya-border flex flex-col gap-2 rounded-xl border p-3">
-                  <div className="grid grid-cols-2 gap-1.5">
-                    <Button
-                      isDisabled={exporting}
-                      size="sm"
-                      variant="flat"
-                      onPress={() => void loadFromAccount()}
-                    >
-                      {t("从当前账号")}
-                    </Button>
-                    <Button
-                      isDisabled={exporting}
-                      size="sm"
-                      variant="flat"
-                      onPress={() => void loadFromFile()}
-                    >
-                      {t("从本地文件")}
-                    </Button>
-                  </div>
-
-                  {error && <div className="text-xs text-danger">{error}</div>}
-                  {savedPath && !applied && (
-                    <div className="break-all text-xs text-success">
-                      {t("已导出：")}
-                      {savedPath}
-                    </div>
-                  )}
-                  {applied && (
-                    <div className="text-xs text-success">{applied}</div>
-                  )}
-
-                  <Button
-                    color="primary"
-                    isDisabled={!hasImage}
-                    isLoading={exporting}
-                    size="sm"
-                    onPress={() => void exportSkin()}
-                  >
-                    {t("导出皮肤 PNG")}
-                  </Button>
-                  {savedPath && accountOffline && (
-                    <Button
-                      size="sm"
-                      variant="flat"
-                      onPress={() => void applyToAccount()}
-                    >
-                      {t("设为")} {accountName || t("离线账号")} {t("的皮肤")}
-                    </Button>
-                  )}
-                  {savedPath && !accountOffline && (
-                    <Button
-                      size="sm"
-                      variant="light"
-                      onPress={() => void OpenInExplorer(savedPath)}
-                    >
-                      {t("打开所在文件夹")}
-                    </Button>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
+          {renderBody()}
         </ModalShell>
       </ModalContent>
     </Modal>
