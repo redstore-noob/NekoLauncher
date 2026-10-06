@@ -111,6 +111,56 @@ func TestShouldCreateLaunchSnapshotAfterChange(t *testing.T) {
 	}
 }
 
+// TestShouldCreateLaunchSnapshotOnCoarseTimestampFilesystem 防的回归：CI（Linux）
+// 上这条曾一直红。粗粒度时间戳的文件系统（ext3/HFS+ 秒级、FAT 2 秒级）会把刚
+// 写出的文件 mtime 截断到整秒，于是"快照之后紧接着发生的改动"看上去比快照还旧；
+// 一旦拿快照的墙钟时间（纳秒）当基准，这次改动就被判成"没变"，还原点没了。
+// 这里显式把新文件的 mtime 截断到整秒，模拟这种文件系统。
+func TestShouldCreateLaunchSnapshotOnCoarseTimestampFilesystem(t *testing.T) {
+	useTempStorage(t)
+	world := newTestWorld(t)
+	setWorldFileTime(t, world, time.Now().Add(-2*time.Hour))
+
+	if _, err := CreateSaveSnapshot(context.Background(), world, "", ""); err != nil {
+		t.Fatalf("创建快照失败：%v", err)
+	}
+
+	path := filepath.Join(world, "region", "r.0.1.mca")
+	writeWorldFile(t, world, "region/r.0.1.mca", "region-new")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	floored := info.ModTime().Truncate(time.Second)
+	if err := os.Chtimes(path, floored, floored); err != nil {
+		t.Fatal(err)
+	}
+
+	if !shouldCreateLaunchSnapshot(world) {
+		t.Error("秒级时间戳的改动同样算变化，不能因为文件系统粒度粗就漏掉还原点")
+	}
+}
+
+// TestShouldIgnoreSessionLockWhenDetectingChange 防的回归：session.lock 由游戏
+// 每次启动重写，且不参与快照内容。把它算成"内容变化"，连续启动就会每次多留一个
+// 内容完全相同的还原点——正是"不留重复还原点"要避免的。
+func TestShouldIgnoreSessionLockWhenDetectingChange(t *testing.T) {
+	useTempStorage(t)
+	world := newTestWorld(t)
+	setWorldFileTime(t, world, time.Now().Add(-2*time.Hour))
+
+	if _, err := CreateSaveSnapshot(context.Background(), world, "", ""); err != nil {
+		t.Fatalf("创建快照失败：%v", err)
+	}
+
+	// 游戏启动了一次：只重写了会话锁
+	writeWorldFile(t, world, "session.lock", "lock-2")
+
+	if shouldCreateLaunchSnapshot(world) {
+		t.Error("仅 session.lock 变化（不参与快照内容）时不该新增还原点")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CreateLaunchSnapshot
 // ---------------------------------------------------------------------------

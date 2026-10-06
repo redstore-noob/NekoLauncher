@@ -170,7 +170,8 @@ type SaveSnapshotFile struct {
 	Hash string
 	// Size 原始字节数。
 	Size int64
-	// ModTime Unix 纳秒；下次快照据此跳过未变文件。
+	// ModTime Unix 纳秒；既是"下次快照跳过未变文件"的依据，
+	// 也是启动前变更检测的基准（见 launchSnapshotBaseline）。
 	ModTime int64
 }
 
@@ -452,6 +453,20 @@ func createSnapshot(
 	kind snapshotKind,
 	directory, label, color string,
 ) (SaveSnapshot, error) {
+	return createSnapshotWithReason(
+		ctx, kind, directory, label, snapshotReasonManual, color)
+}
+
+// createSnapshotWithReason 与 createSnapshot 相同，区别是来源标记在创建时就写进清单。
+//
+// 来源不是装饰：淘汰逻辑按它区分自动快照与手动快照。先建了再改写（旧实现里
+// CreateLaunchSnapshot 的做法）会让创建时那一次淘汰看不到真实来源——新快照不计入
+// 自动名额，自动快照上限实际会停在"上限+1"（多留一份还原点就是多占一份存档的盘）。
+func createSnapshotWithReason(
+	ctx context.Context,
+	kind snapshotKind,
+	directory, label, reason, color string,
+) (SaveSnapshot, error) {
 	normalized, err := normalizeSnapshotDirectory(directory)
 	if err != nil {
 		return SaveSnapshot{}, err
@@ -460,7 +475,8 @@ func createSnapshot(
 	unlock := lockSnapshotRepo(normalized)
 	defer unlock()
 
-	return createSnapshotLocked(ctx, kind, normalized, label, snapshotReasonManual, normalizeSnapshotColor(color))
+	return createSnapshotLocked(
+		ctx, kind, normalized, label, reason, normalizeSnapshotColor(color))
 }
 
 // createSnapshotLocked 在持有仓库锁的前提下创建快照。
@@ -637,10 +653,17 @@ func pruneSnapshotsLocked(repo, keepId string) error {
 	remove := map[string]bool{}
 	autoKept := 0
 	for _, manifest := range manifests {
-		if !isAutomaticSnapshotReason(manifest.Reason) || manifest.Id == keepId {
+		if !isAutomaticSnapshotReason(manifest.Reason) {
 			continue
 		}
+		// 刚创建的那份同样占一个名额：把它排除在计数外，"上限"实际会停在
+		// 上限+1 份，与注释和测试断言的上限都对不上（多留一份还原点 = 多占
+		// 一份存档大小的盘）。但它自己永不入选淘汰名单——正常情况下它按时间
+		// 最新、本来就轮不到，只有时钟回拨把它排到老的那一侧时这个豁免才生效。
 		autoKept++
+		if manifest.Id == keepId {
+			continue
+		}
 		if autoKept > snapshotMaxAutoSnapshots {
 			remove[manifest.Id] = true
 		}
@@ -725,20 +748,17 @@ func CreateLaunchSnapshot(
 	if !shouldCreateLaunchSnapshot(worldDirectory) {
 		return SaveSnapshot{}, false, nil
 	}
-	snapshot, err := createSnapshot(
-		ctx, snapshotKindSave, worldDirectory, snapshotLaunchLabel, "")
+	snapshot, err := createSnapshotWithReason(
+		ctx,
+		snapshotKindSave,
+		worldDirectory,
+		snapshotLaunchLabel,
+		snapshotReasonBeforeLaunch,
+		"",
+	)
 	if err != nil {
 		return SaveSnapshot{}, false, err
 	}
-	// createSnapshot 固定写 manual 来源，这里回填真实来源。
-	// 内容寻址意味着同内容快照几乎不额外占盘，但来源标签影响淘汰策略，必须准确。
-	if err := setSnapshotReason(snapshotKindSave, worldDirectory, snapshot.Id,
-		snapshotReasonBeforeLaunch); err != nil {
-		// 来源回填失败不回滚快照本身：它已是一个可用的还原点，
-		// 顶多被当成手动快照（更不容易被清理，对用户更安全）。
-		return snapshot, true, nil
-	}
-	snapshot.Reason = snapshotReasonBeforeLaunch
 
 	return snapshot, true, nil
 }
@@ -749,30 +769,71 @@ func CreateLaunchSnapshot(
 // 这里用"最近快照之后目标目录是否被修改过"作为廉价的近似判断：
 // 逐个文件哈希代价太高，而"没改过文件"是最常见的连续启动场景。
 func shouldCreateLaunchSnapshot(worldDirectory string) bool {
-	manifests := listSnapshots(worldDirectory)
-	if len(manifests) == 0 {
+	normalized, err := normalizeSnapshotDirectory(worldDirectory)
+	if err != nil {
+		// 目录不可用（不存在/不是目录）：按"需要创建"处理，
+		// 让 createSnapshot 去报出真实错误，与"一份快照都没有"同一条路径。
+		return true
+	}
+	ensureLegacySnapshotStoreMigrated()
+	latest := latestSnapshotManifest(snapshotRepoDirectory(normalized))
+	if latest == nil {
 		return true // 从没快照过：第一次启动必须留一个
 	}
-	latest := manifests[0]
-	for _, snapshot := range manifests {
-		if snapshot.CreatedAt.After(latest.CreatedAt) {
-			latest = snapshot
+	// 只有当目标目录里存在比最近快照记录的更新文件时，才值得再存一份
+	return directoryModifiedAfter(normalized, launchSnapshotBaseline(*latest))
+}
+
+// launchSnapshotBaseline 变更检测的基准时刻：最近快照记录到的最新文件时间。
+//
+// 不能拿快照自身的 CreatedAt（墙钟）当基准——两侧时钟域不同：CreatedAt 是纳秒
+// 墙钟，文件 mtime 的粒度却由文件系统决定（ext3/HFS+ 秒级、FAT 2 秒级，网络盘
+// 还可能有额外偏差）。快照之后紧接着发生的改动，mtime 被截断到整秒后会落到
+// CreatedAt 之前，于是被判成"没变"、这次启动不留还原点（CI 上就是这么红的）。
+// 基准取自同一份快照记录的 mtime 后，两边同源同粒度：快照记录之后又被写过的
+// 文件，在任何粒度的文件系统上都判得出来。
+//
+// 清单里没有可用的文件时间时（空目录，或旧版本清单没落 ModTime）退回 CreatedAt。
+// 内容时间晚于快照自己的创建时间说明时间戳不可信（世界来自时钟超前的机器），
+// 同样退回 CreatedAt：宁可多留一个还原点，也不要漏掉变化。
+func launchSnapshotBaseline(manifest saveSnapshotManifest) time.Time {
+	var newest int64
+	for _, file := range manifest.Files {
+		if file.ModTime > newest {
+			newest = file.ModTime
 		}
 	}
-	// 只有当目标目录里存在比最近快照更新的文件时，才值得再存一份
-	return directoryModifiedAfter(worldDirectory, latest.CreatedAt)
+	if newest <= 0 {
+		return manifest.CreatedAt
+	}
+	moment := time.Unix(0, newest)
+	if moment.After(manifest.CreatedAt) {
+		return manifest.CreatedAt
+	}
+	return moment
 }
 
 // directoryModifiedAfter 目标目录里是否存在晚于给定时刻的常规文件。
 // 读不到的项按"没变化"处理：宁可少存一个还原点，也不要因为一个权限错误
 // 在每次启动都存一遍。
+//
+// 忽略规则与快照内容保持一致（用 createSnapshot 采集时的同一个 kind）：被快照
+// 排除的运行期临时文件（session.lock 由游戏每次启动重写）不能算作"内容变化"，
+// 否则连续启动每次都多出一个内容完全相同的还原点——正是本功能要避免的重复。
 func directoryModifiedAfter(directory string, moment time.Time) bool {
 	modified := false
-	_ = filepath.WalkDir(directory, func(_ string, entry fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(directory, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil || modified {
 			return nil
 		}
 		if !entry.Type().IsRegular() {
+			return nil
+		}
+		relative, relErr := filepath.Rel(directory, path)
+		if relErr != nil {
+			return nil
+		}
+		if snapshotIgnores(snapshotKindSave, filepath.ToSlash(relative), false) {
 			return nil
 		}
 		if info, infoErr := entry.Info(); infoErr == nil {
@@ -783,24 +844,6 @@ func directoryModifiedAfter(directory string, moment time.Time) bool {
 		return nil
 	})
 	return modified
-}
-
-// setSnapshotReason 改写已落盘快照的来源标记。
-func setSnapshotReason(kind snapshotKind, directory, snapshotID, reason string) error {
-	normalized, err := normalizeSnapshotDirectory(directory)
-	if err != nil {
-		return err
-	}
-	repo := snapshotRepoDirectory(normalized)
-	unlock := lockSnapshotRepo(normalized)
-	defer unlock()
-
-	manifest, err := loadSnapshotManifest(repo, snapshotID)
-	if err != nil {
-		return err
-	}
-	manifest.Reason = reason
-	return writeSnapshotManifest(repo, manifest)
 }
 
 // RollbackSaveSnapshot 把世界回滚到指定快照。
@@ -1235,6 +1278,8 @@ func loadSnapshotManifests(repo string) ([]saveSnapshotManifest, error) {
 	return result, nil
 }
 
+// latestSnapshotManifest 取最新的一份落盘清单，没有快照时返回 nil。
+// 取 Id 最大的一份：新 Id 形如 20060102-150405.000，字典序即时间序。
 func latestSnapshotManifest(repo string) *saveSnapshotManifest {
 	manifests, err := loadSnapshotManifests(repo)
 	if err != nil || len(manifests) == 0 {
