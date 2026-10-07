@@ -16,9 +16,16 @@ const (
 // 便于整体区分 Rebuild 构建；回到正式版本方案时把它改回空串即可。
 const versionOverride = ""
 
-// Version 纯版本字符串。versionOverride 非空时优先返回，
+// buildVersion 由发布构建通过 -ldflags 注入，以发布 tag 为准，
+// 避免安装更新后仍报告源码中的旧版本，重复提示同一个更新。
+var buildVersion string
+
+// Version 纯版本字符串。发布构建注入版本优先，其次是 versionOverride，
 // 否则由上方字段拼接，如 "1.0.0-preview4" / "0.2.0"。
 func Version() string {
+	if buildVersion != "" {
+		return buildVersion
+	}
 	if versionOverride != "" {
 		return versionOverride
 	}

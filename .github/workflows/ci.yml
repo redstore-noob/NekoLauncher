@@ -232,8 +232,13 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          VERSION_LDFLAGS=""
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+            VERSION_LDFLAGS="-X nekolauncher/internal/info.buildVersion=${RELEASE_VERSION}"
+          fi
           wails build -platform windows/amd64 -webview2 embed \
-            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY"
+            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY $VERSION_LDFLAGS"
           # ---- NekoSolo 安装器模板：随启动器一起分发 ----
           # runner 自带 .NET SDK，能构建 net48 的 stub；模板打进 portable zip 的
           # tools/NekoSolo/（启动器导出 exe 的查找位置之一），并单独作为 Release 资产
@@ -265,6 +270,11 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          VERSION_LDFLAGS=""
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+            VERSION_LDFLAGS="-X nekolauncher/internal/info.buildVersion=${RELEASE_VERSION}"
+          fi
           # webkit2gtk 的 API 版本要靠构建标签选：
           #   wails 的 cgo 指令是 `#cgo !webkit2_41 pkg-config: webkit2gtk-4.0`，
           #   即默认找 4.0，只有加上 webkit2_41 才去找 4.1。
@@ -277,7 +287,7 @@ jobs:
           esac
 
           wails build -platform linux/amd64 $WAILS_TAGS \
-            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY"
+            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY $VERSION_LDFLAGS"
           chmod +x build/bin/NekoLauncher
 
           case "${{ matrix.linux-artifacts }}" in
@@ -384,10 +394,15 @@ jobs:
         if: runner.os == 'MacOS'
         shell: bash
         run: |
+          VERSION_LDFLAGS=""
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
+            RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+            VERSION_LDFLAGS="-X nekolauncher/internal/info.buildVersion=${RELEASE_VERSION}"
+          fi
           # 按 matrix.platform 各出各的包：Intel 与 Apple Silicon 不再 lipo 成一个 universal
           # （通用包体积翻倍，且 Intel 机器下 arm64 那半永远用不上）。
           wails build -platform "${{ matrix.platform }}" \
-            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY"
+            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY $VERSION_LDFLAGS"
 
       - name: Package macOS app (zip)
         # 单开一步：和构建分开，失败时一眼能看出是编译挂了还是打包挂了。
