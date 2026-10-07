@@ -174,9 +174,13 @@ export function toAnthropicMessages(
   return merged;
 }
 
+/**
+ * 经本地 /ai-proxy 代理请求：API Key 由 Go 侧从加密存储注入，明文不再
+ * 进入 JS 上下文（插件与宿主同 WebView，进 JS 的 key 等于直接交给插件）；
+ * CORS 也随之消失（对 WebView 而言目标是同源的本地路由）。
+ */
 export async function streamAnthropicChat(
   baseUrl: string,
-  apiKey: string,
   model: string,
   systemPrompt: string,
   messages: OpenAiMessage[],
@@ -186,15 +190,13 @@ export async function streamAnthropicChat(
   tools?: unknown[],
 ): Promise<StreamResult> {
   const url = `${baseUrl.replace(/\/$/, "")}/messages`;
-  const response = await fetch(url, {
+  const response = await fetch("/ai-proxy", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": apiKey,
+      "X-AI-Target": url,
+      "X-AI-Key-Mode": "x-api-key",
       "anthropic-version": "2023-06-01",
-      // 浏览器/WebView 直连 api.anthropic.com 必须带这个开关头，否则被 CORS 拦死
-      // （Anthropic 官方文档要求的浏览器直连声明）。
-      "anthropic-dangerous-direct-browser-access": "true",
     },
     body: JSON.stringify({
       model,

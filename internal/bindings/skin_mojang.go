@@ -268,12 +268,13 @@ func requestMojangProfile(token string) (*mojangProfile, int, error) {
 // freshMicrosoftToken 取可用的正版访问令牌：按账号刷新锁串行化，
 // 过期（或强制）时经认证器刷新并写回存储（对应 C# EnsureFreshAccountAsync）。
 func (a *AccountAPI) freshMicrosoftToken(account *auth.LaunchAccount, forceRefresh bool) (string, error) {
-	if !strings.EqualFold(account.Type, "microsoft") || account.Microsoft == nil {
+	if !strings.EqualFold(account.Type, "microsoft") || auth.Shared.MicrosoftSnapshot(account) == nil {
 		return "", errors.New("当前账号不是可编辑皮肤的正版账号。")
 	}
 	var token string
 	err := auth.Shared.WithRefreshLock(account, func() error {
-		ms := account.Microsoft
+		// 锁内经存储取最新凭据拷贝：等待锁的期间可能已有并发刷新写入轮换后的令牌
+		ms := auth.Shared.MicrosoftSnapshot(account)
 		if ms == nil {
 			return errors.New("当前账号不是可编辑皮肤的正版账号。")
 		}

@@ -26,6 +26,14 @@ export function GetAccountStableKey(arg1) {
   return window['go']['bindings']['AccountAPI']['GetAccountStableKey'](arg1);
 }
 
+export function GetAccountSummaries() {
+  return window['go']['bindings']['AccountAPI']['GetAccountSummaries']();
+}
+
+export function ConfirmAuthlibProfile(arg1) {
+  return window['go']['bindings']['AccountAPI']['ConfirmAuthlibProfile'](arg1);
+}
+
 export function GetAccounts() {
   return window['go']['bindings']['AccountAPI']['GetAccounts']();
 }

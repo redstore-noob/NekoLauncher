@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,9 +104,15 @@ func (s *AccountStoreService) Current() []*LaunchAccount {
 // sameIdentity 判断两个账号是否同一身份（按持久身份键比较）。
 // Wails 会把前端传入的对象 JSON 解码成新的结构体，引用相等永远不成立，
 // 因此这里必须用稳定键而不是指针比较。
+// 一方是脱敏副本（带 OpaqueKey，标识字段已裁剪）时改按 opaque 键比对：
+// 副本的稳定键算出来是错的（Uuid/ProfileUuid 已空），直接比较会失配，
+// Remove/MoveToTop/Update* 这些"前端回传副本"的入口就全断了。
 func (s *AccountStoreService) sameIdentity(a, b *LaunchAccount) bool {
 	if a == nil || b == nil {
 		return false
+	}
+	if a.OpaqueKey != "" || b.OpaqueKey != "" {
+		return strings.EqualFold(s.OpaqueStableKey(a), s.OpaqueStableKey(b))
 	}
 	return strings.EqualFold(s.GetStableKey(a), s.GetStableKey(b))
 }
@@ -205,7 +213,21 @@ func (s *AccountStoreService) GetStableKey(account *LaunchAccount) string {
 	return account.Type + ":" + identity
 }
 
+// OpaqueStableKey 稳定键的不可逆形式（SHA-256 前 16 字节的 hex）。
+// 这是唯一允许下发到 WebView 的账号寻址形式：真实稳定键内含档案
+// UUID / 登录名等标识符原文，可被未沙箱的插件直接读取。
+// 脱敏副本（sanitizeAccount 产物）自带的 OpaqueKey 直接信任——副本的
+// 标识字段已被裁剪，现场重算会得到不同的错误键。
+func (s *AccountStoreService) OpaqueStableKey(account *LaunchAccount) string {
+	if account != nil && account.OpaqueKey != "" {
+		return account.OpaqueKey
+	}
+	digest := sha256.Sum256([]byte("opaque:" + s.GetStableKey(account)))
+	return hex.EncodeToString(digest[:16])
+}
+
 // SelectByStableKey 通过持久身份切换当前账号；成功后该账号会移动到列表首项。
+// key 接受真实稳定键与 opaque 两种形式。
 func (s *AccountStoreService) SelectByStableKey(key string) bool {
 	if strings.TrimSpace(key) == "" {
 		return false
@@ -219,12 +241,19 @@ func (s *AccountStoreService) SelectByStableKey(key string) bool {
 }
 
 // FindByStableKey 通过持久身份查找账号（忽略大小写）。
+// key 同时接受真实稳定键（域内调用）与 opaque 形式（来自 WebView 的
+// 脱敏副本），后者覆盖头像/皮肤贴图/切换选中这类前端寻址路径。
 func (s *AccountStoreService) FindByStableKey(key string) *LaunchAccount {
 	if strings.TrimSpace(key) == "" {
 		return nil
 	}
 	for _, candidate := range s.Current() {
 		if strings.EqualFold(s.GetStableKey(candidate), key) {
+			return candidate
+		}
+	}
+	for _, candidate := range s.Current() {
+		if strings.EqualFold(s.OpaqueStableKey(candidate), key) {
 			return candidate
 		}
 	}
@@ -351,20 +380,36 @@ func (s *AccountStoreService) WithRefreshLock(account *LaunchAccount, action fun
 	return action()
 }
 
+// MicrosoftSnapshot 返回账号 Microsoft 凭据的拷贝（gate 读锁内读取）。
+// Update* 系列持写锁原地替换 account.Microsoft 字段，锁外直接解引用该字段
+// 与并发更新构成 data race；所有不在锁内的读者（绑定层脱敏、启动管线、
+// 皮肤缓存）都应经由这里取一份稳定快照。
+func (s *AccountStoreService) MicrosoftSnapshot(account *LaunchAccount) *MicrosoftAccount {
+	if account == nil {
+		return nil
+	}
+	s.gate.RLock()
+	defer s.gate.RUnlock()
+	if account.Microsoft == nil {
+		return nil
+	}
+	snapshot := *account.Microsoft
+	return &snapshot
+}
+
 // Save 把当前列表写回 accounts.yaml。
 //
-// DTO 快照在 gate 读锁内构建：Update* 系列是在写锁内原地改 account 的字段，
-// 不持锁读会和并发更新交错，落盘的可能是半新半旧的凭据——微软的
-// refresh_token 轮换策略下，写回旧令牌会让账号被强制下线。
-// 注意：加锁期间不能调用 Current()（它自己会 RLock），所以先取列表、
-// 持锁构建完 DTO 再落盘。
+// 列表快照与 DTO 构建在同一次 gate 读锁内完成：Update* 系列是在写锁内原地改
+// account 的字段，不持锁读会和并发更新交错，落盘的可能是半新半旧的凭据——
+// 微软的 refresh_token 轮换策略下，写回旧令牌会让账号被强制下线。先前"锁外取
+// 快照、锁内建 DTO"的写法在两步之间插入一次 Remove 就会把已删除的账号复活落盘。
+// 注意：加锁期间不能调用 Current()（它自己会 RLock）。
 func (s *AccountStoreService) Save() {
 	s.ensureLoaded()
-	snapshot := s.Current()
-	dtos := make([]accountDto, 0, len(snapshot))
+	dtos := make([]accountDto, 0, len(s.current))
 
 	s.gate.RLock()
-	for _, account := range snapshot {
+	for _, account := range s.current {
 		switch {
 		case account.Type == "microsoft" && account.Microsoft != nil:
 			ms := account.Microsoft

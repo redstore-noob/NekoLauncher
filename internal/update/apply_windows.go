@@ -4,11 +4,15 @@ package update
 
 // Windows 就地替换：
 //
-//	1. 把正在运行的 exe 改名为 <exe>.update-old（**改名允许**，覆盖正在运行的文件不允许）；
-//	2. 新 exe 复制到原路径，启动它；
-//	3. 旧 exe 留到下次启动时由 CleanupOldExecutable 删除（本次进程还在用它）。
+//	1. 新 exe 先完整写到 <exe>.update-new（此时本体未动）；
+//	2. 把正在运行的 exe 改名为 <exe>.update-old（**改名允许**，覆盖正在运行的文件不允许）；
+//	3. 把 .update-new 改名到原路径（同卷 rename，原子）；
+//	4. 启动新 exe，旧 exe 留到下次启动时由 CleanupOldExecutable 删除。
 //
-// 任一步失败都会把旧 exe 改回原路径，保证"更新失败也能照常启动"。
+// 与旧方案（直接 O_TRUNC 写最终路径）的区别：第 2、3 步之间进程被杀死
+// （断电/崩溃/任务管理器）的窗口里，完好的旧 exe 仍在 .update-old 上，
+// 下次启动 CleanupOldExecutable 会发现本体缺失并优先恢复它，而不是把旧版删掉。
+// 写入中途被杀死也只会留下半截的 .update-new，本体不受影响。
 
 import (
 	"fmt"
@@ -32,22 +36,32 @@ func Apply(newExecutable string) (bool, error) {
 		return false, err
 	}
 	old := oldExecutablePath(current)
+	pending := current + updatePendingSuffix
+
+	// 第 1 步：先在旁边写好完整的新 exe（失败时本体毫发无损）
+	if err := copyExecutable(newExecutable, pending); err != nil {
+		_ = os.Remove(pending)
+		return false, fmt.Errorf("写入新版本失败：%w", err)
+	}
 
 	// 上一次的残留先清掉，避免改名撞车
 	_ = os.Remove(old)
+	// 第 2 步：本体让位（改名允许；覆盖正在运行的文件不允许）
 	if err := os.Rename(current, old); err != nil {
+		_ = os.Remove(pending)
 		return false, fmt.Errorf("无法把当前程序改名（可能被杀毒软件占用）：%w", err)
 	}
 
 	restore := func() {
 		_ = os.Remove(current)
 		_ = os.Rename(old, current)
+		_ = os.Remove(pending)
 	}
 
-	if err := copyExecutable(newExecutable, current); err != nil {
+	// 第 3 步：新 exe 就位（同卷 rename，不存在半截文件状态）
+	if err := os.Rename(pending, current); err != nil {
 		restore()
-
-		return false, fmt.Errorf("写入新版本失败：%w", err)
+		return false, fmt.Errorf("新版本就位失败：%w", err)
 	}
 
 	command := exec.Command(current)
@@ -55,7 +69,6 @@ func Apply(newExecutable string) (bool, error) {
 	tools.HideProcessWindow(command)
 	if err := command.Start(); err != nil {
 		restore()
-
 		return false, fmt.Errorf("启动新版本失败：%w", err)
 	}
 

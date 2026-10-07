@@ -127,7 +127,9 @@ func TestAnalyzeProvenanceEmptyInputYieldsNonNilSlices(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRedactArgumentSequenceHidesAccessTokenValue(t *testing.T) {
-	// 真实形态："--accessToken <jwt>" 是**两个独立参数**，令牌在下标 +1
+	// 真实形态："--accessToken <jwt>" 是**两个独立参数**，令牌在下标 +1；
+	// --username/--uuid 与令牌同级别脱敏（官方档案 UUID 与玩家名是
+	// 跨服务可追踪的账号标识符，插件可直读溯源报告）
 	arguments := []string{
 		"--username", "Steve",
 		"--accessToken", "eyJhbGciOiJIUzI1NiJ9.SECRET.SIGNATURE",
@@ -136,18 +138,19 @@ func TestRedactArgumentSequenceHidesAccessTokenValue(t *testing.T) {
 	redacted := redactArgumentSequence(arguments)
 
 	joined := strings.Join(redacted, " ")
-	if strings.Contains(joined, "SECRET") {
-		t.Fatalf("令牌泄漏到溯源报告：%v", redacted)
+	if strings.Contains(joined, "SECRET") || strings.Contains(joined, "Steve") ||
+		strings.Contains(joined, "abc123") {
+		t.Fatalf("令牌/账号标识符泄漏到溯源报告：%v", redacted)
 	}
 	if redacted[3] != "***" {
 		t.Errorf("令牌位 = %q，期望 ***", redacted[3])
 	}
-	// 键名与非敏感值必须保留，否则面板无法解释
-	if redacted[2] != "--accessToken" {
-		t.Errorf("键名被破坏：%q", redacted[2])
+	if redacted[1] != "***" || redacted[5] != "***" {
+		t.Errorf("username/uuid 的值应脱敏：%v", redacted)
 	}
-	if redacted[1] != "Steve" || redacted[5] != "abc123" {
-		t.Errorf("非敏感值被误改：%v", redacted)
+	// 键名必须保留，否则面板无法解释
+	if redacted[2] != "--accessToken" || redacted[0] != "--username" || redacted[4] != "--uuid" {
+		t.Errorf("键名被破坏：%v", redacted)
 	}
 	// 原切片不得被就地修改（调用方可能还在用）
 	if arguments[3] != "eyJhbGciOiJIUzI1NiJ9.SECRET.SIGNATURE" {

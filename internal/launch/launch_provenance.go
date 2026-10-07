@@ -256,13 +256,17 @@ type annotatedArgument struct {
 // 脱敏
 // ---------------------------------------------------------------------------
 
-// sensitiveArgumentPrefixes 令牌类参数：原文绝不出现在溯源报告里。
-// 报告会经绑定层送到前端渲染，这些值没有展示价值但泄漏代价很高。
+// sensitiveArgumentPrefixes 令牌与账号标识类参数：原文绝不出现在溯源报告里。
+// 报告会经绑定层送到前端渲染（插件可直读），这些值没有展示价值但泄漏代价很高：
+// --uuid 是官方档案 UUID、--username 是玩家名、--xuid 是 Xbox 用户 ID，
+// 都是跨服务可追踪的稳定标识符，与令牌同级别处理。
 var sensitiveArgumentPrefixes = []string{
 	"--accessToken",
 	"--clientId",
 	"--auth_session",
 	"--xuid",
+	"--username",
+	"--uuid",
 }
 
 // redactArgument 对令牌类参数做脱敏（保留键名，值替换为占位符）。

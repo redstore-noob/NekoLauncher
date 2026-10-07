@@ -174,3 +174,21 @@ func firstExisting(root string) (string, error) {
 func (a *InstanceAPI) ScanImportableInstances() []instance.ImportableInstance {
 	return instance.ScanImportableInstances(config.GetFolders())
 }
+
+// RegisterImportedInstance 注册（不复制文件）自动探测到的外部实例目录：
+// 加入游戏目录列表并切换为当前目录。路径必须在 Go 侧验明确实是探测根下的
+// 外部实例（instance.IsImportCandidateInstance）——AddProfileFolder 已收紧为
+// "对话框批准或已注册目录"，导入列表的路径来自自动探测而非对话框，
+// 走这条专用通道才能既不破坏导入功能又不放开任意注册。
+func (a *InstanceAPI) RegisterImportedInstance(path string) error {
+	if !instance.IsImportCandidateInstance(path) {
+		return errors.New("该路径不是探测到的外部启动器实例目录")
+	}
+	if !config.AddFolder(path) {
+		return errors.New("注册失败：路径无效或已在目录列表中")
+	}
+	if !config.SaveGameDirectory(path) {
+		return errors.New("切换当前游戏目录失败")
+	}
+	return nil
+}

@@ -15,6 +15,19 @@ function log(message: string): void {
 
 window.addEventListener("error", (e) => log(`[error] ${e.message}`));
 
+const nativeError = console.error.bind(console);
+
+console.error = (...args: unknown[]) => {
+  nativeError(...args);
+  log(
+    `[console.error] ${args
+      .map((a) =>
+        typeof a === "string" ? a : JSON.stringify(a)?.slice(0, 400),
+      )
+      .join(" ")}`,
+  );
+};
+
 fetch("/payload.json")
   .then((r) => r.json() as Promise<WEScenePayload>)
   .then((payload) => {
@@ -22,12 +35,20 @@ fetch("/payload.json")
       `payload: ${payload.DesignWidth}x${payload.DesignHeight}, objects=${payload.Objects?.length ?? 0}`,
     );
     const canvas = document.getElementById("canvas") as HTMLCanvasElement;
+
+    // ?noskin=1：骨骼矩阵恒为单位阵的对照实验（分辨几何链 vs 轨道采样问题）
+    if (new URLSearchParams(location.search).has("noskin")) {
+      (window as unknown as { nyaSkinOff?: boolean }).nyaSkinOff = true;
+      log("[harness] noskin 模式：骨骼矩阵恒为单位阵");
+    }
     const renderer = new SceneRenderer({
       canvas,
       payload,
       onFirstFrame: () => log("[first-frame] 场景已上屏"),
     });
 
+    (window as unknown as { nyaRenderer?: SceneRenderer }).nyaRenderer =
+      renderer;
     renderer.start().catch((error) => log(`[start-failed] ${error}`));
     // 10 秒后自动截图采样，排障用
     setTimeout(() => {

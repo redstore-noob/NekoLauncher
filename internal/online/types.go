@@ -132,8 +132,12 @@ type Settings struct {
 	TerracottaPath string `json:"TerracottaPath"`
 	// RedstoneRelay 红石联机中继地址（默认官方上海节点）
 	RedstoneRelay string `json:"RedstoneRelay"`
-	// RedstoneKey 红石联机 API Key（首次使用自动生成并缓存）
+	// RedstoneKey 红石联机 API Key（首次使用自动生成并缓存）。
+	// 该字段是隧道鉴权凭据：绑定层下发时清空原文、以 HasRedstoneKey
+	// 标记存在性；保存时空串表示"沿用已保存的 Key"（见 api_online.go）。
 	RedstoneKey string `json:"RedstoneKey"`
+	// HasRedstoneKey 已保存 Key 的标记（仅下发方向填充，不持久化）。
+	HasRedstoneKey bool `json:"HasRedstoneKey"`
 	// Target 本地 Minecraft 服务端地址（红石联机转发目标，host:port）
 	Target string `json:"Target"`
 	// ServerID 本地目标取自启动器托管的服务器时填其 id（建房时自动启动）

@@ -66,8 +66,14 @@ func (a *SystemAPI) StoreSecret(key, plaintext string) bool {
 	return config.SetValue(name, stored)
 }
 
-// ReadSecret 读取密钥明文；不存在或不可解密返回空串。
-func (a *SystemAPI) ReadSecret(key string) string {
+// aiSecretStorageKey AI 提供商 API Key 的存储键（与前端 lib/ai/providers.ts
+// 的 AI_SECRET_STORAGE_KEY 一致）；/ai-proxy 代理从这里取 key 注入出站请求。
+const aiSecretStorageKey = "ai.apiKey"
+
+// readSecretValue 读取密钥明文（Go 侧内部使用，如 /ai-proxy 注入）。
+// 注意：绝不能把这个能力暴露成 Wails 绑定——插件与宿主同 WebView，
+// 明文回读绑定等于把宿主存的 API Key 直接交给任意插件。
+func readSecretValue(key string) string {
 	name := normalizeSecretKey(key)
 	if name == "" {
 		return ""
@@ -81,4 +87,11 @@ func (a *SystemAPI) ReadSecret(key string) string {
 	}
 
 	return auth.Unprotect(stored)
+}
+
+// HasSecret 密钥是否已保存（存在性查询，不回读明文）。
+// 前端表单据此显示"已保存（输入以更换）"占位；使用密钥的请求一律走
+// /ai-proxy 由 Go 侧注入。
+func (a *SystemAPI) HasSecret(key string) bool {
+	return readSecretValue(key) != ""
 }

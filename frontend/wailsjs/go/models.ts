@@ -137,11 +137,12 @@ export namespace auth {
 	    OfflineSkinId: string;
 	    Microsoft?: MicrosoftAccount;
 	    Authlib?: AuthlibCredential;
-	
+	    OpaqueKey: string;
+
 	    static createFrom(source: any = {}) {
 	        return new LaunchAccount(source);
 	    }
-	
+
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.Type = source["Type"];
@@ -150,6 +151,7 @@ export namespace auth {
 	        this.OfflineSkinId = source["OfflineSkinId"];
 	        this.Microsoft = this.convertValues(source["Microsoft"], MicrosoftAccount);
 	        this.Authlib = this.convertValues(source["Authlib"], AuthlibCredential);
+	        this.OpaqueKey = source["OpaqueKey"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -174,7 +176,40 @@ export namespace auth {
 }
 
 export namespace bindings {
-	
+
+	export class AuthlibProfileView {
+	    Index: number;
+	    Name: string;
+
+	    static createFrom(source: any = {}) {
+	        return new AuthlibProfileView(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Index = source["Index"];
+	        this.Name = source["Name"];
+	    }
+	}
+	export class AccountSummary {
+	    Key: string;
+	    Name: string;
+	    Type: string;
+	    Avatar: string;
+
+	    static createFrom(source: any = {}) {
+	        return new AccountSummary(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.Key = source["Key"];
+	        this.Name = source["Name"];
+	        this.Type = source["Type"];
+	        this.Avatar = source["Avatar"];
+	    }
+	}
+
 	export class JavaScanResult {
 	    Found: string[];
 	    Added: string[];
@@ -2951,6 +2986,7 @@ export namespace network {
 	    Address: string;
 	    Username: string;
 	    Password: string;
+	    HasPassword: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProxySettings(source);
@@ -2962,6 +2998,7 @@ export namespace network {
 	        this.Address = source["Address"];
 	        this.Username = source["Username"];
 	        this.Password = source["Password"];
+	        this.HasPassword = source["HasPassword"];
 	    }
 	}
 	export class ServerAddress {
@@ -3135,6 +3172,7 @@ export namespace online {
 	    TerracottaPath: string;
 	    RedstoneRelay: string;
 	    RedstoneKey: string;
+	    HasRedstoneKey: boolean;
 	    Target: string;
 	    ServerID: string;
 	    MaxPlayers: number;
@@ -3150,6 +3188,7 @@ export namespace online {
 	        this.TerracottaPath = source["TerracottaPath"];
 	        this.RedstoneRelay = source["RedstoneRelay"];
 	        this.RedstoneKey = source["RedstoneKey"];
+	        this.HasRedstoneKey = source["HasRedstoneKey"];
 	        this.Target = source["Target"];
 	        this.ServerID = source["ServerID"];
 	        this.MaxPlayers = source["MaxPlayers"];

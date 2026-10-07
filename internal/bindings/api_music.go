@@ -16,8 +16,15 @@ import (
 
 // ---- 曲库 ----
 
-// SetMusicFolder 设置音乐目录并立即扫描。
-func (a *MusicAPI) SetMusicFolder(path string) error { return a.library.SetFolder(path) }
+// SetMusicFolder 设置音乐目录并立即扫描。设置守卫见 guardSettableRoot：
+// 只认已注册游戏目录或用户经对话框选中的目录——音乐目录是读收口的
+// 根之一，任意设置等于扩大读取范围。
+func (a *MusicAPI) SetMusicFolder(path string) error {
+	if err := guardSettableRoot(path); err != nil {
+		return err
+	}
+	return a.library.SetFolder(path)
+}
 
 // GetMusicFolderPath 当前音乐目录。
 func (a *MusicAPI) GetMusicFolderPath() string { return a.library.FolderPath() }

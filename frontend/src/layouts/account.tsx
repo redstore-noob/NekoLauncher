@@ -55,12 +55,9 @@ import {
   LoginMicrosoft,
   LoginMicrosoftBrowser,
   CancelMicrosoftLogin,
-  AddAccount,
-  UpdateMicrosoftAccount,
+  ConfirmAuthlibProfile,
   ResolveAuthlibServer,
   AuthlibLogin,
-  UpdateAuthlibAccount,
-  GetAuthlibClientToken,
   UploadSkin,
   SetOfflineSkin,
   GetOfflineSkinCatalog,
@@ -191,11 +188,10 @@ const AccountPage: React.FC = () => {
   const [extPassword, setExtPassword] = useState("");
   const [extBusy, setExtBusy] = useState(false);
   const [extProfiles, setExtProfiles] = useState<
-    Array<{ Id: string; Name: string }>
+    Array<{ Index: number; Name: string }>
   >([]);
   const pendingExt = useRef<{
     server: auth.AuthlibServerInfo;
-    login: auth.AuthlibLoginResult;
     username: string;
   } | null>(null);
 
@@ -457,35 +453,14 @@ const AccountPage: React.FC = () => {
     subscribeDeviceCode();
 
     LoginMicrosoft()
-      .then(async (msAccount) => {
+      .then(async (username) => {
         msActive.current = false;
         unsubscribeDeviceCode();
-        // 同一微软账号（按档案 UUID）已存在则更新凭据并置顶（视为重新登录）
-        const accounts = asArray<LaunchAccount>(await GetAccounts());
-        const existing = accounts.find(
-          (a) =>
-            a.Type === "microsoft" &&
-            a.Microsoft?.Uuid &&
-            a.Microsoft.Uuid === msAccount.Uuid,
-        );
-
-        if (existing) {
-          await UpdateMicrosoftAccount(existing, msAccount as never);
-          await MoveAccountToTop(existing);
-        } else {
-          const entry: LaunchAccount = {
-            Type: "microsoft",
-            DisplayName: msAccount.Username,
-            OfflineName: "",
-            OfflineSkinId: "",
-            Microsoft: msAccount,
-          } as never;
-
-          await AddAccount(entry as never);
-        }
+        // 登录结果（含两类令牌与 XUID/UUID）由后端直接入库，
+        // 前端只收到玩家名
         setMsBusy(false);
         setAddOpen(false);
-        setStatus(t("正版账号登录成功：{0}", { "0": msAccount.Username }));
+        setStatus(t("正版账号登录成功：{0}", { "0": username }));
         await reload();
       })
       .catch((ex) => {
@@ -533,51 +508,18 @@ const AccountPage: React.FC = () => {
   // ---- 添加：皮肤站 ----
 
   const addExternal = async (
-    profile: { Id: string; Name: string },
-    username: string,
+    profile: { Index: number; Name: string },
+    _username: string,
   ) => {
-    const pending = pendingExt.current;
+    if (!pendingExt.current) return;
 
-    if (!pending) return;
-    const credential: auth.AuthlibCredential = {
-      Username: username,
-      ProfileName: profile.Name,
-      ProfileUuid: profile.Id,
-      AccessToken: pending.login.AccessToken,
-      ApiRoot: pending.server.ApiRoot,
-      ServerName: pending.server.ServerName ?? "",
-    } as never;
+    // 选角与入库全在后端完成（会话内含访问令牌与角色 UUID，不经过 WebView）
+    const profileName = await ConfirmAuthlibProfile(profile.Index);
 
-    // 皮肤站账号身份 = 角色 UUID + API 根：同一 UUID 在不同皮肤站是不同账号
-    const accounts = asArray<LaunchAccount>(await GetAccounts());
-    const existing = accounts.find(
-      (a) =>
-        a.Type === "authlib" &&
-        a.Authlib &&
-        (a.Authlib.ProfileUuid || "").toLowerCase() ===
-          (profile.Id || "").toLowerCase() &&
-        (a.Authlib.ApiRoot || "").replace(/\/+$/, "").toLowerCase() ===
-          (pending.server.ApiRoot || "").replace(/\/+$/, "").toLowerCase(),
-    );
-
-    if (existing) {
-      await UpdateAuthlibAccount(existing, credential);
-      await MoveAccountToTop(existing);
-    } else {
-      const entry: LaunchAccount = {
-        Type: "authlib",
-        DisplayName: profile.Name,
-        OfflineName: "",
-        OfflineSkinId: "",
-        Authlib: credential,
-      } as never;
-
-      await AddAccount(entry as never);
-    }
     pendingExt.current = null;
     setExtProfiles([]);
     setAddOpen(false);
-    setStatus(t("已添加皮肤站账号：{0}", { "0": profile.Name }));
+    setStatus(t("已添加皮肤站账号：{0}", { "0": profileName }));
     await reload();
   };
 
@@ -603,27 +545,26 @@ const AccountPage: React.FC = () => {
       )) as auth.AuthlibServerInfo;
 
       setAddHint(t("正在登录 {0}…", { "0": server.ServerName || "皮肤站" }));
-      const clientToken = await GetAuthlibClientToken();
-      const login = (await AuthlibLogin(
+      // 令牌与角色 UUID 留在后端会话里；前端只拿到"序号 + 角色名"
+      const profiles = await AuthlibLogin(
         server.ApiRoot,
         username,
         extPassword,
-        clientToken,
-      )) as auth.AuthlibLoginResult;
+      );
 
-      if (!login.Profiles || login.Profiles.length === 0) {
+      if (!profiles || profiles.length === 0) {
         setAddHint(t("该账号在此皮肤站没有角色档案，请先在皮肤站创建角色。"));
 
         return;
       }
-      pendingExt.current = { server, login, username };
-      if (login.Profiles.length === 1) {
-        await addExternal(login.Profiles[0], username);
+      pendingExt.current = { server, username };
+      if (profiles.length === 1) {
+        await addExternal(profiles[0], username);
       } else {
-        setExtProfiles(login.Profiles);
+        setExtProfiles(profiles);
         setAddHint(
           t("该账号有 {0} 个角色", {
-            "0": login.Profiles.length,
+            "0": profiles.length,
           }),
         );
       }

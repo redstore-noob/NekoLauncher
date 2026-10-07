@@ -16,6 +16,11 @@ type LaunchAccount struct {
 	Microsoft *MicrosoftAccount
 	// Authlib 皮肤站账号凭据；非皮肤站账号为 nil。
 	Authlib *AuthlibCredential
+	// OpaqueKey 稳定键的不可逆形式（SHA-256 截断 hex），只填充在下发给
+	// WebView 的脱敏副本上（见 bindings.sanitizeAccount）：真实稳定键内含
+	// 档案 UUID/XUID 等跨服务可追踪标识符，不能离开后端。域内代码寻址
+	// 一律用 AccountStoreService.GetStableKey，不要读写此字段。
+	OpaqueKey string
 }
 
 // NewLaunchAccount 构造账号并填充默认值（对应 C# 属性初始化器）。

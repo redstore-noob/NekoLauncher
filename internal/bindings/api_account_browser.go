@@ -166,11 +166,14 @@ func (a *AccountAPI) emitBrowserState() {
 // 更新凭据并置顶（视为重新登录），否则新增并自动选中。
 func (a *AccountAPI) persistBrowserLoginResult(account auth.MicrosoftAccount) {
 	for _, entry := range auth.Shared.Current() {
-		if entry.Type == "microsoft" && entry.Microsoft != nil &&
-			strings.EqualFold(strings.TrimSpace(entry.Microsoft.Uuid), strings.TrimSpace(account.Uuid)) {
-			_ = auth.Shared.UpdateMicrosoftAccount(entry, &account)
-			auth.Shared.MoveToTop(entry)
-			return
+		if entry.Type == "microsoft" {
+			// 经存储在 gate 读锁内取凭据拷贝，避免与 Update* 的原地写竞争
+			if snapshot := auth.Shared.MicrosoftSnapshot(entry); snapshot != nil &&
+				strings.EqualFold(strings.TrimSpace(snapshot.Uuid), strings.TrimSpace(account.Uuid)) {
+				_ = auth.Shared.UpdateMicrosoftAccount(entry, &account)
+				auth.Shared.MoveToTop(entry)
+				return
+			}
 		}
 	}
 	entry := auth.NewLaunchAccount("microsoft", account.Username)

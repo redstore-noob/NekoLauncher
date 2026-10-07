@@ -149,8 +149,10 @@ var ModrinthResolver = func(ctx context.Context, sha1Hex string) (*ModrinthFileM
 
 // CollectContent 收集实例内容目录中可打包的内容单元。
 func CollectContent(contentDirectory string) []ModpackContentItem {
+	// 空参数/坏目录返回空列表而非 panic：GUI 进程里 panic 会带崩整个启动器，
+	// 调用方对空结果的处理与"目录里没有内容"一致
 	if strings.TrimSpace(contentDirectory) == "" {
-		panic("contentDirectory 不能为空")
+		return []ModpackContentItem{}
 	}
 	if info, err := os.Stat(contentDirectory); err != nil || !info.IsDir() {
 		return []ModpackContentItem{}

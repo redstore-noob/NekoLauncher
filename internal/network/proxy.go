@@ -2,7 +2,9 @@ package network
 
 // 代理设置：模式（跟随系统 / 直连 / 自定义）+ 自定义地址与凭据。
 //
-// 生效方式是整体替换 http.DefaultTransport（Clone 后设置 Proxy）：
+// 生效方式：init 时把 http.DefaultTransport **一次性**替换为带动态 Proxy 的
+// Transport，之后只原子更新 Proxy 背后的配置，不再动 DefaultTransport 指针
+// （运行期整体替换指针对所有读方是 data race）：
 //   - 未自定义 Transport 的客户端（auth 认证、启动器更新、皮肤缓存、
 //     服务器托管下载等）每个请求动态读取 DefaultTransport，替换即生效；
 //   - 带统一 User-Agent 包装的下载客户端（tools.SharedHTTPClient、
@@ -18,6 +20,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"nekolauncher/internal/config"
@@ -36,7 +39,12 @@ type ProxySettings struct {
 	Mode     string `json:"Mode"`
 	Address  string `json:"Address"`
 	Username string `json:"Username"`
+	// Password 代理密码。绑定层下发时清空原文、以 HasPassword 标记存在性
+	// （插件与宿主同 WebView，密码不能明文下发）；保存/测试时空串表示
+	// "沿用已保存的值"，由绑定层合并（见 api_config.go）。
 	Password string `json:"Password"`
+	// HasPassword 已保存密码的标记（仅下发方向填充，不持久化）。
+	HasPassword bool `json:"HasPassword"`
 }
 
 // LoadProxySettings 读取代理设置；未配置或值非法时回落跟随系统。
@@ -111,20 +119,35 @@ func normalizeProxyAddress(address string) (string, error) {
 	return parsed.String(), nil
 }
 
-// proxyApplyMu 序列化 ApplyProxySettings 的替换动作（多来源同时保存设置时）。
+// proxyApplyMu 序列化 ApplyProxySettings 的配置更新（多来源同时保存设置时）。
 var proxyApplyMu sync.Mutex
 
-// ApplyProxySettings 按当前配置重建全局默认 Transport。启动时与保存设置后调用。
-func ApplyProxySettings() {
-	proxyApplyMu.Lock()
-	defer proxyApplyMu.Unlock()
+// currentProxyFunc 当前生效的 Proxy 函数（atomic.Value 持有，读方无锁且无竞争）。
+var currentProxyFunc atomic.Value
+
+// init 一次性安装动态 Transport：init 阶段没有并发请求，替换指针是安全的；
+// 之后的设置变更只走 ApplyProxySettings 的原子 Store。
+func init() {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return
 	}
 	clone := base.Clone()
-	clone.Proxy = buildProxyFunc(LoadProxySettings())
+	clone.Proxy = func(req *http.Request) (*url.URL, error) {
+		if f, ok := currentProxyFunc.Load().(func(*http.Request) (*url.URL, error)); ok && f != nil {
+			return f(req)
+		}
+		return nil, nil
+	}
 	http.DefaultTransport = clone
+}
+
+// ApplyProxySettings 按当前配置更新全局代理（写入动态 Transport 的 Proxy）。
+// 启动时与保存设置后调用。
+func ApplyProxySettings() {
+	proxyApplyMu.Lock()
+	defer proxyApplyMu.Unlock()
+	currentProxyFunc.Store(buildProxyFunc(LoadProxySettings()))
 }
 
 // buildProxyFunc 由设置构造 Transport.Proxy 函数；无法构造（自定义模式地址为空

@@ -50,6 +50,32 @@ interface LayerNode {
   baseTexture: THREE.Texture | null;
   parallax: [number, number];
   basePosition: THREE.Vector3;
+  /** puppet 蒙皮状态(object.Puppet 存在时非空):骨骼 rest⁻¹、动画轨道
+   * 与着色器 bone 矩阵 uniform(每帧更新,见 updatePuppetSkinning) */
+  puppet: PuppetSkinState | null;
+}
+
+/** puppet 蒙皮 uniform 的骨骼数上限(GLSL uniform 数组需编译期常量;
+ * uniform 预算 64×2 个 mat4 ≈ 8KB,远低于 WebGL 保底下限) */
+const PUPPET_BONE_LIMIT = 64;
+
+interface PuppetSkinState {
+  /** 每骨骼 rest 矩阵的逆(绑定姿势 → 骨骼局部),静态 */
+  restInv: THREE.Matrix4[];
+  /** 每骨骼 rest(绑定姿势)矩阵,静态;蒙皮公式是 uBoneAnim × rest⁻¹,
+   * "不做动画"的骨骼应置为 rest(而非单位阵),顶点才留在绑定位置 */
+  rest: THREE.Matrix4[];
+  /** 动画轨道(摊平 9 float/帧)与时长;无动画为 null(rest pose) */
+  tracks: number[][] | null;
+  duration: number;
+  /** 层级父索引(Parent 字段,-1 = 根) */
+  parents: number[];
+  /** 每帧写入的骨骼世界矩阵 uniform(T×R×S ×层级) */
+  boneAnim: { value: THREE.Matrix4[] };
+  /** 骨骼 rest 逆矩阵 uniform(静态) */
+  boneRestInv: { value: THREE.Matrix4[] };
+  /** 帧插值的工作矩阵,避免每帧分配 */
+  scratch: THREE.Matrix4[];
 }
 
 interface TextNode {
@@ -356,7 +382,18 @@ export class SceneRenderer {
       depthTest: false,
       depthWrite: false,
     });
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+    // puppet 蒙皮层:真实网格(设计像素单位、绕对象中心、y 向上)替代整图
+    // quad,顶点由骨骼动画在着色器里驱动(见 updatePuppetSkinning)
+    const puppetState = object.Puppet
+      ? this.makePuppetState(
+          object.Puppet,
+          material,
+          !(window as unknown as { nyaSkinOff?: boolean }).nyaSkinOff,
+        )
+      : null;
+    const mesh = puppetState
+      ? new THREE.Mesh(puppetState.geometry, material)
+      : new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
 
     group.add(mesh);
 
@@ -372,6 +409,7 @@ export class SceneRenderer {
       baseTexture: null,
       parallax: this.makeParallax(object),
       basePosition: group.position.clone(),
+      puppet: puppetState,
     };
 
     this.layers.push(node);
@@ -413,7 +451,18 @@ export class SceneRenderer {
 
       size = [image?.width ?? 100, image?.height ?? 100];
     }
-    mesh.scale.set(size[0], size[1], 1);
+    // puppet 层顶点已是设计像素单位,不按 size 缩放(quad 路径才需要)
+    if (!puppetState) mesh.scale.set(size[0], size[1], 1);
+    if (puppetState) {
+      // puppet mesh 顶点是**全局设计坐标**(原点=画布中心,y 向上;实测范围
+      // 覆盖整张画布)——忽略对象 origin,把层钉在画布中心,y 镜像交给
+      // 帧循环里骨骼矩阵就绪后的 mesh.scale.y=-1
+      const designWidth = this.options.payload.DesignWidth || 1920;
+      const designHeight = this.options.payload.DesignHeight || 1080;
+
+      group.position.set(designWidth / 2, designHeight / 2, 0);
+      node.basePosition.copy(group.position);
+    }
     material.map = baseTexture;
     material.needsUpdate = true;
     node.textureApplied = true;
@@ -450,6 +499,182 @@ export class SceneRenderer {
       node.rtB = this.makeRT(rtWidth, rtHeight);
       material.map = node.rtA.texture;
       material.needsUpdate = true;
+    }
+  }
+
+  /**
+   * 搭建 puppet 蒙皮层:几何 + 蒙皮权重 attribute + 注入骨骼矩阵 uniform 的材质。
+   *
+   * 坐标:mesh 顶点是 y 向上的设计像素(WE 模型空间);本渲染器相机 y 向下,
+   * 用 mesh.scale.y = -1 整体镜像(双面材质,翻面无感),蒙皮数学保持 y-up。
+   * 蒙皮用 onBeforeCompile 注入 MeshBasicMaterial:贴图/alpha/加色混合等
+   * 既有材质特性全部保留,只改顶点位置计算(LBS):
+   *   v' = Σ wᵢ × (Mᵢ(t) × Restᵢ⁻¹) × v
+   */
+  private makePuppetState(
+    puppet: NonNullable<WESceneObject["Puppet"]>,
+    material: THREE.MeshBasicMaterial,
+    skinEnabled: boolean,
+  ): PuppetSkinState & { geometry: THREE.BufferGeometry } {
+    const vertexCount = puppet.Positions.length / 3;
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(puppet.Positions);
+    const uvs = new Float32Array(puppet.Uvs);
+    const indices = new Uint16Array(puppet.Indices);
+    const boneIdx = new Float32Array(vertexCount * 4);
+    const boneWgt = new Float32Array(vertexCount * 4);
+
+    const boneCount = Math.min(puppet.Bones.length, PUPPET_BONE_LIMIT);
+
+    // 骨骼索引钳位:WE 的 blendindices 以 f32 编码,但单骨骼对象的值是 1.0
+    // (多骨骼对象为 0/1/2…),语义疑似 1-based 或复用权重位模式;索引越界会让
+    // uniform 数组采样未定义、顶点乱飞,这里统一钳到 [0, boneCount-1]
+    for (let i = 0; i < vertexCount * 4; i++) {
+      const raw = puppet.BlendIndex[i] ?? 0;
+
+      boneIdx[i] = Math.min(boneCount - 1, Math.max(0, Math.round(raw) || 0));
+    }
+    boneWgt.set(puppet.BlendWeight.slice(0, vertexCount * 4));
+    // 防御：后端数组短于 vertexCount*4 时剩余权重为 0，LBS 求和为 0 会让
+    // 顶点塌到原点——对全零权重的顶点兜底绑到 0 号骨骼（索引已钳位，安全）
+    for (let v = 0; v < vertexCount; v++) {
+      const o = v * 4;
+
+      if (
+        boneWgt[o] === 0 &&
+        boneWgt[o + 1] === 0 &&
+        boneWgt[o + 2] === 0 &&
+        boneWgt[o + 3] === 0
+      ) {
+        boneWgt[o] = 1;
+      }
+    }
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
+    geometry.setAttribute("aBoneIdx", new THREE.BufferAttribute(boneIdx, 4));
+    geometry.setAttribute("aBoneWgt", new THREE.BufferAttribute(boneWgt, 4));
+    geometry.setIndex(new THREE.BufferAttribute(indices, 1));
+
+    const restInv: THREE.Matrix4[] = [];
+    const restMatrices: THREE.Matrix4[] = [];
+    const boneAnim: THREE.Matrix4[] = [];
+    const scratch: THREE.Matrix4[] = [];
+
+    for (let i = 0; i < PUPPET_BONE_LIMIT; i++) {
+      boneAnim.push(new THREE.Matrix4());
+      scratch.push(new THREE.Matrix4());
+      if (i < boneCount) {
+        const rest = new THREE.Matrix4().fromArray(puppet.Bones[i].Rest);
+
+        restMatrices.push(rest);
+        restInv.push(rest.clone().invert());
+      } else {
+        restMatrices.push(new THREE.Matrix4());
+        restInv.push(new THREE.Matrix4());
+      }
+    }
+
+    const state: PuppetSkinState = {
+      restInv,
+      rest: restMatrices,
+      tracks: puppet.Animation?.Tracks ?? null,
+      duration: Math.max(0.01, puppet.Animation?.Duration ?? 1),
+      parents: puppet.Bones.map((bone) => bone.Parent),
+      boneAnim: { value: boneAnim },
+      // rest⁻¹ 也走 uniform(GLSL ES 对 const 数组初始化器的实现差异难排查,
+      // uniform 与 uBoneAnim 同一条数据路径,行为可预期)
+      boneRestInv: { value: restInv },
+      scratch,
+    };
+
+    if (!skinEnabled) {
+      // 对照实验模式:顶点原样上屏,不注入蒙皮
+      material.customProgramCacheKey = () => "nya-puppet-raw";
+
+      return { ...state, geometry };
+    }
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uBoneAnim = state.boneAnim;
+      shader.uniforms.uBoneRestInv = state.boneRestInv;
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          `#include <common>
+attribute vec4 aBoneIdx;
+attribute vec4 aBoneWgt;
+uniform mat4 uBoneAnim[${PUPPET_BONE_LIMIT}];
+uniform mat4 uBoneRestInv[${PUPPET_BONE_LIMIT}];`,
+        )
+        .replace(
+          "#include <begin_vertex>",
+          `#include <begin_vertex>
+{
+  ivec4 idx = ivec4(aBoneIdx);
+  mat4 skin = aBoneWgt.x * (uBoneAnim[idx.x] * uBoneRestInv[idx.x])
+            + aBoneWgt.y * (uBoneAnim[idx.y] * uBoneRestInv[idx.y])
+            + aBoneWgt.z * (uBoneAnim[idx.z] * uBoneRestInv[idx.z])
+            + aBoneWgt.w * (uBoneAnim[idx.w] * uBoneRestInv[idx.w]);
+  transformed = (skin * vec4(position, 1.0)).xyz;
+}`,
+        );
+    };
+    // 蒙皮注入改变着色器,给 three 一个独立的程序缓存键,避免与普通
+    // MeshBasicMaterial 的缓存 program 串用(那段没有 uBoneAnim uniform)
+    material.customProgramCacheKey = () => "nya-puppet-skin";
+
+    return { ...state, geometry };
+  }
+
+  /** 每帧采样动画轨道并写骨骼矩阵 uniform:T×R×S 局部变换 × 层级组合。 */
+  private updatePuppetSkinning(node: LayerNode, time: number): void {
+    const state = node.puppet;
+
+    if (!state || !state.tracks) return;
+    const t = time % state.duration;
+    const frames = state.tracks[0]?.length ?? 0;
+
+    if (frames === 0) return;
+    const frameF = (t / state.duration) * (frames - 1);
+    const i0 = Math.min(frames - 1, Math.floor(frameF));
+    const i1 = Math.min(frames - 1, i0 + 1);
+    const blend = frameF - i0;
+
+    for (let b = 0; b < state.restInv.length; b++) {
+      const track = state.tracks[b];
+
+      if (!track || track.length < 9) {
+        // 有动画但该骨缺轨道:保持绑定姿势(rest),顶点不动;
+        // 置单位阵会被 rest⁻¹ 抵消出错误偏移
+        state.boneAnim.value[b].copy(state.rest[b]);
+        continue;
+      }
+      const base = i0 * 9;
+      const next = i1 * 9;
+      const lerp = (offset: number): number =>
+        track[base + offset] +
+        (track[next + offset] - track[base + offset]) * blend;
+
+      // T×R×S(欧拉 zyx 与 WE 导出样本一致;2D 壁纸绝大多数只有 z 分量)
+      const euler = new THREE.Euler(lerp(3), lerp(4), lerp(5), "ZYX");
+      const local = state.scratch[b];
+
+      local.makeRotationFromEuler(euler);
+      local.scale(new THREE.Vector3(lerp(6), lerp(7), lerp(8)));
+      local.setPosition(lerp(0), lerp(1), lerp(2));
+
+      // 层级组合:世界 = 父世界 × 局部(样本里 parent 全 -1,组合退化为恒等)
+      const parentIndex = state.parents[b] ?? -1;
+      const world = state.boneAnim.value[b];
+
+      if (
+        parentIndex >= 0 &&
+        parentIndex < b &&
+        parentIndex < PUPPET_BONE_LIMIT
+      ) {
+        world.multiplyMatrices(state.boneAnim.value[parentIndex], local);
+      } else {
+        world.copy(local);
+      }
     }
   }
 
@@ -726,6 +951,25 @@ export class SceneRenderer {
       const origin = parseVec2(node.object.origin ?? "0 0", [0, 0]);
 
       node.system.update(dt, this.sceneTime, origin);
+    }
+
+    // puppet 蒙皮:采样骨骼动画轨道(在视差/效果链之前,uniform 当帧生效)
+    for (const layer of this.layers) {
+      if (layer.puppet) {
+        if ((window as { nyaSkinOff?: boolean }).nyaSkinOff) {
+          // 对照模式:蒙皮公式是 uBoneAnim × rest⁻¹,置单位阵会把顶点乘上
+          // rest⁻¹(千像素级平移)导致整体扭曲;置 rest 才是"不做动画"的原样
+          const { rest } = layer.puppet;
+
+          for (let b = 0; b < layer.puppet.boneAnim.value.length; b++) {
+            layer.puppet.boneAnim.value[b].copy(rest[b]);
+          }
+        } else {
+          this.updatePuppetSkinning(layer, this.sceneTime);
+        }
+        // y 镜像只在骨骼矩阵就绪后生效;材质在 buildImageLayer 里已设
+        if (layer.mesh.scale.y === 1) layer.mesh.scale.y = -1;
+      }
     }
 
     // 效果链重绘

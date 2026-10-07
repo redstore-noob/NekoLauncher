@@ -131,7 +131,7 @@ func weBuildScenePayload(renderDir, configDir, selectedFile string) *WallpaperEn
 		Entry:             sceneRoutePrefix + "scene.json",
 		DesignWidth:       scene.General.OrthogonalProjection.Width,
 		DesignHeight:      scene.General.OrthogonalProjection.Height,
-		Objects:           scene.Objects,
+		Objects:           weInjectPuppets(reader, scene.Objects),
 		GeneralProperties: map[string]weUserProperty{},
 	}
 	if payload.DesignWidth <= 0 || payload.DesignHeight <= 0 {

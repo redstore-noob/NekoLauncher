@@ -6,6 +6,7 @@ package bindings
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -65,9 +66,20 @@ type AccountAPI struct {
 	// browserMu / browserState / browserReturnTo 内嵌浏览器登录的进度状态
 	// （见 api_account_browser.go）。SPA 会在登录页跳转往返间重载，
 	// 进度必须由后端持有，前端靠事件 + 轮询接力显示。
-	browserMu      sync.Mutex
-	browserState   MicrosoftBrowserLoginState
+	browserMu       sync.Mutex
+	browserState    MicrosoftBrowserLoginState
 	browserReturnTo string
+	// authlibMu / authlibPending 多角色皮肤站登录的待确认会话：登录返回的
+	// 访问令牌与角色 UUID 只留在后端，前端按序号选择角色（见 AuthlibLogin /
+	// ConfirmAuthlibProfile）。同一时刻只有一份，下次登录直接覆盖。
+	authlibMu      sync.Mutex
+	authlibPending *authlibPendingSession
+}
+
+// authlibPendingSession 一次皮肤站登录的待确认状态。
+type authlibPendingSession struct {
+	credential auth.AuthlibCredential // 除 ProfileName/ProfileUuid 外已就绪
+	profiles   []auth.AuthlibProfileInfo
 }
 
 // Startup 注入 Wails runtime ctx，并启动皮肤缓存的后台每日自动刷新。
@@ -150,6 +162,32 @@ func (a *ServerAPI) Startup(ctx context.Context) { a.ctx = ctx }
 // SystemAPI 版本信息、日志与系统操作命令集。
 type SystemAPI struct {
 	ctx context.Context
+	// writeMu / approvedWritePaths 用户经文件对话框亲自选中的路径集合：
+	// WriteTextFile/WritePngFile 的写入白名单之一（另一类是游戏/音乐目录内）。
+	// 插件与宿主同 WebView，无法区分调用方——对话框批准是唯一能证明
+	// "用户知情同意这个路径"的信号。
+	writeMu            sync.Mutex
+	approvedWritePaths map[string]bool
+}
+
+// approveWritePath 记录一次用户对话框选择（保存/打开）产生的路径。
+func (a *SystemAPI) approveWritePath(path string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	a.writeMu.Lock()
+	if a.approvedWritePaths == nil {
+		a.approvedWritePaths = make(map[string]bool)
+	}
+	a.approvedWritePaths[path] = true
+	a.writeMu.Unlock()
+}
+
+// isApprovedWritePath 路径是否经对话框批准过（精确匹配）。
+func (a *SystemAPI) isApprovedWritePath(path string) bool {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	return a.approvedWritePaths[path]
 }
 
 // Startup 注入 Wails runtime ctx，并启动窗口透明/亚克力的 DWM 框架修正
@@ -173,10 +211,10 @@ func (a *API) Startup(ctx context.Context) {
 	a.Monitor.Startup(ctx)
 	a.Server.Startup(ctx)
 	a.ServerHost.Startup(ctx)
-		a.Online.Startup(ctx)
-		a.System.Startup(ctx)
-		a.Plugin.Startup(ctx)
-		a.Update.Startup(ctx)
+	a.Online.Startup(ctx)
+	a.System.Startup(ctx)
+	a.Plugin.Startup(ctx)
+	a.Update.Startup(ctx)
 
 	// 一次性启动逻辑（对应 C# App 构造 / OnStartup）
 	// 代理最先应用：后续任何出站请求（更新检查、皮肤缓存、实例扫描的远程

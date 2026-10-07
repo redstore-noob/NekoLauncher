@@ -34,6 +34,8 @@ export function SaveInstanceJavaConfig(arg1:string,arg2:config.JavaConfig):Promi
 
 export function ScanImportableInstances():Promise<Array<instance.ImportableInstance>>;
 
+export function RegisterImportedInstance(arg1:string):Promise<void>;
+
 export function SelectInstance(arg1:string):Promise<boolean>;
 
 export function Startup(arg1:context.Context):Promise<void>;

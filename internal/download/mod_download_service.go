@@ -98,13 +98,18 @@ func DownloadFileToPath(
 }
 
 // downloadAttempt 单次下载尝试：若临时文件已有部分内容则用 Range 断点续传。
+// 单次尝试超时（modDownloadAttemptTimeout）在暂停期间挂起：暂停可能持续几十分钟，
+// 若任由 WithTimeout 的 deadline 继续消耗，长暂停后恢复会立刻报超时并烧掉重试次数。
 func downloadAttempt(
 	ctx context.Context,
 	downloadURL, temporaryPath string,
 	progress ProgressBytes,
 ) error {
-	attemptCtx, cancel := context.WithTimeout(ctx, modDownloadAttemptTimeout)
+	attemptCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	deadline := time.Now().Add(modDownloadAttemptTimeout)
+	deadlineTimer := time.AfterFunc(modDownloadAttemptTimeout, cancel)
+	defer deadlineTimer.Stop()
 
 	resumeFrom := int64(0)
 	if info, err := os.Stat(temporaryPath); err == nil {
@@ -175,9 +180,15 @@ func downloadAttempt(
 	buffer := make([]byte, 128*1024)
 	downloaded := downloadedBase
 	for {
-		// 全局暂停门：暂停期间连接保持、速度归零，恢复后原连接继续
-		if err := WaitPauseGate(attemptCtx); err != nil {
+		// 全局暂停门：暂停期间连接保持、速度归零，恢复后原连接继续。
+		// 等待用外层 ctx（取消立即生效），暂停耗时顺延单次尝试的 deadline。
+		pauseStart := time.Now()
+		if err := WaitPauseGate(ctx); err != nil {
 			return err
+		}
+		if paused := time.Since(pauseStart); paused > 0 {
+			deadline = deadline.Add(paused)
+			deadlineTimer.Reset(time.Until(deadline))
 		}
 		// 全局限速：先申请配额，再按配额大小读（低速档下 128KB 的读块会超发）
 		chunk := buffer[:downloadLimiter.permitReadSize(len(buffer))]
@@ -265,7 +276,12 @@ func isTransientFailure(err error, ctx context.Context) bool {
 		// 断点已删档重置，下一次尝试从头完整下载
 		return true
 	}
-	// attemptCtx 超时（DeadlineExceeded 且外部 ctx 未触发）= 单次尝试超时
+	// attemptCtx 超时（DeadlineExceeded 且外部 ctx 未触发）= 单次尝试超时；
+	// 超时现在由 deadline 计时器触发 cancel，表现是 Canceled 而非 DeadlineExceeded，
+	// 外部 ctx 未取消时同样视为瞬时失败
+	if errors.Is(err, context.Canceled) && ctx.Err() == nil {
+		return true
+	}
 	return errors.Is(err, context.DeadlineExceeded) ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, io.ErrUnexpectedEOF) ||

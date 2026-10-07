@@ -41,6 +41,7 @@ func effectiveHasCustomResolution(minecraftDirectory, versionId string) bool {
 // buildLaunchOptions 启动参数装配：实例独立设置与全局高级设置的合并、内存决策、
 // 直接进服参数、快速进存档参数、插件启动贡献（对应 C# GameLaunchService.Options.cs）。
 func (s *GameLaunchService) buildLaunchOptions(
+	ctx context.Context,
 	instance GameInstanceSnapshot,
 	versionId string,
 	launchAccount MinecraftAccount,
@@ -184,7 +185,7 @@ func (s *GameLaunchService) buildLaunchOptions(
 		// 皮肤站账号：把游戏会话服务重定向到皮肤站，需要注入器 jar 在本地就绪
 		s.appendLog("正在准备 authlib-injector 注入器。", "LAUNCH")
 		injectorJarPath, err := auth.EnsureInjector(
-			context.Background(),
+			ctx,
 			instance.MinecraftDirectory,
 			func(line string) { s.appendLog(line, "LAUNCH") })
 		if err != nil {

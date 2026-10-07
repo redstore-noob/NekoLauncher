@@ -294,9 +294,16 @@ func splitVersion(version string) ([]int, string) {
 
 	core := value
 	pre := ""
-	if index := strings.IndexAny(value, "-+"); index >= 0 {
-		core = value[:index]
-		pre = strings.TrimSpace(value[index+1:])
+	// semver 里 `+` 后面是构建元数据（0.4.1+build2 应与 0.4.1 视为相等），
+	// 直接丢弃；只有 `-` 才引入预发布后缀。
+	if index := strings.IndexByte(core, '+'); index >= 0 {
+		core = core[:index]
+	}
+	if index := strings.IndexByte(core, '-'); index >= 0 {
+		// index 相对 core（+ 后缀已剥离），pre 也从 core 取，
+		// 避免 `0.4.1-beta+build2` 把构建元数据泄入预发布段参与比较
+		pre = strings.TrimSpace(core[index+1:])
+		core = core[:index]
 	}
 
 	parts := strings.Split(core, ".")

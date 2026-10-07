@@ -206,3 +206,24 @@ func folderRegistered(instanceDirectory string, registered []string) bool {
 	}
 	return false
 }
+
+// IsImportCandidateInstance 验证 path 是否是导入扫描器探测根下的
+// 外部实例目录（供绑定层的注册专用通道使用）。AddProfileFolder 已收紧为
+// "对话框批准或已注册目录"，自动探测到的实例路径走这里时必须验明正身：
+// 父目录是某个候选探测根，且目录结构确实像外部启动器实例。
+func IsImportCandidateInstance(path string) bool {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if cleaned == "" {
+		return false
+	}
+	if _, ok := TryResolveExternalInstance(cleaned); !ok {
+		return false
+	}
+	parent := filepath.Dir(cleaned)
+	for _, root := range importCandidateRoots() {
+		if strings.EqualFold(filepath.Clean(root), parent) {
+			return true
+		}
+	}
+	return false
+}

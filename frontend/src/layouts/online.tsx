@@ -105,6 +105,7 @@ const FALLBACK_SETTINGS: OnlineSettings = {
   TerracottaPath: "",
   RedstoneRelay: DEFAULT_RELAY_HINT,
   RedstoneKey: "",
+  HasRedstoneKey: false,
   Target: "127.0.0.1:25565",
   ServerID: "",
   MaxPlayers: 8,
@@ -1404,6 +1405,11 @@ const OnlinePage: React.FC = () => {
                           <Input
                             aria-label={t("联机密钥")}
                             className="w-72 min-w-0 max-w-full font-mono"
+                            placeholder={
+                              settings.HasRedstoneKey
+                                ? t("已保存（输入以更换）")
+                                : ""
+                            }
                             size="sm"
                             value={settings.RedstoneKey ?? ""}
                             variant="bordered"

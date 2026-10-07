@@ -232,12 +232,28 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
+          # 发布版本的自我版本号来自 tag：不注入的话 exe 会带着 info.go 里的常量
+          # 版本上线，更新器比对后会把用户"更"回旧版本号（0.4.2 发版事故）。
+          # 非 semver 的 tag（如 nightly）直接让构建失败：注入垃圾版本号和漏注入
+          # 一样会引发"更回旧版"事故，与其上线后才发现不如在 CI 就拦下。
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            BUILD_VERSION="${GITHUB_REF_NAME#v}"
+            if ! echo "$BUILD_VERSION" | grep -Eq \
+              '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+              echo "::error::tag $GITHUB_REF_NAME 不是合法 semver（形如 0.4.2 / 0.4.2-rc.1），拒绝注入版本号"
+              exit 1
+            fi
+          else
+            BUILD_VERSION=""
+          fi
+          # tag 构建同时注入 official 构建类型：info.BuildKind 默认 internal，
+          # 不注入的话发布包会禁用更新检查。
           BUILD_KIND_LDFLAGS=""
           if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
             BUILD_KIND_LDFLAGS="-X nekolauncher/internal/info.buildKindOverride=official"
           fi
           wails build -platform windows/amd64 -webview2 embed \
-            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY $BUILD_KIND_LDFLAGS"
+            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY -X nekolauncher/internal/info.buildVersion=$BUILD_VERSION $BUILD_KIND_LDFLAGS"
           # ---- NekoSolo 安装器模板：随启动器一起分发 ----
           # runner 自带 .NET SDK，能构建 net48 的 stub；模板打进 portable zip 的
           # tools/NekoSolo/（启动器导出 exe 的查找位置之一），并单独作为 Release 资产
@@ -284,8 +300,19 @@ jobs:
             *)            WAILS_TAGS="-tags webkit2_41" ;;
           esac
 
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            BUILD_VERSION="${GITHUB_REF_NAME#v}"
+            # 非 semver 的 tag 拒绝注入（与 Windows 构建同一规则，理由见上）
+            if ! echo "$BUILD_VERSION" | grep -Eq \
+              '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+              echo "::error::tag $GITHUB_REF_NAME 不是合法 semver，拒绝注入版本号"
+              exit 1
+            fi
+          else
+            BUILD_VERSION=""
+          fi
           wails build -platform linux/amd64 $WAILS_TAGS \
-            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY $BUILD_KIND_LDFLAGS"
+            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY -X nekolauncher/internal/info.buildVersion=$BUILD_VERSION $BUILD_KIND_LDFLAGS"
           chmod +x build/bin/NekoLauncher
 
           case "${{ matrix.linux-artifacts }}" in
@@ -300,6 +327,12 @@ jobs:
           # 免得同一版本号被反复重发、用户分不清手里那份是哪次构建。
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             export NPFPM_VERSION="${GITHUB_REF_NAME#v}"
+            # 非 semver 的 tag 拒绝（与 Windows 构建同一规则，理由见上）
+            if ! echo "$NPFPM_VERSION" | grep -Eq \
+              '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+              echo "::error::tag $GITHUB_REF_NAME 不是合法 semver，拒绝注入版本号"
+              exit 1
+            fi
           else
             export NPFPM_VERSION="0.0.0-snapshot"
           fi
@@ -398,8 +431,19 @@ jobs:
           fi
           # 按 matrix.platform 各出各的包：Intel 与 Apple Silicon 不再 lipo 成一个 universal
           # （通用包体积翻倍，且 Intel 机器下 arm64 那半永远用不上）。
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            BUILD_VERSION="${GITHUB_REF_NAME#v}"
+            # 非 semver 的 tag 拒绝注入（与 Windows 构建同一规则，理由见上）
+            if ! echo "$BUILD_VERSION" | grep -Eq \
+              '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+              echo "::error::tag $GITHUB_REF_NAME 不是合法 semver，拒绝注入版本号"
+              exit 1
+            fi
+          else
+            BUILD_VERSION=""
+          fi
           wails build -platform "${{ matrix.platform }}" \
-            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY $BUILD_KIND_LDFLAGS"
+            -ldflags "-X nekolauncher/internal/bindings.builtinCurseForgeAPIKey=$CF_API_KEY -X nekolauncher/internal/info.buildVersion=$BUILD_VERSION $BUILD_KIND_LDFLAGS"
 
       - name: Package macOS app (zip)
         # 单开一步：和构建分开，失败时一眼能看出是编译挂了还是打包挂了。

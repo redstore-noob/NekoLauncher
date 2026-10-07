@@ -397,15 +397,26 @@ func (m *Manager) maybeAutoRestart(id string, waitErr error) {
 	state.cursor++
 	state.mu.Unlock()
 
-	time.Sleep(autoRestartDelay)
-
-	// 用户在这 5 秒里手动启动/停止的话就别抢了
-	state.mu.Lock()
-	idle := state.status == StatusStopped
-	state.mu.Unlock()
-	if !idle {
-		return
+	// 等待窗口内轮询状态（250ms 粒度）：用户在此期间手动启动/停止时
+	// 立即放弃自动重启，不再干等剩余秒数抢控制权
+	deadline := time.Now().Add(autoRestartDelay)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		time.Sleep(min(remaining, 250*time.Millisecond))
+		state.mu.Lock()
+		idle := state.status == StatusStopped
+		state.mu.Unlock()
+		if !idle {
+			m.appendConsole(id, fmt.Sprintf(
+				"[%s] 检测到手动操作，取消本次自动重启。",
+				time.Now().Format("15:04:05")))
+			return
+		}
 	}
+
 	if err := m.StartServer(context.Background(), id); err != nil {
 		logs.Write("WARN", fmt.Sprintf("自动重启 %s 失败：%v", id, err))
 		m.appendConsole(id, fmt.Sprintf("[%s] 自动重启失败：%v（可手动点启动重试）", time.Now().Format("15:04:05"), err))

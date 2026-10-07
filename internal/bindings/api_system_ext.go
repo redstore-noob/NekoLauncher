@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"nekolauncher/internal/logs"
 	"sync"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -27,12 +29,33 @@ import (
 // pngMagic PNG 文件签名；写入前校验，避免把别的东西存成 .png。
 var pngMagic = []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
 
+// guardWritablePath 写类绑定的路径收口：只允许两类目标——
+//  1. 用户刚在文件对话框里亲自选中的路径（批准集，精确匹配）；
+//  2. 已知游戏/音乐目录内的路径（且不在启动器存储目录内）。
+//
+// 此前 WriteTextFile/WritePngFile 可写任意路径任意内容——插件与宿主同
+// WebView，等于给了恶意插件"改写任意文件"的能力（覆盖配置、投毒启动项脚本）。
+// 对话框批准是唯一能证明"用户知情同意这个路径"的信号。
+func (a *SystemAPI) guardWritablePath(path string) error {
+	if a.isApprovedWritePath(path) {
+		return nil
+	}
+	if insideAnyRoot(readableRootDirectories(), path) && !resolvedInsideStorage(path) {
+		return nil
+	}
+	logs.Write("WARN", "已拒绝界面层写入未批准的路径："+path)
+	return errors.New("拒绝写入：请先通过文件对话框选择保存位置，或写入游戏目录内")
+}
+
 // WritePngFile 把前端（如皮肤编辑器 canvas）导出的 base64 PNG 写入目标路径。
 // 接受裸 base64 或 data URI（data:image/png;base64,...）；仅接受 PNG。
 func (a *SystemAPI) WritePngFile(path, base64Png string) error {
 	target := tools.SanitizeSavePath(filepath.Clean(strings.TrimSpace(path)))
 	if target == "" {
 		return errors.New("目标路径为空")
+	}
+	if err := a.guardWritablePath(target); err != nil {
+		return err
 	}
 	encoded := base64Png
 	if index := strings.IndexByte(encoded, ','); index >= 0 && strings.HasPrefix(encoded[:index], "data:") {
@@ -49,11 +72,15 @@ func (a *SystemAPI) WritePngFile(path, base64Png string) error {
 	return os.WriteFile(target, raw, 0o644)
 }
 
-// WriteTextFile 把文本内容写入目标路径（UTF-8，覆盖）。供创作工具的"导出输出"等使用。
+// WriteTextFile 把文本内容写入目标路径（UTF-8，覆盖）。供创作工具的"导出输出"与
+// 游戏设置编辑使用；写入范围见 guardWritablePath。
 func (a *SystemAPI) WriteTextFile(path, content string) error {
 	target := tools.SanitizeSavePath(filepath.Clean(strings.TrimSpace(path)))
 	if target == "" {
 		return errors.New("目标路径为空")
+	}
+	if err := a.guardWritablePath(target); err != nil {
+		return err
 	}
 	if len(content) > 16<<20 {
 		return errors.New("内容过大（上限 16 MB）")
@@ -63,10 +90,15 @@ func (a *SystemAPI) WriteTextFile(path, content string) error {
 }
 
 // ReadTextFile 读取目标路径的文本内容（UTF-8）。供游戏设置编辑器等使用。
+// 路径必须落在已知的游戏/音乐目录内（见 guardReadablePath）——不设限的
+// 读取等于给同 WebView 的插件开了任意文件读取（含 accounts.yaml 与密钥文件）。
 func (a *SystemAPI) ReadTextFile(path string) (string, error) {
 	target := filepath.Clean(strings.TrimSpace(path))
 	if target == "" {
 		return "", errors.New("目标路径为空")
+	}
+	if err := guardReadablePath(target); err != nil {
+		return "", err
 	}
 	data, err := os.ReadFile(target)
 	if err != nil {
@@ -88,12 +120,15 @@ type SystemFileEntry struct {
 }
 
 // ListDirectory 列出目录内容，目录在前、按名称排序。供 AI 助手自主
-// 浏览实例目录（崩溃排查、找配置文件等）时使用；只读，不限制根目录，
-// 与 ReadTextFile 的暴露面一致。
+// 浏览实例目录（崩溃排查、找配置文件等）时使用；只读。与 ReadTextFile
+// 同一口径收口到已知游戏/音乐目录——目录结构本身就是隐私。
 func (a *SystemAPI) ListDirectory(dir string) ([]SystemFileEntry, error) {
 	target := filepath.Clean(strings.TrimSpace(dir))
 	if target == "" {
 		return nil, errors.New("目标路径为空")
+	}
+	if err := guardReadablePath(target); err != nil {
+		return nil, err
 	}
 	dirEntries, err := os.ReadDir(target)
 	if err != nil {
@@ -146,20 +181,34 @@ func (a *SystemAPI) GetDeviceId() string {
 // ---- 原生对话框 ----
 
 // SelectDirectory 打开目录选择对话框，返回选中目录（取消返回空串）。
+// SelectDirectory 打开目录选择对话框，返回选中目录（取消返回空串）。
+// 返回的目录记入对话框批准集：后续设置游戏根/音乐目录只认"用户亲自
+// 选过的目录"（见 guardSettableRoot）——插件与宿主同 WebView，
+// 无法区分调用方，对话框批准是唯一可信的用户同意信号。
 func (a *SystemAPI) SelectDirectory(title string) (string, error) {
-	return wailsruntime.OpenDirectoryDialog(callCtx(a.ctx), wailsruntime.OpenDialogOptions{
+	directory, err := wailsruntime.OpenDirectoryDialog(callCtx(a.ctx), wailsruntime.OpenDialogOptions{
 		Title: title,
 	})
+	if err == nil {
+		approveDialogDirectory(directory)
+	}
+	return directory, err
 }
 
 // SelectFile 打开文件选择对话框；filterName/pattern 组成文件类型过滤器，
 // pattern 形如 "*.png;*.jpg"（可含多段）。取消返回空串。
+// 返回的路径记入写入批准集：后续 WriteTextFile/WritePngFile 只认
+// "对话框批准的路径"或"游戏/音乐目录内"的写入（见 guardWritablePath）。
 func (a *SystemAPI) SelectFile(title, filterName, pattern string) (string, error) {
 	opts := wailsruntime.OpenDialogOptions{Title: title}
 	if pattern != "" {
 		opts.Filters = []wailsruntime.FileFilter{{DisplayName: filterName, Pattern: pattern}}
 	}
-	return wailsruntime.OpenFileDialog(callCtx(a.ctx), opts)
+	path, err := wailsruntime.OpenFileDialog(callCtx(a.ctx), opts)
+	if err == nil {
+		a.approveWritePath(path)
+	}
+	return path, err
 }
 
 // SaveFile 打开保存文件对话框；defaultName 为默认文件名。取消返回空串。
@@ -179,7 +228,9 @@ func (a *SystemAPI) SaveFile(title, defaultName, filterName, pattern string) (st
 	if err != nil {
 		return "", err
 	}
-	return tools.SanitizeSavePath(destination), nil
+	sanitized := tools.SanitizeSavePath(destination)
+	a.approveWritePath(sanitized)
+	return sanitized, nil
 }
 
 // ---- 打开资源管理器 / 外部程序 ----

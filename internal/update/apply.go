@@ -16,6 +16,10 @@ import (
 // oldExecutableSuffix 被替换下来的旧 exe 后缀；下次启动时清理。
 const oldExecutableSuffix = ".update-old"
 
+// updatePendingSuffix 三段式替换的中转文件后缀（Windows）：新 exe 先完整写到这里，
+// 再 rename 到最终路径。写入中途被杀只会留下这个残片，启动时一并清理。
+const updatePendingSuffix = ".update-new"
+
 // ErrManualUpdateRequired 当前平台不支持自动替换。
 var ErrManualUpdateRequired = errors.New("当前平台不支持自动更新，请到版本页手动下载")
 
@@ -51,13 +55,26 @@ func validateReplacement(path string) error {
 const minimumExecutableBytes = 512 << 10
 
 // CleanupOldExecutable 清理上次更新留下的旧 exe。启动时调用即可，失败不影响运行。
+// 本体缺失或明显不完整（上次更新在改名与就位之间被杀死）时，优先从旧 exe 恢复，
+// 而不是把完好的旧版删掉——否则一次断电就能把启动器永久砖掉。
 func CleanupOldExecutable() {
 	current, err := CurrentExecutable()
 	if err != nil {
 		return
 	}
+	// 三段式替换的残片：本体没动过，直接清掉
+	_ = os.Remove(current + updatePendingSuffix)
 	old := current + oldExecutableSuffix
 	if _, err := os.Stat(old); err != nil {
+		return
+	}
+	if info, statErr := os.Stat(current); statErr != nil || info.Size() < minimumExecutableBytes {
+		// 本体缺失/过小：旧版本还在，恢复它
+		_ = os.Remove(current)
+		if renameErr := os.Rename(old, current); renameErr == nil {
+			return
+		}
+		// 恢复失败（old 也被动过？）：保留 old 供人工恢复，不删除
 		return
 	}
 	_ = os.Remove(old)

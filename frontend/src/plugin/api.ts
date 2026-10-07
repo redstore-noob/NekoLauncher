@@ -87,11 +87,7 @@ import {
 } from "@fluentui/react-icons";
 
 import { instance as instanceModels } from "../../wailsjs/go/models";
-import {
-  GetAccounts,
-  GetAccountStableKey,
-  GetAvatarUrl,
-} from "../../wailsjs/go/bindings/AccountAPI";
+import { GetAccountSummaries } from "../../wailsjs/go/bindings/AccountAPI";
 import {
   ReadSaves,
   ToggleContentEntry,
@@ -1040,25 +1036,18 @@ export function createPluginApi(manifest: PluginManifest): PluginApi {
 
       return GetCurrentInstanceSnapshot();
     },
-    // 只交摘要：LaunchAccount 里嵌着微软/皮肤站凭据，原始结构永远不出宿主；
-    // 头像拉取失败不阻塞列表（留空走首字母占位）
+    // 只交摘要（后端生成）：LaunchAccount 里嵌着账号标识符/凭据，原始结构
+    // 永远不出宿主；key 为不可逆寻址键，头像由后端代取，失败留空走首字母占位
     getAccounts: async () => {
       if (!allowed("accounts", "getAccounts")) return null;
-      const accounts = await GetAccounts();
+      const summaries = await GetAccountSummaries();
 
-      return Promise.all(
-        accounts.map(async (account) => {
-          const key = await GetAccountStableKey(account);
-          const avatar = await GetAvatarUrl(key).catch(() => "");
-
-          return {
-            key,
-            name: account.DisplayName ?? "",
-            type: account.Type ?? "",
-            avatar,
-          };
-        }),
-      );
+      return summaries.map((summary) => ({
+        key: summary.Key ?? "",
+        name: summary.Name ?? "",
+        type: summary.Type ?? "",
+        avatar: summary.Avatar ?? "",
+      }));
     },
     // 切换选中是显式的全局状态写入（与 launchVersion 的"不落选中"相对）
     selectInstance: async (versionId: string) => {

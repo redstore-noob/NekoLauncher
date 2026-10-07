@@ -272,7 +272,7 @@ func (a *AccountAPI) fetchSkinTexture(account *auth.LaunchAccount) (*SkinTexture
 		return tex, nil
 
 	case "microsoft":
-		if account.Microsoft == nil {
+		if auth.Shared.MicrosoftSnapshot(account) == nil {
 			return nil, errors.New("正版账号缺少凭据")
 		}
 		profile, err := a.fetchMojangProfile(account, false)

@@ -711,7 +711,14 @@ func downloadToTemporary(
 		if err := WaitPauseGate(ctx); err != nil {
 			return err
 		}
-		read, err := resp.Body.Read(buffer)
+		// 全局限速：游戏本体/依赖库/资源文件是流量大头，必须与 Mod 下载
+		// 共享同一配额，否则用户设置的总带宽上限对这些文件不生效。
+		// 先申请配额，再按配额大小读（低速档下整块读会超发）。
+		chunk := buffer[:downloadLimiter.permitReadSize(len(buffer))]
+		if err := downloadLimiter.wait(ctx, int64(len(chunk))); err != nil {
+			return err
+		}
+		read, err := resp.Body.Read(chunk)
 		if read > 0 {
 			watchdog.Touch()
 			if _, writeErr := destination.Write(buffer[:read]); writeErr != nil {

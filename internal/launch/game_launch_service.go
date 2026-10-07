@@ -74,6 +74,10 @@ type GameLaunchService struct {
 	// prepareStopRequested 准备阶段的取消请求（TryStopGame 在 Preparing 时置位）。
 	// launch 在各阶段边界检查：校验补全/凭据刷新/Java 下载都可能耗时数分钟。
 	prepareStopRequested atomic.Bool
+	// prepareStopSignal prepareStopRequested 的广播通道（gate 保护）：
+	// 边界检查只能中止"步骤之间"的流程，Java 自动下载等长耗时步骤在
+	// runLauncher 内部，只有 ctx 级别的取消才能真正中断它们。
+	prepareStopSignal chan struct{}
 
 	gameProcess   *exec.Cmd
 	stopRequested bool
@@ -182,6 +186,9 @@ func (s *GameLaunchService) launch(
 	defer s.launchInProgress.Store(0)
 	// 上一次启动残留的取消请求（极窄窗口）不带入本次
 	s.prepareStopRequested.Store(false)
+	s.gate.Lock()
+	s.prepareStopSignal = make(chan struct{})
+	s.gate.Unlock()
 
 	// 早期守卫统一走 fail：写文件日志 + 发布失败快照。
 	// 此前这些路径只返回结果不发快照——前端只在按钮下方显示一行小字、
@@ -309,7 +316,7 @@ func (s *GameLaunchService) launch(
 	}
 
 	s.publishPreparing(snap, selectedAccount, "正在准备 Java 运行时与存档还原点…")
-	options, optionsErr := s.buildLaunchOptions(snap, versionId, launchAccount, serverHost, serverPort, worldName)
+	options, optionsErr := s.buildLaunchOptions(ctx, snap, versionId, launchAccount, serverHost, serverPort, worldName)
 	if optionsErr != nil {
 		s.appendLog(fmt.Sprintf("启动失败：%v", optionsErr), "LAUNCH")
 		s.publishFailure("启动失败", optionsErr.Error(), 0)
@@ -320,7 +327,7 @@ func (s *GameLaunchService) launch(
 		return abortCancelled()
 	}
 
-	return s.runLauncher(selectedAccount, launchAccount, *options, launchId)
+	return s.runLauncher(ctx, selectedAccount, launchAccount, *options, launchId)
 }
 
 // reportPrepareFailure 发布账号准备失败的快照并返回失败结果。
@@ -370,7 +377,8 @@ func (s *GameLaunchService) prepareMicrosoftAccount(
 	var validateErr error
 	lockErr := s.accounts.WithRefreshLock(selectedAccount, func() error {
 		// 锁内重读最新凭据：等待锁的期间可能已有并发刷新写入轮换后的令牌
-		current := selectedAccount.Microsoft
+		// （经存储在 gate 读锁内取拷贝，避免与 Update* 的原地写竞争）
+		current := s.accounts.MicrosoftSnapshot(selectedAccount)
 		if current == nil {
 			return newMicrosoftCredentialsError("账号缺少正版凭据，请重新登录。")
 		}
@@ -461,12 +469,33 @@ func (s *GameLaunchService) prepareAuthlibAccount(
 }
 
 // runLauncher 启动 Java 进程并发布"运行中"快照，随后交由进程观察器接管退出事件。
+// launchCtx 在准备阶段取消请求（prepareStopSignal）触发时取消，
+// 传导进启动管线内部的耗时步骤（版本解析、Java 自动下载、注入器准备）。
 func (s *GameLaunchService) runLauncher(
+	ctx context.Context,
 	selectedAccount *auth.LaunchAccount,
 	launchAccount MinecraftAccount,
 	options MinecraftLaunchOptions,
 	launchId int64,
 ) LaunchResult {
+	launchCtx, cancelLaunch := context.WithCancel(ctx)
+	defer cancelLaunch()
+	watcherDone := make(chan struct{})
+	defer close(watcherDone)
+	s.gate.Lock()
+	prepareStopSignal := s.prepareStopSignal
+	s.gate.Unlock()
+	if prepareStopSignal != nil {
+		go func() {
+			select {
+			case <-prepareStopSignal:
+				cancelLaunch()
+			case <-watcherDone:
+			case <-launchCtx.Done():
+			}
+		}()
+	}
+
 	s.appendLog("正在解析版本、依赖库与 Java 运行时。", "LAUNCH")
 	// 启动前留还原点（时间机器）：在进程真正拉起之前，此刻的磁盘状态就是
 	// "玩家上一次退出的样子"。失败只记日志，绝不阻断启动。
@@ -477,12 +506,15 @@ func (s *GameLaunchService) runLauncher(
 	var result *MinecraftLaunchResult
 	var err error
 	if microsoft, ok := launchAccount.(*auth.MicrosoftAccount); ok {
-		result, err = s.microsoftLauncher.Launch(context.Background(), microsoft, options)
+		result, err = s.microsoftLauncher.Launch(launchCtx, microsoft, options)
 	} else {
-		result, err = s.offlineLauncher.Launch(context.Background(), options)
+		result, err = s.offlineLauncher.Launch(launchCtx, options)
 	}
 	if err != nil {
 		message := err.Error()
+		if launchCtx.Err() != nil {
+			message = "游戏启动已取消。"
+		}
 		s.appendLog(fmt.Sprintf("启动失败：%s", message), "LAUNCH")
 		s.publishFailure("启动失败", message, 0)
 		return FailedLaunch(message)
@@ -594,20 +626,38 @@ func (s *GameLaunchService) appendLog(line, logType string) {
 	logs.Write(logType, redacted)
 }
 
-// 凭据脱敏正则组：--accessToken 参数、旧版 token:<token>:<uuid> 会话、Bearer 头。
+// 凭据/身份脱敏正则组：--accessToken 参数、旧版 token:<token>:<uuid> 会话、
+// Bearer 头，以及 --username/--uuid/--xuid/--clientId 这些账号标识参数
+// （与溯源报告 sensitiveArgumentPrefixes 同口径——官方档案 UUID 与 XUID 是
+// 跨服务可追踪标识符，launch:logLine 事件对所有插件可见）。
 var (
-	accessTokenArgumentPattern = regexp.MustCompile(`--accessToken\s+\S+`)
-	legacySessionTokenPattern  = regexp.MustCompile(`token:[^:\s"]{8,}(:[0-9a-fA-F]{32})`)
-	bearerTokenPattern         = regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{16,}`)
+	// 同时覆盖 "--accessToken <v>" 分列与 "--accessToken=<v>" 等号两种形态
+	accessTokenArgumentPattern = regexp.MustCompile(`--accessToken(=|\s+)\S+`)
+	// 旧会话串 token:<token>:<uuid>：token 与 uuid 都是账号数据，整段打码
+	legacySessionTokenPattern = regexp.MustCompile(`token:[^:\s"]{8,}(:[0-9a-fA-F]{32})`)
+	bearerTokenPattern        = regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{16,}`)
+	identityArgumentPattern   = regexp.MustCompile(`--(username|uuid|xuid|clientId)(=|\s+)\S+`)
+	// Yggdrasil/authlib 日志常见的 JSON 形态与 URL 查询参数形态
+	jsonAccessTokenPattern = regexp.MustCompile(`(?i)"accessToken"\s*:\s*"[^"]*"`)
+	queryTokenPattern      = regexp.MustCompile(`(?i)access_token=[^&\s"]+`)
+	sessionParamPattern    = regexp.MustCompile(`(?i)\bsession=[^&\s"]{8,}`)
+	queryUserPattern       = regexp.MustCompile(`(?i)\buser(name)?=[^&\s"]+`)
 )
 
 // RedactSecrets 凭据脱敏：游戏 stdout 或后续日志点若带入访问令牌
-// （--accessToken 参数、旧版 token:<token>:<uuid> 会话、Bearer 头），
-// 进入内存日志前统一打码；玩家 UUID 非敏感，保留以便排查。
+// （--accessToken 参数、旧版 token:<token>:<uuid> 会话、Bearer 头、
+// JSON 字段、URL 查询参数）或账号标识参数（--username/--uuid/--xuid/
+// --clientId），进入内存日志前统一打码；日志文件与 launch:logLine
+// 事件共用本口径。
 func RedactSecrets(line string) string {
 	masked := accessTokenArgumentPattern.ReplaceAllString(line, "--accessToken ***")
-	masked = legacySessionTokenPattern.ReplaceAllString(masked, "token:***$1")
+	masked = identityArgumentPattern.ReplaceAllString(masked, "--$1 ***")
+	masked = legacySessionTokenPattern.ReplaceAllString(masked, "token:***")
 	masked = bearerTokenPattern.ReplaceAllString(masked, "Bearer ***")
+	masked = jsonAccessTokenPattern.ReplaceAllString(masked, `"accessToken":"***"`)
+	masked = queryTokenPattern.ReplaceAllString(masked, "access_token=***")
+	masked = sessionParamPattern.ReplaceAllString(masked, "session=***")
+	masked = queryUserPattern.ReplaceAllString(masked, "user$1=***")
 	return masked
 }
 

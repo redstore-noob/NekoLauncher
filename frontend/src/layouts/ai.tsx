@@ -73,7 +73,7 @@ import {
   AI_SECRET_STORAGE_KEY,
   resolveBaseUrl,
 } from "../lib/ai/providers";
-import { ReadSecret, StoreSecret } from "../../wailsjs/go/bindings/SystemAPI";
+import { HasSecret, StoreSecret } from "../../wailsjs/go/bindings/SystemAPI";
 import {
   deriveTitle,
   estimateSessionTokens,
@@ -326,26 +326,27 @@ const AiPage: React.FC = () => {
     }
   }, []);
 
-  // API Key 恢复：从后端加密存储（SystemAPI.ReadSecret）读回明文键填进状态。
-  // 旧版本键明文存在 localStorage 里（loadedSettings.apiKey 已在上面合入状态），
-  // 在这里顺势迁入后端；后端不可用时键留在原处，不丢数据。
+  // API Key 状态：key 明文不再回读进 JS（请求经 /ai-proxy 由 Go 侧注入），
+  // 这里只查"已保存"标记。旧版本键明文存在 localStorage 里
+  // （loadedSettings.apiKey 已在上面合入状态），在这里顺势迁入后端。
   useEffect(() => {
     let alive = true;
 
     void (async () => {
-      let recovered = "";
+      let stored = false;
 
       try {
-        recovered = (await ReadSecret(AI_SECRET_STORAGE_KEY)) || "";
+        stored = await HasSecret(AI_SECRET_STORAGE_KEY);
       } catch {
-        /* 后端不可用：键留在原处 */
+        /* 后端不可用：保持未保存状态 */
       }
       if (!alive) return;
       aiKeyHydratedRef.current = true;
+      setAiKeyStored(stored);
       const current = settingsRef.current;
 
       if (current.apiKey) {
-        // localStorage 里的旧明文键（或上次会话的键）→ 迁入/刷新后端存储
+        // localStorage 里的旧明文键（或本次刚输入的键）→ 迁入/刷新后端存储
         StoreSecret(AI_SECRET_STORAGE_KEY, current.apiKey)
           .then((ok) => {
             if (alive) setAiKeyStored(!!ok);
@@ -353,11 +354,7 @@ const AiPage: React.FC = () => {
           .catch(() => {
             if (alive) setAiKeyStored(false);
           });
-
-        return;
       }
-      if (recovered)
-        setSettings((prev) => ({ ...prev, apiKey: prev.apiKey || recovered }));
     })();
 
     return () => {
@@ -606,7 +603,6 @@ const AiPage: React.FC = () => {
         if (cur.apiFormat === "anthropic") {
           const result = await streamAnthropicChat(
             baseUrl,
-            cur.apiKey,
             cur.model,
             systemPrompt,
             messages,
@@ -620,7 +616,6 @@ const AiPage: React.FC = () => {
         }
         const result = await streamOpenAiChat(
           baseUrl,
-          cur.apiKey,
           cur.model,
           [{ role: "system", content: systemPrompt }, ...messages],
           cur.temperature,
@@ -1031,8 +1026,9 @@ const AiPage: React.FC = () => {
       );
       const { cur, baseUrl, provider } = activeEndpoint();
 
+      // key 已存后端时表单里是空的（明文不回读），视同已配置
       if (
-        (!cur.apiKey.trim() && !provider?.local) ||
+        (!cur.apiKey.trim() && !aiKeyStored && !provider?.local) ||
         !baseUrl.trim() ||
         !cur.model.trim()
       )
@@ -1051,7 +1047,6 @@ const AiPage: React.FC = () => {
           cur.apiFormat === "anthropic"
             ? await streamAnthropicChat(
                 baseUrl,
-                cur.apiKey,
                 cur.model,
                 SUMMARY_SYSTEM_PROMPT,
                 [{ role: "user", content: prompt }],
@@ -1062,7 +1057,6 @@ const AiPage: React.FC = () => {
               )
             : await streamOpenAiChat(
                 baseUrl,
-                cur.apiKey,
                 cur.model,
                 [
                   { role: "system", content: SUMMARY_SYSTEM_PROMPT },
@@ -1096,7 +1090,7 @@ const AiPage: React.FC = () => {
         setIsCompacting(false);
       }
     },
-    [activeEndpoint, sessions, updateSessionMessages],
+    [activeEndpoint, aiKeyStored, sessions, updateSessionMessages],
   );
 
   /**
@@ -1157,12 +1151,13 @@ const AiPage: React.FC = () => {
     const { cur, baseUrl, provider } = activeEndpoint();
     const missing: string[] = [];
 
-    if (!provider?.local && !cur.apiKey.trim()) missing.push(t("API Key"));
+    if (!provider?.local && !cur.apiKey.trim() && !aiKeyStored)
+      missing.push(t("API Key"));
     if (!baseUrl.trim()) missing.push(t("API 地址"));
     if (!cur.model.trim()) missing.push(t("模型名称"));
 
     return missing;
-  }, [activeEndpoint]);
+  }, [activeEndpoint, aiKeyStored]);
 
   // 发送消息（真实 API 流式调用 + Agent 工具循环，未配置直接报错）
   const sendMessage = useCallback(async () => {

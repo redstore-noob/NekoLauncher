@@ -8,7 +8,7 @@ import "fmt"
 const (
 	MainVersion = 0
 	SubVersion  = 4
-	FixVersion  = 1
+	FixVersion  = 2
 	Suffix      = ""
 
 	// BuildKind 控制版本用途：
@@ -26,9 +26,17 @@ const versionOverride = ""
 // buildKindOverride 由 CI 发布构建注入，保证发布包仍能检查更新。
 var buildKindOverride string
 
+// buildVersion CI 用 -ldflags "-X nekolauncher/internal/info.buildVersion=<tag>"
+// 注入的发布版本号。必须用 var：-X 只能改变量，改不了常量。
+// 为空（本地构建/未注入）时回落到上面常量拼出的版本。
+var buildVersion = ""
+
 // Version 纯版本字符串。versionOverride 非空时优先返回，
 // 否则由上方字段拼接，如 "1.0.0-preview4" / "0.2.0"。
 func Version() string {
+	if buildVersion != "" {
+		return buildVersion
+	}
 	if versionOverride != "" {
 		return versionOverride
 	}

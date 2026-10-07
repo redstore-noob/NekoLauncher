@@ -200,11 +200,14 @@ func readEnabledModMetadata(modsDirectory string) []ModMetadata {
 			continue
 		}
 		name := entry.Name()
-		if !strings.EqualFold(filepath.Ext(name), ".jar") {
+		// 用后缀而非 Ext 判断：`.jar.disabled` 的 Ext 是 `.disabled`，
+		// 之前先按 Ext 过滤会让后面的 disabled 判断永远走不到
+		lower := strings.ToLower(name)
+		if !strings.HasSuffix(lower, ".jar") {
 			continue
 		}
 		// .jar.disabled：已被用户禁用，不参与冲突检测
-		if strings.HasSuffix(strings.ToLower(name), disabledFileSuffix) {
+		if strings.HasSuffix(lower, disabledFileSuffix) {
 			continue
 		}
 		result = append(result, ReadModMetadata(filepath.Join(modsDirectory, name)))

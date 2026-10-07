@@ -89,6 +89,7 @@ import {
   RefreshInstances,
   RenameInstance,
   ScanImportableInstances,
+  RegisterImportedInstance,
   SelectInstance,
 } from "../../wailsjs/go/bindings/InstanceAPI";
 import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
@@ -1818,16 +1819,13 @@ const InstancesPage: React.FC = () => {
   };
 
   // 注册（不复制文件）：把外部实例目录加入游戏目录列表并切换过去。
+  // 走专用绑定：路径来自自动探测而非目录对话框，AddProfileFolder 的
+  // 设置守卫不认，后端会验明"确实是探测根下的实例目录"再注册。
   const registerImport = async (item: instance.ImportableInstance) => {
     if (item.Registered) return;
     setImportBusy(item.Path);
     try {
-      if (!(await AddProfileFolder(item.Path))) {
-        setStatus(t("导入失败：路径无效或已存在。"));
-
-        return;
-      }
-      await SaveGameDirectory(item.Path);
+      await RegisterImportedInstance(item.Path);
       await reloadAll(item.Path);
       setImportList((prev) =>
         prev.map((x) =>

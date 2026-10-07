@@ -649,7 +649,12 @@ func downloadJavaArchive(
 		if err := WaitPauseGate(ctx); err != nil {
 			return err
 		}
-		read, err := resp.Body.Read(buffer)
+		// 全局限速：JDK 安装包与 Mod/Minecraft 下载共享同一配额
+		chunk := buffer[:downloadLimiter.permitReadSize(len(buffer))]
+		if err := downloadLimiter.wait(ctx, int64(len(chunk))); err != nil {
+			return err
+		}
+		read, err := resp.Body.Read(chunk)
 		if read > 0 {
 			if _, writeErr := destination.Write(buffer[:read]); writeErr != nil {
 				return writeErr

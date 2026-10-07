@@ -50,7 +50,7 @@ export function OpenInExplorer(arg1:string):Promise<void>;
 
 export function OpenPath(arg1:string):Promise<void>;
 
-export function ReadSecret(arg1:string):Promise<string>;
+export function HasSecret(arg1:string):Promise<boolean>;
 
 export function ReadTextFile(arg1:string):Promise<string>;
 

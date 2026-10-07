@@ -33,7 +33,17 @@ func (s *GameLaunchService) TryStopGame() LaunchResult {
 			// 准备阶段没有进程可杀，但可以请求取消：置位后 launch 的各阶段
 			// 边界会检查并中止（校验补全/凭据刷新/Java 下载都可能耗时数分钟，
 			// 此前这里直接拒绝，用户只能干等或杀启动器）。
-			s.prepareStopRequested.Store(true)
+			// 广播给 runLauncher 派生的 launchCtx：阶段边界检查够不到
+			// 启动管线内部的耗时步骤（Java 自动下载可达数百 MB），
+			// 只有 ctx 取消才能真正中断它们。重复调用只置位不再关通道。
+			if !s.prepareStopRequested.Swap(true) {
+				s.gate.Lock()
+				signal := s.prepareStopSignal
+				s.gate.Unlock()
+				if signal != nil {
+					close(signal)
+				}
+			}
 			s.appendLog("已请求取消启动，等待当前步骤结束后中止…", "LAUNCH")
 			return CompletedLaunch("已请求取消启动，正在等待当前步骤结束。")
 		}

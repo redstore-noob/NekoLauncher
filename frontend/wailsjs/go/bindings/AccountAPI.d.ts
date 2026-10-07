@@ -6,7 +6,7 @@ import {context} from '../models';
 
 export function AddAccount(arg1:auth.LaunchAccount):Promise<void>;
 
-export function AuthlibLogin(arg1:string,arg2:string,arg3:string,arg4:string):Promise<auth.AuthlibLoginResult>;
+export function AuthlibLogin(arg1:string,arg2:string,arg3:string):Promise<Array<bindings.AuthlibProfileView>>;
 
 export function CancelMicrosoftLogin():Promise<void>;
 
@@ -16,9 +16,11 @@ export function DismissMicrosoftLoginState():Promise<void>;
 
 export function GetAccountStableKey(arg1:auth.LaunchAccount):Promise<string>;
 
-export function GetAccounts():Promise<Array<auth.LaunchAccount>>;
+export function GetAccountSummaries():Promise<Array<bindings.AccountSummary>>;
 
-export function GetAuthlibClientToken():Promise<string>;
+export function ConfirmAuthlibProfile(arg1:number):Promise<string>;
+
+export function GetAccounts():Promise<Array<auth.LaunchAccount>>;
 
 export function GetAvatarUrl(arg1:string):Promise<string>;
 
@@ -34,7 +36,7 @@ export function GetSkinTexture(arg1:string):Promise<bindings.SkinTexture>;
 
 export function HasOfflineName(arg1:string):Promise<boolean>;
 
-export function LoginMicrosoft():Promise<auth.MicrosoftAccount>;
+export function LoginMicrosoft():Promise<string>;
 
 export function LoginMicrosoftBrowser(arg1:string):Promise<void>;
 

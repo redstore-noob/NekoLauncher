@@ -302,9 +302,15 @@ type libraryExtractJSON struct {
 
 // tryArtifactPath 解析主 artifact 的相对路径：优先 downloads.artifact.path，
 // 否则用 maven 坐标（name）拼装。
+// natives-only 库（旧版本如 1.7.x 的 lwjgl-platform 只声明 natives classifier，
+// 主 jar 从未发布也从不进 classpath）没有主构件，返回 false 跳过检查；
+// 否则启动侧会永远报"文件不完整"，且下载/修复侧都不会补这个文件。
 func (l *libraryJSON) tryArtifactPath() (string, bool) {
 	if l.Downloads != nil && l.Downloads.Artifact != nil && l.Downloads.Artifact.Path != "" {
 		return l.Downloads.Artifact.Path, true
+	}
+	if len(l.Natives) > 0 {
+		return "", false
 	}
 	return mavenNameToRelativePath(l.Name)
 }

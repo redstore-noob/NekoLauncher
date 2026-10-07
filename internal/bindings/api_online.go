@@ -95,13 +95,25 @@ func (a *OnlineAPI) GetRuntime(provider string) online.Runtime {
 	return online.Default().Runtime(provider)
 }
 
-// GetSettings 读取联机设置。
+// GetSettings 读取联机设置。红石 API Key 是隧道鉴权凭据，原文不下发
+// （插件与宿主同 WebView 可直呼本绑定）：清空 RedstoneKey、以
+// HasRedstoneKey 标记存在性，输入框回显见前端占位提示。
 func (a *OnlineAPI) GetSettings() online.Settings {
-	return online.Default().Settings()
+	settings := online.Default().Settings()
+	if settings.RedstoneKey != "" {
+		settings.HasRedstoneKey = true
+		settings.RedstoneKey = ""
+	}
+	return settings
 }
 
 // SaveSettings 保存联机设置（空供应商/空中继会按默认值补齐）。
+// RedstoneKey 为空串视为"未重新输入"，沿用已保存的 Key——回显已是
+// 空串，直接透传会把凭据抹掉。
 func (a *OnlineAPI) SaveSettings(settings online.Settings) error {
+	if strings.TrimSpace(settings.RedstoneKey) == "" {
+		settings.RedstoneKey = online.Default().Settings().RedstoneKey
+	}
 	return online.Default().SaveSettings(settings)
 }
 

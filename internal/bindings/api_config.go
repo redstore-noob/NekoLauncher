@@ -41,6 +41,11 @@ func (a *ConfigAPI) GetGameDirectory() string { return config.GameDirectory() }
 // 保存动作本身允许任何存在的目录（空的 / 暂无版本的目录是合法状态），
 // 但保存后若没发现任何版本，会推送 instance:emptyDirectory 事件提示用户。
 func (a *ConfigAPI) SaveGameDirectory(path string) bool {
+	// 读根的设置守卫：只认"已注册目录之间的切换"或"对话框选中的目录"
+	//（见 guardSettableRoot）——否则插件可静默注册任意目录绕过读收口
+	if err := guardSettableRoot(path); err != nil {
+		return false
+	}
 	if !config.SaveGameDirectory(path) {
 		return false
 	}
@@ -187,8 +192,20 @@ func (a *ConfigAPI) SaveVerifyFilesBeforeLaunch(enabled bool) {
 // 只可能是恶意插件在绕过权限门——直接拒绝并记 WARN。
 // "secret:" 前缀同理：那是 SystemAPI.StoreSecret/ReadSecret 加密存储的命名
 // 空间，通用键值接口只许绕过解密层拿到裸 blob，一律拒绝。
+// protectedValueKeys 凭据类普通配置键：值本身是秘密（代理凭据 / 联机隧道
+// 鉴权 Key），只允许 Go 侧读写；前端的合法入口是 GetProxySettings /
+// OnlineAPI.GetSettings 这类"脱敏视图 + 合并保存"的专用绑定。
+var protectedValueKeys = map[string]bool{
+	"proxyPassword":      true,
+	"proxyUsername":      true,
+	"online.redstoneKey": true,
+	// musicFolder 是读收口的根之一：经通用键值写入可静默扩大读取范围
+	//（前端合法入口是 MusicAPI.SetMusicFolder，那里有含存储目录的校验）
+	"musicFolder": true,
+}
+
 func guardAccountDomainKey(key string) bool {
-	if !config.IsAccountDomainKey(key) && !isSecretStorageKey(key) {
+	if !config.IsAccountDomainKey(key) && !isSecretStorageKey(key) && !protectedValueKeys[key] {
 		return true
 	}
 	logs.Write("WARN", "已拒绝来自界面层的受保护配置访问："+key)
@@ -250,7 +267,13 @@ func (a *ConfigAPI) GetProfileFolders() []string { return config.GetFolders() }
 
 // AddProfileFolder 追加额外游戏目录。追加成功但目录下没有发现版本时，
 // 同样推送 instance:emptyDirectory 事件提示用户。
+// 设置守卫见 guardSettableRoot：只认已注册目录或对话框选中的目录；
+// 自动探测到的外部实例注册走 InstanceAPI.RegisterImportedInstance
+//（那里在 Go 侧验证路径确实来自探测根）。
 func (a *ConfigAPI) AddProfileFolder(path string) bool {
+	if err := guardSettableRoot(path); err != nil {
+		return false
+	}
 	if !config.AddFolder(path) {
 		return false
 	}
@@ -266,12 +289,30 @@ func (a *ConfigAPI) RemoveProfileFolder(path string) bool { return config.Remove
 
 // ---- 代理（网络） ----
 
-// GetProxySettings 读取代理设置。
-func (a *ConfigAPI) GetProxySettings() network.ProxySettings { return network.LoadProxySettings() }
+// GetProxySettings 读取代理设置。密码是代理凭据，原文不下发（插件与宿主
+// 同 WebView 可直呼本绑定）：清空 Password、以 HasPassword 标记存在性，
+// 前端输入框显示"已保存"占位；重新输入由 SaveProxySettings 合并。
+func (a *ConfigAPI) GetProxySettings() network.ProxySettings {
+	settings := network.LoadProxySettings()
+	if settings.Password != "" {
+		settings.HasPassword = true
+		settings.Password = ""
+	}
+	return settings
+}
+
+// mergeProxyPassword 保存/测试前合并密码：表单回显的密码恒为空串，
+// 空串表示"未重新输入"，沿用已保存的值（直接透传会把凭据抹掉）。
+func mergeProxyPassword(settings network.ProxySettings) network.ProxySettings {
+	if settings.Password == "" {
+		settings.Password = network.LoadProxySettings().Password
+	}
+	return settings
+}
 
 // SaveProxySettings 保存代理设置并立即应用到全局默认 Transport。
 func (a *ConfigAPI) SaveProxySettings(settings network.ProxySettings) error {
-	if err := network.SaveProxySettings(settings); err != nil {
+	if err := network.SaveProxySettings(mergeProxyPassword(settings)); err != nil {
 		return err
 	}
 	network.ApplyProxySettings()
@@ -280,5 +321,5 @@ func (a *ConfigAPI) SaveProxySettings(settings network.ProxySettings) error {
 
 // TestProxy 用给定设置探测微软服务连通性（不改动当前生效的全局配置）。
 func (a *ConfigAPI) TestProxy(settings network.ProxySettings) (string, error) {
-	return network.TestProxy(settings)
+	return network.TestProxy(mergeProxyPassword(settings))
 }

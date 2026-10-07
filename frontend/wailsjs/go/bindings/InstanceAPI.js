@@ -62,6 +62,10 @@ export function ScanImportableInstances() {
   return window['go']['bindings']['InstanceAPI']['ScanImportableInstances']();
 }
 
+export function RegisterImportedInstance(arg1) {
+  return window['go']['bindings']['InstanceAPI']['RegisterImportedInstance'](arg1);
+}
+
 export function SelectInstance(arg1) {
   return window['go']['bindings']['InstanceAPI']['SelectInstance'](arg1);
 }

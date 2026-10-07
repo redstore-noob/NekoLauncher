@@ -40,9 +40,12 @@ export interface StreamResult {
   truncated?: boolean;
 }
 
+/**
+ * 经本地 /ai-proxy 代理请求：API Key 由 Go 侧从加密存储注入，明文不再
+ * 进入 JS 上下文（插件与宿主同 WebView，进 JS 的 key 等于直接交给插件）。
+ */
 export async function streamOpenAiChat(
   baseUrl: string,
-  apiKey: string,
   model: string,
   messages: OpenAiMessage[],
   temperature: number,
@@ -56,11 +59,12 @@ export async function streamOpenAiChat(
   // 部分第三方 OpenAI 兼容端点不支持 tools 参数（HTTP 4xx 拒绝），自动降级重试一次
   for (let attempt = 0; attempt < 2; attempt++) {
     const sendTools = tools && attempt === 0 ? tools : undefined;
-    const response = await fetch(url, {
+    const response = await fetch("/ai-proxy", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
+        "X-AI-Target": url,
+        "X-AI-Key-Mode": "bearer",
       },
       body: JSON.stringify({
         model,

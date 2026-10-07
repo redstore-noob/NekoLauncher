@@ -561,8 +561,11 @@ func createSnapshotLocked(
 			return err
 		}
 
+		// 无论 blob 是否已在磁盘上都 pin：跨仓库的 GC 只持单仓库锁，若 B 仓库
+		// 的创建正在落盘（blob 已存在但 manifest 未写），A 仓库的 prune 会因
+		// "无引用"删掉这个 blob，B 落盘后引用悬空。pin 只是 map 计数，代价可忽略。
+		blobPins = append(blobPins, pinSnapshotBlob(hash))
 		if !snapshotBlobExists(blobsDir, hash) {
-			blobPins = append(blobPins, pinSnapshotBlob(hash))
 			if err := storeSnapshotBlob(ctx, path, blobsDir, hash); err != nil {
 				return err
 			}
@@ -1302,8 +1305,10 @@ func loadSnapshotManifest(repo, id string) (saveSnapshotManifest, error) {
 		return saveSnapshotManifest{}, fmt.Errorf("快照不存在：%s", id)
 	}
 	var manifest saveSnapshotManifest
-	if json.Unmarshal(data, &manifest) != nil {
-		return saveSnapshotManifest{}, err
+	if unmarshalErr := json.Unmarshal(data, &manifest); unmarshalErr != nil {
+		// 坏清单必须报错返回：零值清单的 Files 为空，回滚流程会据此
+		// 把目标目录里所有常规文件当作"多余的"删掉——等于清空整个世界。
+		return saveSnapshotManifest{}, fmt.Errorf("快照清单损坏（%s）：%v", id, unmarshalErr)
 	}
 	if manifest.Id == "" {
 		manifest.Id = id

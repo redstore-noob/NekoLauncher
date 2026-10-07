@@ -12,6 +12,13 @@ func TestGuardAccountDomainKey(t *testing.T) {
 			t.Errorf("账户域键 %q 应被拒绝", key)
 		}
 	}
+	// 凭据类普通键（代理凭据 / 红石联机 Key）同样拒绝：前端合法入口是
+	// GetProxySettings / OnlineAPI.GetSettings 这类"脱敏视图 + 合并保存"绑定
+	for _, key := range []string{"proxyPassword", "proxyUsername", "online.redstoneKey"} {
+		if guardAccountDomainKey(key) {
+			t.Errorf("凭据键 %q 应被拒绝", key)
+		}
+	}
 	for _, key := range []string{"closeAction", "homeWidgetColumns", "plugin:demo:lastTab", ""} {
 		if !guardAccountDomainKey(key) {
 			t.Errorf("普通键 %q 不应被拒绝", key)

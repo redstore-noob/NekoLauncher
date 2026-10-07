@@ -66,3 +66,9 @@ NekoSolo/NekoSolo.Installer/obj/
 
 # WE 场景渲染 harness（scene_harness_main 的构建产物）
 harness/
+
+# WE 场景逆向调试残留：当前壁纸的 mdl/scene 转储与 testdata 下的工作草稿
+# （含用户壁纸样本，绝不能入库；testdata/*.mdl 是测试正式输入，不受影响）
+/puppet_cur.mdl
+/scene_cur.json
+internal/bindings/testdata/dump/

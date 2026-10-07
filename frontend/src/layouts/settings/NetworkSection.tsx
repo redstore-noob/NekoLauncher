@@ -38,6 +38,8 @@ const NetworkSection: React.FC = () => {
   const [address, setAddress] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  // 密码不再回显（后端只下发 HasPassword 标记）；留空保存 = 沿用已存密码
+  const [hasPassword, setHasPassword] = useState(false);
   const [hint, setHint] = useState("");
   const [hintError, setHintError] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -49,7 +51,8 @@ const NetworkSection: React.FC = () => {
         setMode(settings?.Mode || "system");
         setAddress(settings?.Address || "");
         setUsername(settings?.Username || "");
-        setPassword(settings?.Password || "");
+        setHasPassword(Boolean(settings?.HasPassword));
+        setPassword("");
       })
       .catch(() => {
         /* 保持默认值 */
@@ -67,6 +70,8 @@ const NetworkSection: React.FC = () => {
     Address: address.trim(),
     Username: username.trim(),
     Password: password,
+    // 空密码由后端合并为已保存值（HasPassword 只是下发方向的标记）
+    HasPassword: hasPassword,
   });
 
   const save = async () => {
@@ -149,6 +154,7 @@ const NetworkSection: React.FC = () => {
             <SettingRow label={t("代理密码（可选）")}>
               <Input
                 className="w-56 min-w-0 max-w-full [&_*]:min-w-0"
+                placeholder={hasPassword ? t("已保存（输入以更换）") : ""}
                 radius="lg"
                 size="sm"
                 type="password"

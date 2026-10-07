@@ -427,10 +427,15 @@ func verifyLibraries(root string, libraries []libraryJSON, hasCustomResolution b
 }
 
 // artifactRelativePath 解析库的主构件相对路径；无 downloads.artifact 时按 Maven 坐标回退。
+// natives-only 库（旧版本如 1.7.x 的 lwjgl-platform）没有主 jar，
+// 安装侧也从不下载该文件，返回空串跳过校验，避免"修复永远失败"。
 func artifactRelativePath(library libraryJSON) string {
 	if library.Downloads != nil && library.Downloads.Artifact != nil &&
 		strings.TrimSpace(library.Downloads.Artifact.Path) != "" {
 		return library.Downloads.Artifact.Path
+	}
+	if len(library.Natives) > 0 {
+		return ""
 	}
 	return CreateMavenPath(library.Name)
 }

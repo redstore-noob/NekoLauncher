@@ -58,6 +58,8 @@ export interface WESceneObject {
   backgroundbrightness?: number;
   /** 粒子对象的实例覆盖 */
   instanceoverride?: { alpha?: number };
+  /** 宿主注入的 puppet 蒙皮载荷(后端 weInjectPuppets,普通 scene.json 没有) */
+  Puppet?: WEScenePuppet;
 }
 
 /** 对象上的效果实例 */
@@ -70,6 +72,22 @@ export interface WEObjectEffect {
     textures?: (string | null)[]; // 槽位 → mask 纹理名(无目录与扩展名)
     combos?: Record<string, number>;
   }[];
+}
+
+/** puppet 蒙皮载荷(后端解析 .mdl 的 JSON 形态,见 wallpaper_engine_mdl.go)。
+ * 顶点为设计像素单位、以对象中心为原点、y 向上;rest 为列主序 4x4。 */
+export interface WEScenePuppet {
+  Positions: number[];
+  Uvs: number[];
+  Indices: number[];
+  BlendIndex: number[];
+  BlendWeight: number[];
+  Bones: { Name?: string; Parent: number; Rest: number[] }[];
+  Animation?: {
+    Duration: number;
+    /** 每骨骼一条轨道,帧数据摊平为 9 float(pos3 + euler3 + scale3) */
+    Tracks: number[][];
+  };
 }
 
 /** models/xxx.json(图像对象 → 材质) */

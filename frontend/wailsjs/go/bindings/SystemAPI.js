@@ -94,8 +94,8 @@ export function OpenPath(arg1) {
   return window['go']['bindings']['SystemAPI']['OpenPath'](arg1);
 }
 
-export function ReadSecret(arg1) {
-  return window['go']['bindings']['SystemAPI']['ReadSecret'](arg1);
+export function HasSecret(arg1) {
+  return window['go']['bindings']['SystemAPI']['HasSecret'](arg1);
 }
 
 export function ReadTextFile(arg1) {
