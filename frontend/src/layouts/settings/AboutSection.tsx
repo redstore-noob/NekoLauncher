@@ -35,6 +35,7 @@ import {
   CheckLauncherUpdate,
   DownloadLauncherUpdate,
   GetAutoUpdateEnabled,
+  GetUpdatesEnabled,
   GetUpdateChannel,
   GetUpdateChannels,
   SaveAutoUpdateEnabled,
@@ -71,6 +72,7 @@ const AboutSection: React.FC = () => {
     { Value: "preview", Label: "预览版" },
   ]);
   const [autoCheck, setAutoCheck] = useState(true);
+  const [updatesEnabled, setUpdatesEnabled] = useState(true);
   const [checking, setChecking] = useState(false);
   const [updateHint, setUpdateHint] = useState("");
   const [latest, setLatest] = useState<update.CheckResult | null>(null);
@@ -81,6 +83,8 @@ const AboutSection: React.FC = () => {
     total: 0,
   });
 
+  const updatesDisabled = !updatesEnabled;
+
   useEffect(() => {
     (async () => {
       // 后端异常时可能返回非字符串，洗一道避免把对象直接渲染进 React 树
@@ -89,6 +93,7 @@ const AboutSection: React.FC = () => {
       setPortable(await IsPortableMode().catch(() => false));
       // 更新偏好从配置恢复（默认开启+预览通道，见 internal/config 的回退值）
       setAutoCheck(await GetAutoUpdateEnabled().catch(() => true));
+      setUpdatesEnabled(await GetUpdatesEnabled().catch(() => true));
       setChannel(await GetUpdateChannel().catch(() => "preview"));
       const options = await GetUpdateChannels().catch(() => null);
 
@@ -133,6 +138,11 @@ const AboutSection: React.FC = () => {
       const result = await CheckLauncherUpdate(channel);
 
       setLatest(result);
+      if (result.UpdateDisabled) {
+        setUpdateHint(t("此版本已禁用更新"));
+
+        return;
+      }
       if (result.UpdateAvailable) {
         setUpdateHint("");
       } else {
@@ -209,8 +219,16 @@ const AboutSection: React.FC = () => {
           </span>
         </SettingRow>
 
-        <SettingRow label={t("自动检查更新")}>
+        <SettingRow
+          hint={t(
+            updatesDisabled
+              ? "此版本已禁用更新"
+              : "启动时自动检查 GitHub Releases，有新版本时弹窗询问（不会静默替换）",
+          )}
+          label={t("自动检查更新")}
+        >
           <Switch
+            isDisabled={updatesDisabled}
             isSelected={autoCheck}
             size="sm"
             onValueChange={toggleAutoCheck}
@@ -224,6 +242,7 @@ const AboutSection: React.FC = () => {
                 key={option.Value}
                 className="cursor-pointer"
                 color={channel === option.Value ? "primary" : "default"}
+                isDisabled={updatesDisabled}
                 size="sm"
                 variant="flat"
                 onClick={() => chooseChannel(option.Value)}
@@ -237,6 +256,7 @@ const AboutSection: React.FC = () => {
         <SettingRow hint={updateHint || undefined} label={t("检查更新")}>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
+              isDisabled={updatesDisabled}
               isLoading={checking}
               size="sm"
               variant="flat"

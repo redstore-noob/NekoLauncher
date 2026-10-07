@@ -83,6 +83,10 @@ type CheckResult struct {
 	ManualHint string `json:"ManualHint"`
 	// CanSelfUpdate 当前平台是否支持自动替换自身（Windows 支持；其它平台要用户手动换）。
 	CanSelfUpdate bool `json:"CanSelfUpdate"`
+	// UpdateDisabled 表示当前构建不是正式版或官方预览版，已禁用启动器更新。
+	UpdateDisabled bool `json:"UpdateDisabled"`
+	// UpdateDisabledReason 给前端展示的禁用原因。
+	UpdateDisabledReason string `json:"UpdateDisabledReason"`
 }
 
 // CanSelfUpdate 当前平台能否就地替换启动器本体。

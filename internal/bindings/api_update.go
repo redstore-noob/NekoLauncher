@@ -23,6 +23,9 @@ type UpdateAPI struct {
 	ctx context.Context
 }
 
+// GetUpdatesEnabled 返回当前构建是否允许检查启动器更新。
+func (a *UpdateAPI) GetUpdatesEnabled() bool { return info.UpdatesEnabled() }
+
 // Startup 注入 Wails runtime ctx（重启自身需要它来退出应用）。
 func (a *UpdateAPI) Startup(ctx context.Context) {
 	a.ctx = ctx
@@ -41,6 +44,10 @@ const autoCheckDelay = 4 * time.Second
 // 绝不弹错误打扰用户——自动检查本来就是"有就提示，没有就安静"。
 func (a *UpdateAPI) autoCheckOnStartup() {
 	time.Sleep(autoCheckDelay)
+	if !info.UpdatesEnabled() {
+		logs.Write("INFO", info.UpdateDisabledReason())
+		return
+	}
 	if !config.AutoUpdateEnabled() {
 		return
 	}
@@ -96,6 +103,15 @@ func (a *UpdateAPI) SaveUpdateChannel(channel string) {
 // 返回的错误只表示"查不动"（网络/限流/仓库没有版本），查得到但没资产的情况走
 // CheckResult.ManualHint，前端据此引导手动下载。
 func (a *UpdateAPI) CheckLauncherUpdate(channel string) (update.CheckResult, error) {
+	if !info.UpdatesEnabled() {
+		return update.CheckResult{
+			CurrentVersion:       info.Version(),
+			PageURL:              update.ReleasePageURL,
+			UpdateDisabled:       true,
+			UpdateDisabledReason: info.UpdateDisabledReason(),
+			CanSelfUpdate:        update.CanSelfUpdate(),
+		}, nil
+	}
 	return update.Check(callCtx(a.ctx), info.Version(),
 		config.NormalizeUpdateChannel(channel) != config.UpdateChannelStable)
 }
