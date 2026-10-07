@@ -10,8 +10,6 @@ import (
 	"context"
 	"time"
 
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"nekolauncher/internal/config"
 	"nekolauncher/internal/info"
 	"nekolauncher/internal/logs"
@@ -136,9 +134,12 @@ func (a *UpdateAPI) ApplyLauncherUpdate(newExecutable string) (bool, error) {
 		return false, err
 	}
 	if started {
-		// 给新进程一点时间接管，然后退出自身（否则两个实例同时开着）
+		// 给新进程一点时间接管，然后退出自身（否则两个实例同时开着）。
+		// 走 quitNow 而非裸的 wailsruntime.Quit：裸调用会被 OnBeforeClose 的
+		// 「选择托盘/退出」询问拦下，旧进程退不掉，和新进程一起留在屏幕上
+		// （详见 close_behavior.go 的 quitNow 注释）。
 		go func() {
-			wailsruntime.Quit(callCtx(a.ctx))
+			quitNow(callCtx(a.ctx))
 		}()
 	}
 

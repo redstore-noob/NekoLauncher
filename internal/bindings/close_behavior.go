@@ -48,12 +48,31 @@ func HandleBeforeClose(ctx context.Context) bool {
 	}
 }
 
+// quitNow 退出应用，并保证 OnBeforeClose 一定放行。
+//
+// 为什么不能直接调 wailsruntime.Quit：wails v2 的 runtime.Quit 会先走
+// OnBeforeClose（见 wails internal/frontend/desktop/windows/frontend.go 的
+// (*Frontend).Quit —— 它拿到 OnBeforeClose 的返回值，为 true 就直接 return，
+// 连 winc.Exit 都不调）。而关闭行为的默认值是"每次询问"，
+// HandleBeforeClose 此时会 Emit("launcher:close-requested") 让前端弹
+// 「选择托盘/退出」并返回 true，把这次退出整个拦下。
+//
+// 对"拉起新进程 → 退出旧进程"的重启路径（亚克力模糊开关回落到重启、
+// 更新替换后重启）来说这是致命的：新进程已经 Start 成功，旧进程又被拦下不退出，
+// 两个实例同时存活，用户就会看到两个窗口。所以程序主动的退出必须先置
+// exitConfirmed，表明"用户已确认退出"，让 HandleBeforeClose 直接放行——
+// 它判定的依据是"要不要问用户"，而重启根本不存在"用户要不要关"这个问题。
+func quitNow(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	exitConfirmed.Store(true)
+	wailsruntime.Quit(ctx)
+}
+
 // ExitLauncher 确认退出（前端关闭询问 / 设置页预览）。
 func (a *SystemAPI) ExitLauncher() {
-	exitConfirmed.Store(true)
-	if a.ctx != nil {
-		wailsruntime.Quit(a.ctx)
-	}
+	quitNow(a.ctx)
 }
 
 // HideLauncher 最小化到托盘（隐藏主窗口）。
