@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/exec"
 
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
-
 	"nekolauncher/internal/config"
 	"nekolauncher/internal/tools"
 )
@@ -66,6 +64,10 @@ func (a *SystemAPI) SetAcrylicBackdropEnabled(enabled bool) (bool, error) {
 		return false, err
 	}
 	// 先拉起新进程再退出；配置落盘是临时文件+重命名的原子写，新进程读到的必是完整文件。
-	wailsruntime.Quit(callCtx(a.ctx))
+	//
+	// 退出必须走 quitNow 而不是裸的 wailsruntime.Quit：裸调用会被 OnBeforeClose
+	// 里的「选择托盘/退出」询问拦下（详见 close_behavior.go 的 quitNow 注释），
+	// 结果是新进程已开、旧进程不退 → 两个窗口。
+	quitNow(callCtx(a.ctx))
 	return false, nil
 }
