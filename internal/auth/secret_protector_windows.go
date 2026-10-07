@@ -95,8 +95,8 @@ func dpapiUnprotect(encodedBase64 string) string {
 // kernel32 与 LocalFree 提为包级变量：localFree 每次调用都 NewLazyDLL
 // 会重复做 DLL 查找与过程绑定（DPAPI 解密热路径上每个账号一次）
 var (
-	kernel32DLL    = syscall.NewLazyDLL("kernel32.dll")
-	localFreeProc  = kernel32DLL.NewProc("LocalFree")
+	kernel32DLL   = syscall.NewLazyDLL("kernel32.dll")
+	localFreeProc = kernel32DLL.NewProc("LocalFree")
 )
 
 func localFree(pointer *byte) {

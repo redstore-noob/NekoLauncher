@@ -124,7 +124,12 @@ const CALL_STUBS: Record<string, StubFn> = {
   "go.bindings.AccountAPI.GetAccountSummaries": () =>
     Promise.resolve([
       { Key: "mock:烟花", Name: "烟花", Type: "microsoft", Avatar: "" },
-      { Key: "mock:noob_player", Name: "noob_player", Type: "offline", Avatar: "" },
+      {
+        Key: "mock:noob_player",
+        Name: "noob_player",
+        Type: "offline",
+        Avatar: "",
+      },
     ]),
   "go.bindings.AccountAPI.GetAvatarUrl": () => Promise.resolve(""),
   "go.bindings.SystemAPI.ReadTextFile": (path: unknown) =>

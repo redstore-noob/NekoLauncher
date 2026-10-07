@@ -11,8 +11,11 @@ import (
 // 否则 VerifyAndRepair 的修复计划永远缺一项、修复永远失败。
 func TestVerifyLibrariesSkipsNativesOnlyMainArtifact(t *testing.T) {
 	root := t.TempDir()
+	// natives 条目按当前平台声明（CI 在 Linux 上跑，写死 windows 会解析不到）
+	osName := RuleEvaluatorOSName()
+	classifier := "natives-" + osName
 	nativesJar := filepath.Join(root, "libraries", "org", "lwjgl", "lwjgl",
-		"lwjgl-platform", "2.9.4-beta-1", "lwjgl-platform-2.9.4-beta-1-natives-windows.jar")
+		"lwjgl-platform", "2.9.4-beta-1", "lwjgl-platform-2.9.4-beta-1-"+classifier+".jar")
 	if err := os.MkdirAll(filepath.Dir(nativesJar), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -22,7 +25,7 @@ func TestVerifyLibrariesSkipsNativesOnlyMainArtifact(t *testing.T) {
 
 	library := libraryJSON{
 		Name:    "org.lwjgl.lwjgl:lwjgl-platform:2.9.4-beta-1",
-		Natives: map[string]string{"windows": "natives-windows"},
+		Natives: map[string]string{osName: classifier},
 	}
 	if missing := verifyLibraries(root, []libraryJSON{library}, false); len(missing) != 0 {
 		t.Fatalf("natives-only 库不应报缺失，实际缺失：%v", missing)

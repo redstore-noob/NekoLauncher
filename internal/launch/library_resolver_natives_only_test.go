@@ -13,12 +13,15 @@ import (
 // 解析时不得把主构件列为缺失，否则旧版本"装得上、启不来"。
 func TestResolveSkipsNativesOnlyMainArtifact(t *testing.T) {
 	root := t.TempDir()
+	// natives 条目按当前平台声明（CI 在 Linux 上跑，写死 windows 会解析不到）
+	osName := operatingSystemName()
+	classifier := "natives-" + osName
 	if err := os.MkdirAll(filepath.Join(root, "libraries",
 		"org", "lwjgl", "lwjgl", "lwjgl-platform", "2.9.4-beta-1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	nativesJar := filepath.Join(root, "libraries", "org", "lwjgl", "lwjgl",
-		"lwjgl-platform", "2.9.4-beta-1", "lwjgl-platform-2.9.4-beta-1-natives-windows.jar")
+		"lwjgl-platform", "2.9.4-beta-1", "lwjgl-platform-2.9.4-beta-1-"+classifier+".jar")
 	if err := os.WriteFile(nativesJar, []byte("jar"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -30,21 +33,24 @@ func TestResolveSkipsNativesOnlyMainArtifact(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	library := json.RawMessage(`{
-		"name": "org.lwjgl.lwjgl:lwjgl-platform:2.9.4-beta-1",
-		"natives": {"windows": "natives-windows"},
-		"extract": {"exclude": ["META-INF/"]}
-	}`)
+	library, err := json.Marshal(map[string]any{
+		"name":    "org.lwjgl.lwjgl:lwjgl-platform:2.9.4-beta-1",
+		"natives": map[string]string{osName: classifier},
+		"extract": map[string]any{"exclude": []string{"META-INF/"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	profile := &MinecraftVersionProfile{
 		Id:                 "1.7.10",
 		ClientJarVersionId: "1.7.10",
 		Libraries:          []json.RawMessage{library},
 	}
 
-	resolved, err := (MinecraftLibraryResolver{}).Resolve(
+	resolved, resolveErr := (MinecraftLibraryResolver{}).Resolve(
 		context.Background(), profile, root, map[string]bool{})
-	if err != nil {
-		t.Fatalf("natives-only 库不应导致解析失败（缺主构件是正常状态）：%v", err)
+	if resolveErr != nil {
+		t.Fatalf("natives-only 库不应导致解析失败（缺主构件是正常状态）：%v", resolveErr)
 	}
 	if len(resolved.Natives) != 1 {
 		t.Fatalf("应解析出 1 个 natives 归档，实际 %d", len(resolved.Natives))
