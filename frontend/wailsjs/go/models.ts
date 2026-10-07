@@ -3324,6 +3324,8 @@ export namespace update {
 	    PageURL: string;
 	    ManualHint: string;
 	    CanSelfUpdate: boolean;
+	    UpdateDisabled: boolean;
+	    UpdateDisabledReason: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new CheckResult(source);
@@ -3341,6 +3343,8 @@ export namespace update {
 	        this.PageURL = source["PageURL"];
 	        this.ManualHint = source["ManualHint"];
 	        this.CanSelfUpdate = source["CanSelfUpdate"];
+	        this.UpdateDisabled = source["UpdateDisabled"];
+	        this.UpdateDisabledReason = source["UpdateDisabledReason"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

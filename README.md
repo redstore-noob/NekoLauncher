@@ -111,6 +111,16 @@ _下列名单没有排名，没有先后，我发自内心的感谢每一位为�
 1.在正式版发布后，使用类似IOS的系统命名规则，具体为年份+月份+子版本号。例如`26.9.1`为2026年9月第一次更新。  
 2.在正式版发布前，阶段称为`Public Beta`，在Github Releases与包版本、启动器中显示为0.x.x
 
+### 开发版与更新控制
+
+构建版本统一在 `internal/info/info.go` 修改：`MainVersion`、`SubVersion`、`FixVersion`
+控制正式版本号，`versionOverride` 可直接指定一次内部构建的完整版本号。
+`BuildKind` 只能使用 `official`（正式版）、`official-preview`（官方预览版）或
+`internal`（个人开发/测试版）。只有前两者会检查启动器更新；内部版会在“关于与维护”中提示
+“此版本已禁用更新”，并跳过启动时自动检查，避免把个人构建误更新成官方版本。
+CI 的发布 Tag 构建会自动注入 `official` 标记，不受源码中内部版本设置影响；
+普通分支构建则沿用源码设置。
+
 ## 💵项目目前引用的其他项目
 
 - [BMCLAPI]([apiDoc: BMCLAPI - 0.0.0](https://bmclapidoc.bangbang93.com/)) — 由 [bangbang93](https://github.com/bangbang93) 维护的 Minecraft 国内镜像下载源。

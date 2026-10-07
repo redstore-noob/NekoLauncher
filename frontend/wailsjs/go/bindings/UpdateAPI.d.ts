@@ -16,6 +16,8 @@ export function GetUpdateChannel():Promise<string>;
 
 export function GetUpdateChannels():Promise<Array<bindings.UpdateChannelOption>>;
 
+export function GetUpdatesEnabled():Promise<boolean>;
+
 export function SaveAutoUpdateEnabled(arg1:boolean):Promise<void>;
 
 export function SaveUpdateChannel(arg1:string):Promise<void>;

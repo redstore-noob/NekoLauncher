@@ -26,6 +26,10 @@ export function GetUpdateChannels() {
   return window['go']['bindings']['UpdateAPI']['GetUpdateChannels']();
 }
 
+export function GetUpdatesEnabled() {
+  return window['go']['bindings']['UpdateAPI']['GetUpdatesEnabled']();
+}
+
 export function SaveAutoUpdateEnabled(arg1) {
   return window['go']['bindings']['UpdateAPI']['SaveAutoUpdateEnabled'](arg1);
 }
