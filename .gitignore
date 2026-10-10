@@ -37,10 +37,14 @@ frontend-vue-backup/package.json.md5
 /.gocache/
 /.gomodcache/
 
+# TS 增量构建缓存（tsc -p tsconfig.node.json 等的 tsbuildinfo）
+*.tsbuildinfo
+
 # 临时脚本 / 验证产物（本地排查 CI 之类时用，不入库）
 /.tmp/
 # 沙箱 ACL 修复产生的本地产物（诊断工具的输出，与仓库内容无关）
 /.acl-recovery/
+/acl-reports/
 
 # NekoSolo 安装器构建产物
 NekoSolo/NekoSolo.Installer/bin/
@@ -72,3 +76,22 @@ harness/
 /puppet_cur.mdl
 /scene_cur.json
 internal/bindings/testdata/dump/
+
+# 根目录 node_modules（前端各自的依赖见上方「前端」一节）
+/node_modules/
+
+# 本地 AI 工具 / DSH 工作区：插件依赖清单、profile 备份、调试转储与打包产物。
+# 全是本机环境产物，与启动器源码无关；真要入库请 git add -f
+/package.json
+/pnpm-lock.yaml
+/pnpm-workspace.yaml
+/.profile-backup/
+/dsh-profile-*/
+/*.tgz
+/dump-config-*.txt
+
+# 根目录一次性排查脚本（本地按需重建；frontend/eslint.config.mjs 在子目录，不受影响）
+/*.mjs
+
+# 本地素材：徽章 / 宣传图源文件（同 /promo/，本地制作不入库；要入库 git add -f assets/）
+/assets/
