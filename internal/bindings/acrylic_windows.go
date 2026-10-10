@@ -58,12 +58,20 @@ var (
 	procGetClassNameW            = syscall.NewLazyDLL("user32.dll").NewProc("GetClassNameW")
 	procGetWindowThreadProcessID = syscall.NewLazyDLL("user32.dll").NewProc("GetWindowThreadProcessId")
 	procDwmSetWindowAttribute    = syscall.NewLazyDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
+	// 激活看门狗用的三个只读查询（见 watchWindowActivation）
+	procGetForegroundWindow = syscall.NewLazyDLL("user32.dll").NewProc("GetForegroundWindow")
+	procIsIconic            = syscall.NewLazyDLL("user32.dll").NewProc("IsIconic")
+	procIsWindow            = syscall.NewLazyDLL("user32.dll").NewProc("IsWindow")
 )
 
-// applyAcrylicRuntime 在运行时切换窗口背景：enabled=true 用亚克力模糊，
-// false 保持清晰透明。失败返回 false，由调用方回落重启流程。
-func applyAcrylicRuntime(enabled bool) bool {
-	hwnd := findLauncherWindow()
+// applyAcrylicToWindow 把亚克力/透明的 DWM 参数写到指定窗口：
+// enabled=true 铺满玻璃框架并开亚克力，false 撤销框架、保持清晰透明。
+//
+// 参数必须与启动时 fixupAcrylicBackdrop 设下的完全一致——一致的参数在 DWM 侧
+// 是幂等操作，不会引起重绘，这是"重复应用不闪"的前提。反例就是 Wails 自己的
+// ExtendFrameIntoClientArea（见 wails 的 win32/window.go）：它在每次 WM_ACTIVATE
+// 把 margins 设成 1 像素，与这里的铺满值互相打架，才导致"窗口操作就闪一下"。
+func applyAcrylicToWindow(hwnd uintptr, enabled bool) bool {
 	if hwnd == 0 {
 		return false
 	}
@@ -92,9 +100,73 @@ func applyAcrylicRuntime(enabled bool) bool {
 	return ret == 0
 }
 
+// applyAcrylicRuntime 在运行时切换窗口背景：enabled=true 用亚克力模糊，
+// false 保持清晰透明。失败返回 false，由调用方回落重启流程。
+func applyAcrylicRuntime(enabled bool) bool {
+	return applyAcrylicToWindow(findLauncherWindow(), enabled)
+}
+
+// activationWatchInterval 激活看门狗的轮询间隔。两个只读 API 调用，开销可忽略。
+const activationWatchInterval = 300 * time.Millisecond
+
+// watchWindowActivation 在窗口重新成为前台时重设 DWM 参数。
+//
+// 要解决的问题：DWM 会在窗口"失去 / 重新获得前台"时（最小化后还原、Alt-Tab
+// 切走再切回、托盘隐藏后唤回）重置扩展玻璃框架与系统 backdrop 状态。上游为了
+// 治"窗口操作就闪一下"禁用了 Wails 的每次 WM_ACTIVATE 重设（它用 1px margins，
+// 会把铺满窗口的框架改小、与亚克力 backdrop 冲突），代价是这些状态在激活变化后
+// 再没有任何人维护——于是最小化 / Alt-Tab 回来就会看到背景与面板透明异常。
+//
+// 这里把这件事补回来：检测到"非前台 → 前台"的上升沿时，用与启动时完全相同的
+// 参数重设一次。参数一致 → 幂等、不闪；状态被 DWM 重置时 → 恰好修复。
+//
+// 为什么用轮询而不是事件钩子：SetWinEventHook 的回调需要自建消息循环与线程
+// 锁定，子类化 WNDPROC 要接管 Wails 的窗口过程并保证转发，两者都比"每 300ms
+// 查两个只读状态"风险高得多，而本文件的既有风格也是轮询。
+func watchWindowActivation() {
+	go func() {
+		var cached uintptr
+		wasActive := false
+
+		for {
+			time.Sleep(activationWatchInterval)
+
+			// 句柄只解析一次，之后用 IsWindow 校验；窗口重建时重新解析
+			if cached == 0 || !isWindowAlive(cached) {
+				cached = findLauncherWindow()
+				wasActive = false
+				if cached == 0 {
+					continue
+				}
+			}
+
+			foreground, _, _ := procGetForegroundWindow.Call()
+			iconic, _, _ := procIsIconic.Call(cached)
+			active := foreground == cached && iconic == 0
+
+			// 只在上升沿重设，避免每个 tick 都去打扰 DWM
+			if active && !wasActive {
+				applyAcrylicToWindow(cached, config.AcrylicBackdropEnabled())
+			}
+			wasActive = active
+		}
+	}()
+}
+
+// isWindowAlive 句柄是否仍然有效。
+func isWindowAlive(hwnd uintptr) bool {
+	ok, _, _ := procIsWindow.Call(hwnd)
+
+	return ok != 0
+}
+
 // fixupAcrylicBackdrop 启动后等待主窗口出现，再按配置重设一次 backdrop。
-// 让"随窗口创建启用"与"运行时切换"走同一条可靠路径。
+// 让"随窗口创建启用"与"运行时切换"走同一条可靠路径；其后由激活看门狗接手
+// 维持（DWM 会在最小化 / Alt-Tab 时重置这些状态，见 watchWindowActivation）。
 func fixupAcrylicBackdrop() {
+	// 看门狗无条件启动：它自己解析窗口句柄，窗口创建稍晚也不受影响
+	watchWindowActivation()
+
 	go func() {
 		var hwnd uintptr
 		for i := 0; i < 150; i++ { // 最多等 15s，窗口创建即返回
@@ -114,7 +186,7 @@ func fixupAcrylicBackdrop() {
 			uintptr(unsafe.Pointer(&corner)),
 			unsafe.Sizeof(corner),
 		)
-		applyAcrylicRuntime(config.AcrylicBackdropEnabled())
+		applyAcrylicToWindow(hwnd, config.AcrylicBackdropEnabled())
 	}()
 }
 
