@@ -123,7 +123,7 @@ CI 的发布 Tag 构建会自动注入 `official` 标记，不受源码中内部
 
 ## 💵项目目前引用的其他项目
 
-- [BMCLAPI]([apiDoc: BMCLAPI - 0.0.0](https://bmclapidoc.bangbang93.com/)) — 由 [bangbang93](https://github.com/bangbang93) 维护的 Minecraft 国内镜像下载源。
+- [BMCLAPI](https://bmclapidoc.bangbang93.com/) — 由 [bangbang93](https://github.com/bangbang93) 维护的 Minecraft 国内镜像下载源（服务端实现 [openbmclapi](https://github.com/bangbang93/openbmclapi)，MIT）；启动器默认走它下载版本清单 / 库 / 资源文件，可在下载设置切回官方源。
 - [Terracotta | 陶瓦联机](https://github.com/burningtnt/Terracotta) — 基于 EasyTier 的联机工具（AGPL-3.0）；联机页通过它公开的本地 HTTP 接口驱动它开房 / 进房（版权归原作者，启动器不修改其二进制）。
 - [RedstoneOnline | 红石联机](https://modrinth.com/mod/redstoneonline) — 内网穿透联机模组（GPL-3.0）；联机页复用其公开的中继协议，把本机服务器发布到公网。
 - [Wails](https://wails.io) — 基于 Go 的桌面应用框架，利用web技术。
