@@ -29,7 +29,8 @@
     "skinview3d": "^3.4.2",
     "sucrase": "^3.35.1",
     "tailwindcss": "4.1.11",
-    "three": "^0.156.1"
+    "three": "^0.156.1",
+    "webwallgl": "2.1.0"
   },
   "devDependencies": {
     "@eslint/compat": "1.4.1",

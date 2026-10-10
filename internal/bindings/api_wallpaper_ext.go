@@ -140,7 +140,7 @@ const weWallpaperAppID = "431960"
 // Type 为壁纸类型，Web 为网页类壁纸的入口 HTML（相对项目根目录，其余类型为空串，
 // 前端据此拼 /wwwallpaper/<Web> 交给 iframe 播放）。
 // Scene 为场景壁纸的完整渲染载荷（多图层/动画/粒子/用户配置），非场景类型为 nil;
-// 前端拿到它就交给 SceneWallpaperRenderer 渲染,Path 同时保留作加载期兜底图。
+// 前端拿到它就交给 WebWallglScene(webwallgl)渲染,Path 同时保留作加载期兜底图。
 type WallpaperEngineWallpaper struct {
 	Path   string `json:"Path"`
 	Source string `json:"Source"`

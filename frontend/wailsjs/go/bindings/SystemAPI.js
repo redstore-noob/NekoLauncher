@@ -66,6 +66,10 @@ export function GetWallpaperEngineWallpaper() {
   return window['go']['bindings']['SystemAPI']['GetWallpaperEngineWallpaper']();
 }
 
+export function HasSecret(arg1) {
+  return window['go']['bindings']['SystemAPI']['HasSecret'](arg1);
+}
+
 export function HideLauncher() {
   return window['go']['bindings']['SystemAPI']['HideLauncher']();
 }
@@ -92,10 +96,6 @@ export function OpenInExplorer(arg1) {
 
 export function OpenPath(arg1) {
   return window['go']['bindings']['SystemAPI']['OpenPath'](arg1);
-}
-
-export function HasSecret(arg1) {
-  return window['go']['bindings']['SystemAPI']['HasSecret'](arg1);
 }
 
 export function ReadTextFile(arg1) {

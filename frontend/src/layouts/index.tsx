@@ -25,7 +25,7 @@ import AutoUpdateNotice from "../components/AutoUpdateNotice";
 import DownloadCenter from "../components/download/DownloadCenter";
 import FileDropOverlay from "../components/FileDropOverlay";
 import ErrorBoundary from "../components/ErrorBoundary";
-import SceneWallpaperRenderer from "../components/SceneWallpaperRenderer";
+import WebWallglScene from "../components/WebWallglScene";
 import MicrosoftLoginProgress from "../components/microsoft-login-progress";
 import LaunchFXOverlay from "../components/launch/LaunchFXOverlay";
 import { ModalShell, modalBehaviorProps } from "../components/modal-shell";
@@ -47,6 +47,7 @@ import { notifyCrashIfNeeded } from "../lib/crashNotice";
 import { GetLaunchSnapshot } from "../../wailsjs/go/bindings/LauncherAPI";
 import { extractThemeColor } from "../lib/monet";
 import { isLinuxPlatform } from "../lib/platform";
+import { useWindowVisible } from "../lib/useWindowVisible";
 import {
   DEFAULT_PAGE_ID,
   hydratePluginGrants,
@@ -88,8 +89,8 @@ const BaseColorLayer: React.FC = () => {
 // 负 margin + 放大，避免 blur 在边缘露出透明缝隙；url 为空（纯白/图源未就绪）时不渲染。
 // WE 视频壁纸额外铺一层 <video> 播放原视频，解码失败时回落到底层预览图；
 // WE 网页壁纸铺一层 sandbox iframe（入口经 /wwwallpaper 路由提供）；
-// WE 场景壁纸铺一层 SceneWallpaperRenderer（three.js 完整渲染：多图层/动画/粒子），
-// 场景首帧就绪前保留静态提取图垫底，失败则一直用静态图。
+// WE 场景壁纸铺一层 WebWallglScene（oneincase/webwallgl 完整渲染：图层/效果/
+// 粒子/模型/脚本），场景首帧就绪前保留静态提取图垫底，失败则一直用静态图。
 // 底色由 BaseColorLayer 单独垫底，这里只管"背景不透明度"自身的混色。
 const BackgroundLayer: React.FC = () => {
   const {
@@ -103,6 +104,8 @@ const BackgroundLayer: React.FC = () => {
     sceneWallpaper,
     sceneResolution,
     sceneFps,
+    videoRate,
+    videoMuted,
   } = useBackground();
   const [videoFailed, setVideoFailed] = useState(false);
   // 场景渲染失败(如 WebGL 不可用)时永久回退静态图,避免轮询反复重建
@@ -110,6 +113,36 @@ const BackgroundLayer: React.FC = () => {
   // 场景首帧就绪后隐藏静态垫底图,省一份重复绘制
   const [sceneReady, setSceneReady] = useState(false);
   const activeScene = sceneWallpaper && !sceneFailed ? sceneWallpaper : null;
+  // 窗口最小化/失焦时停掉视频解码:与场景壁纸的暂停策略一致,
+  // 后台还在跑的视频壁纸是纯浪费(解码器 + GPU 合成都在占着)
+  const windowVisible = useWindowVisible();
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    const element = videoRef.current;
+
+    if (element && !windowVisible) element.pause();
+    // 只有"回到前台"需要显式恢复:playing 属性在自动播放受限时可能是 false,
+    // 用 play() 的 Promise 兜住拒播(不 catch 会抛未处理拒绝)
+    if (element && windowVisible && element.paused) {
+      element.play().catch(() => {
+        /* 自动播放被拒时保持暂停,画面停在最后一帧 */
+      });
+    }
+  }, [windowVisible, videoUrl]);
+
+  // 倍速/静音即时生效:直接改现有元素,不重载视频(重载会黑一帧)
+  useEffect(() => {
+    const element = videoRef.current;
+
+    if (!element) return;
+    try {
+      element.playbackRate = videoRate;
+    } catch {
+      /* 个别内核不支持时保持原速 */
+    }
+    element.muted = videoMuted;
+  }, [videoRate, videoMuted, videoUrl]);
 
   useEffect(() => {
     setVideoFailed(false);
@@ -118,7 +151,7 @@ const BackgroundLayer: React.FC = () => {
     // 换壁纸载荷时重置就绪标记,让新场景同样经历"静态图垫底 → 首帧接管"
     setSceneReady(false);
     setSceneFailed(false);
-  }, [sceneWallpaper?.Entry]);
+  }, [sceneWallpaper?.Base]);
 
   // 压暗度只管 scrim 罩色强度，模糊只由"背景模糊"滑杆控制，两个滑杆互不影响
   // Linux 的 WebKitGTK 对动态图源（视频/网页/场景壁纸）做全屏 blur 意味着逐帧
@@ -146,10 +179,11 @@ const BackgroundLayer: React.FC = () => {
         />
       )}
       {activeScene && (
-        <SceneWallpaperRenderer
+        <WebWallglScene
           fpsCap={sceneFps}
           payload={activeScene}
           pixelRatio={sceneResolution}
+          windowVisible={windowVisible}
           onError={() => setSceneFailed(true)}
           onReady={() => setSceneReady(true)}
         />
@@ -157,6 +191,7 @@ const BackgroundLayer: React.FC = () => {
       {videoUrl && !videoFailed && (
         <video
           key={videoUrl}
+          ref={videoRef}
           autoPlay
           loop
           muted

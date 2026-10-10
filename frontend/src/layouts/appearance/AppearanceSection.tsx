@@ -58,6 +58,8 @@ import {
   WEB_WALLPAPER_INTERACTIVE_KEY,
   WE_SCENE_RESOLUTION_KEY,
   WE_SCENE_FPS_KEY,
+  WE_VIDEO_RATE_KEY,
+  WE_VIDEO_MUTE_KEY,
   LINUX_GPU_KEY,
   WINDOWS_GPU_KEY,
   SQUARE_CORNERS_KEY,
@@ -115,6 +117,8 @@ const AppearanceSection: React.FC = () => {
     webInteractive,
     sceneResolution,
     sceneFps,
+    videoRate,
+    videoMuted,
     wallpaperEngineTitle,
     wallpaperEngineType,
     wallpaperEngineUnsupported: weUnsupported,
@@ -306,7 +310,7 @@ const AppearanceSection: React.FC = () => {
   };
 
   // 场景壁纸渲染分辨率(相对窗口 CSS 像素的倍数)与刷新率上限;
-  // 改动即时生效(SceneWallpaperRenderer 按这两个值重建渲染器)
+  // 改动即时生效(WebWallglScene 按这两个值重建渲染器)
   const saveSceneResolution = async (key: string) => {
     await SetValue(WE_SCENE_RESOLUTION_KEY, key);
     refresh();
@@ -314,6 +318,17 @@ const AppearanceSection: React.FC = () => {
 
   const saveSceneFps = async (key: string) => {
     await SetValue(WE_SCENE_FPS_KEY, key);
+    refresh();
+  };
+
+  // 视频壁纸:倍速与静音即时生效(背景层直接改现有 <video>,不重载视频)
+  const saveVideoRate = async (key: string) => {
+    await SetValue(WE_VIDEO_RATE_KEY, key);
+    refresh();
+  };
+
+  const toggleVideoMute = async (muted: boolean) => {
+    await SetValue(WE_VIDEO_MUTE_KEY, muted ? "true" : "false");
     refresh();
   };
 
@@ -1000,6 +1015,52 @@ const AppearanceSection: React.FC = () => {
                     <SelectItem key={item.key}>{item.label}</SelectItem>
                   )}
                 </Select>
+              </SettingRow>
+            </>
+          )}
+          {wallpaperEngineType.toLowerCase() === "video" && (
+            <>
+              <SettingRow
+                hint={t("视频壁纸的播放速度,改动即时生效")}
+                label={t("视频壁纸倍速")}
+              >
+                <Select
+                  aria-label={t("视频壁纸倍速")}
+                  className="w-44"
+                  items={[
+                    { key: "0.5", label: "0.5×" },
+                    { key: "0.75", label: "0.75×" },
+                    { key: "1", label: "1×（默认）" },
+                    { key: "1.25", label: "1.25×" },
+                    { key: "1.5", label: "1.5×" },
+                    { key: "2", label: "2×" },
+                  ]}
+                  popoverProps={selectPopoverProps}
+                  selectedKeys={[String(videoRate)]}
+                  size="sm"
+                  variant="bordered"
+                  onSelectionChange={(keys) => {
+                    const key = String(Array.from(keys)[0] ?? "");
+
+                    if (key) void saveVideoRate(key);
+                  }}
+                >
+                  {(item: { key: string; label: string }) => (
+                    <SelectItem key={item.key}>{item.label}</SelectItem>
+                  )}
+                </Select>
+              </SettingRow>
+              <SettingRow
+                hint={t("视频壁纸大多带音轨,默认静音以免突然出声")}
+                label={t("视频壁纸静音")}
+              >
+                <Switch
+                  aria-label={t("视频壁纸静音")}
+                  color="primary"
+                  isSelected={videoMuted}
+                  size="sm"
+                  onValueChange={(v) => void toggleVideoMute(v)}
+                />
               </SettingRow>
             </>
           )}

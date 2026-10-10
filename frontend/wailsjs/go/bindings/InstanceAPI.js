@@ -46,6 +46,10 @@ export function RefreshInstances(arg1) {
   return window['go']['bindings']['InstanceAPI']['RefreshInstances'](arg1);
 }
 
+export function RegisterImportedInstance(arg1) {
+  return window['go']['bindings']['InstanceAPI']['RegisterImportedInstance'](arg1);
+}
+
 export function RenameInstance(arg1, arg2) {
   return window['go']['bindings']['InstanceAPI']['RenameInstance'](arg1, arg2);
 }
@@ -60,10 +64,6 @@ export function SaveInstanceJavaConfig(arg1, arg2) {
 
 export function ScanImportableInstances() {
   return window['go']['bindings']['InstanceAPI']['ScanImportableInstances']();
-}
-
-export function RegisterImportedInstance(arg1) {
-  return window['go']['bindings']['InstanceAPI']['RegisterImportedInstance'](arg1);
 }
 
 export function SelectInstance(arg1) {

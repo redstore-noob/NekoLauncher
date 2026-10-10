@@ -39,8 +39,8 @@ func weWebUserProperties(renderDir, configDir, selectedFile string) map[string]a
 	properties := map[string]any{}
 
 	// 1. 模板默认值:直接读原始 project.json(schema 键保持原样)。
-	//    不能走 weProjectProperties——它为场景渲染器做了小写归一,
-	//    而网页壁纸的 applyUserProperties 必须保留原始大小写。
+	//    不复用场景那边的小写归一逻辑(weProjectPropertiesRaw 的调用方会自己
+	//    处理大小写),网页壁纸的 applyUserProperties 必须保留原始大小写。
 	schemaNames := map[string]string{} // 小写 → schema 原始键
 	if data, err := os.ReadFile(filepath.Join(renderDir, "project.json")); err == nil {
 		var project struct {

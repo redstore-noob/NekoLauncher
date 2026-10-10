@@ -29,7 +29,7 @@ import { ModalShell, modalBehaviorProps } from "../modal-shell";
 import { t } from "../../i18n";
 
 /** 分组顺序即展示顺序 */
-const GROUPS: LicenseGroup[] = ["前端", "后端", "工具链"];
+const GROUPS: LicenseGroup[] = ["前端", "后端", "工具链", "外部服务与工具"];
 
 /** 许可证徽章配色：给常见 SPDX 一点区分度，其余走中性色 */
 function spdxClass(spdx: string): string {
@@ -47,8 +47,15 @@ const LicenseRow: React.FC<{ entry: LicenseEntry }> = ({ entry }) => (
     type="button"
     onClick={() => BrowserOpenURL(entry.url)}
   >
-    <span className="min-w-0 truncate text-sm text-gray-800 dark:text-gray-200">
-      {entry.name}
+    <span className="min-w-0">
+      <span className="block truncate text-sm text-gray-800 dark:text-gray-200">
+        {entry.name}
+      </span>
+      {entry.note ? (
+        <span className="block text-[11px] leading-snug text-gray-400">
+          {t(entry.note)}
+        </span>
+      ) : null}
     </span>
     <span
       className={`flex-shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums ${spdxClass(entry.spdx)}`}

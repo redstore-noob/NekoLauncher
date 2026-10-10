@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import type { WEScenePayload } from "../lib/we-scene/types";
+import type { WEScenePayload } from "../lib/we-scene-payload";
 
 import React, {
   createContext,
@@ -65,6 +65,17 @@ export const WEB_WALLPAPER_INTERACTIVE_KEY = "launcherWebWallpaperInteractive";
 export const WE_SCENE_RESOLUTION_KEY = "launcherWeSceneResolution";
 /** WE 场景壁纸刷新率上限（"auto"=自适应，重壁纸自动锁 30；或数字 fps） */
 export const WE_SCENE_FPS_KEY = "launcherWeSceneFps";
+/**
+ * WE 视频壁纸播放倍速（0.25~2，默认 1）。视频壁纸是"当壁纸放的视频"，
+ * 快放/慢放纯观感需求；改动即时生效，不用重载视频。
+ */
+export const WE_VIDEO_RATE_KEY = "launcherWeVideoRate";
+/**
+ * WE 视频壁纸是否静音（"true"/"false"，默认静音）。
+ * WE 的视频壁纸大多带音轨，启动器一进来就出声太突然，默认静音；
+ * 想要声音的用户可以在设置里显式打开。
+ */
+export const WE_VIDEO_MUTE_KEY = "launcherWeVideoMute";
 /**
  * Linux 下 WebKitGTK 是否走 GPU 合成（默认开启）。由 Go 侧在 wails.Run 之前
  * 读取——webview 的合成策略只在创建时生效，故改动需重启启动器；键名与
@@ -158,6 +169,10 @@ interface BackgroundState {
   sceneResolution: number;
   /** WE 场景壁纸刷新率上限(fps);0 = 自适应(重壁纸自动锁 30) */
   sceneFps: number;
+  /** WE 视频壁纸播放倍速(0.25~2,默认 1) */
+  videoRate: number;
+  /** WE 视频壁纸是否静音(默认 true:壁纸大多带音轨,默认不出声) */
+  videoMuted: boolean;
   /** 背景模糊半径（px，0 = 不模糊） */
   blur: number;
   /** 背景不透明度（0-100，默认 100） */
@@ -195,7 +210,7 @@ interface BackgroundState {
    * WE 场景壁纸的完整渲染载荷（多图层/动画/粒子/用户配置）;
    * 非场景类型或载荷组装失败时为 null,背景层据此回退静态图。
    */
-  sceneWallpaper: import("../lib/we-scene/types").WEScenePayload | null;
+  sceneWallpaper: WEScenePayload | null;
   /** 当前平台不支持 Wallpaper Engine 联动（WE 只有 Windows 版），设置页据此给出提示 */
   wallpaperEngineUnsupported: boolean;
   /**
@@ -215,6 +230,8 @@ const BackgroundContext = createContext<BackgroundState>({
   webInteractive: false,
   sceneResolution: 1,
   sceneFps: 0,
+  videoRate: 1,
+  videoMuted: true,
   blur: 0,
   opacity: 100,
   scrim: 80,
@@ -322,6 +339,23 @@ function parseSceneFps(raw: string): number {
   return Math.min(240, Math.max(10, Math.round(value)));
 }
 
+/** 视频壁纸倍速解析：0.25~2，未设置/损坏回落 1（原速） */
+function parseVideoRate(raw: string): number {
+  const value = Number(raw);
+
+  if (!Number.isFinite(value) || value <= 0) return 1;
+
+  return Math.min(2, Math.max(0.25, value));
+}
+
+/**
+ * 视频壁纸静音解析：只有明确写 "false" 才外放。
+ * 默认静音——WE 视频壁纸大多带音轨，启动器一进来就出声太突然。
+ */
+function parseVideoMuted(raw: string): boolean {
+  return raw !== "false";
+}
+
 /**
  * 网页壁纸入口（项目内相对路径）→ 应用内资源 URL。
  *
@@ -357,9 +391,7 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
   const [weTitle, setWeTitle] = useState("");
   const [weType, setWeType] = useState("");
   const [weWebVersion, setWeWebVersion] = useState("");
-  const [weScene, setWeScene] = useState<
-    import("../lib/we-scene/types").WEScenePayload | null
-  >(null);
+  const [weScene, setWeScene] = useState<WEScenePayload | null>(null);
   const [weUnsupported, setWeUnsupported] = useState(false);
   const [blur, setBlur] = useState(0);
   const [opacity, setOpacity] = useState(100);
@@ -375,6 +407,8 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
   const [webInteractive, setWebInteractive] = useState(false);
   const [sceneResolution, setSceneResolution] = useState(1);
   const [sceneFps, setSceneFps] = useState(0);
+  const [videoRate, setVideoRate] = useState(1);
+  const [videoMuted, setVideoMuted] = useState(true);
   const [hydrated, setHydrated] = useState(false);
 
   // 各读取自带 catch（失败回落默认值），Promise.all 必然 resolve。
@@ -423,6 +457,12 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
       GetValue(WE_SCENE_FPS_KEY)
         .then((value) => setSceneFps(parseSceneFps(value)))
         .catch(() => setSceneFps(0)),
+      GetValue(WE_VIDEO_RATE_KEY)
+        .then((value) => setVideoRate(parseVideoRate(value)))
+        .catch(() => setVideoRate(1)),
+      GetValue(WE_VIDEO_MUTE_KEY)
+        .then((value) => setVideoMuted(parseVideoMuted(value)))
+        .catch(() => setVideoMuted(true)),
     ]).then(() => undefined);
   }, []);
 
@@ -603,7 +643,7 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
       ? toLocalUrl(weSource)
       : "";
 
-  // WE 场景壁纸：完整渲染载荷交给背景层的 SceneWallpaperRenderer(three.js);
+  // WE 场景壁纸：载荷交给背景层的 WebWallglScene（oneincase/webwallgl 渲染）;
   // Path 里同时保留了静态提取图,作为资源加载期间与 WebGL 不可用时的兜底。
   // 载荷只在场景壁纸就绪时给出,其余类型为 null。
   const sceneWallpaper =
@@ -630,6 +670,8 @@ export const BackgroundProvider: React.FC<{ children: React.ReactNode }> = ({
         webInteractive,
         sceneResolution,
         sceneFps,
+        videoRate,
+        videoMuted,
         blur,
         opacity,
         scrim,

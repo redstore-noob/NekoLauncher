@@ -244,6 +244,14 @@ const dict: Record<string, string> = {
   "以 {0} 启动": "Launch with {0}",
   "以上为主要依赖；完整清单见仓库根目录的 go.mod 与 frontend/package-lock.json。":
     "The above are the main dependencies; see go.mod and frontend/package-lock.json in the repository root for the full list.",
+  外部服务: "External services",
+  外部服务与工具: "External services & tools",
+  "Minecraft 国内镜像下载源（bangbang93 维护的 OpenBMCLAPI）；启动器默认使用，可在下载设置切回官方源":
+    "Minecraft mirror download source in China (OpenBMCLAPI, maintained by bangbang93); the launcher uses it by default and you can switch back to the official source in download settings",
+  "内网穿透联机模组；装进实例后启动器接管其公开中继协议，把本机服务器发布到公网":
+    "Intranet-penetration multiplayer mod; once installed in an instance, the launcher takes over its public relay protocol to expose your local server",
+  "基于 EasyTier 的虚拟局域网联机工具；启动器只自动下载并驱动它的本地 HTTP 接口，不修改其二进制":
+    "EasyTier-based virtual LAN multiplayer tool; the launcher only downloads it and drives its local HTTP API without modifying its binaries",
   异常退出: "Crashed",
   音符盒: "Note Block",
   音乐: "Music",

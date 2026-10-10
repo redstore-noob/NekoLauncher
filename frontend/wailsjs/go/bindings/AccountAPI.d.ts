@@ -10,6 +10,8 @@ export function AuthlibLogin(arg1:string,arg2:string,arg3:string):Promise<Array<
 
 export function CancelMicrosoftLogin():Promise<void>;
 
+export function ConfirmAuthlibProfile(arg1:number):Promise<string>;
+
 export function CreateOfflineAccount(arg1:string):Promise<auth.LaunchAccount>;
 
 export function DismissMicrosoftLoginState():Promise<void>;
@@ -17,8 +19,6 @@ export function DismissMicrosoftLoginState():Promise<void>;
 export function GetAccountStableKey(arg1:auth.LaunchAccount):Promise<string>;
 
 export function GetAccountSummaries():Promise<Array<bindings.AccountSummary>>;
-
-export function ConfirmAuthlibProfile(arg1:number):Promise<string>;
 
 export function GetAccounts():Promise<Array<auth.LaunchAccount>>;
 

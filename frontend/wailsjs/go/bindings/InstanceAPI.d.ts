@@ -26,6 +26,8 @@ export function GetVersionDetails(arg1:string):Promise<instance.GameVersionDetai
 
 export function RefreshInstances(arg1:string):Promise<instance.GameInstanceSnapshot>;
 
+export function RegisterImportedInstance(arg1:string):Promise<void>;
+
 export function RenameInstance(arg1:string,arg2:string):Promise<string>;
 
 export function ResolveInstanceIsolation(arg1:instance.GameInstanceSnapshot,arg2:string):Promise<instance.GameVersionLayout>;
@@ -33,8 +35,6 @@ export function ResolveInstanceIsolation(arg1:instance.GameInstanceSnapshot,arg2
 export function SaveInstanceJavaConfig(arg1:string,arg2:config.JavaConfig):Promise<void>;
 
 export function ScanImportableInstances():Promise<Array<instance.ImportableInstance>>;
-
-export function RegisterImportedInstance(arg1:string):Promise<void>;
 
 export function SelectInstance(arg1:string):Promise<boolean>;
 

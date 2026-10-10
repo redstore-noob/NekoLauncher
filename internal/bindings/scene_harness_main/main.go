@@ -8,8 +8,8 @@ package main
 //	   scene 类型 → /wescene,web 类型 → /wwwallpaper;
 //  2. 在 127.0.0.1:8788 起资源路由 + harness 静态页;
 //  3. 浏览器打开对应地址即可脱离 Wails 验证渲染链路:
-//	   http://127.0.0.1:8788/          场景壁纸(three.js harness 页)
-//	   http://127.0.0.1:8788/web.html  网页壁纸(iframe 承载)
+//	   http://127.0.0.1:8788/          场景载荷(payload.json,交给 WebWallGL)
+//	   http://127.0.0.1:8788/wwwallpaper/  网页壁纸资源(iframe / 外部渲染器);场景资源见 /wescene/,载荷见 /payload.json
 
 import (
 	"encoding/json"
@@ -47,9 +47,9 @@ func main() {
 	case wallpaper.Scene != nil:
 		payloadJSON, _ := json.Marshal(wallpaper.Scene)
 		os.WriteFile("harness/payload.json", payloadJSON, 0o644)
-		fmt.Printf("场景载荷就绪:设计 %dx%d,对象 %d 个,属性 %d 项 → http://127.0.0.1:8788/\n",
+		fmt.Printf("场景载荷就绪:设计 %dx%d,属性 %d 项,资源基址 %s → http://127.0.0.1:8788/\n",
 			wallpaper.Scene.DesignWidth, wallpaper.Scene.DesignHeight,
-			len(wallpaper.Scene.Objects), len(wallpaper.Scene.GeneralProperties))
+			len(wallpaper.Scene.Properties), wallpaper.Scene.Base)
 	case wallpaper.Web != "":
 		fmt.Printf("网页壁纸就绪:入口 %s(属性指纹 %s)→ http://127.0.0.1:8788/web.html\n",
 			wallpaper.Web, wallpaper.WebConfigVersion)

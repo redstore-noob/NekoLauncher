@@ -36,6 +36,8 @@ export function GetLinuxWallpaperTools():Promise<bindings.LinuxWallpaperTools>;
 
 export function GetWallpaperEngineWallpaper():Promise<bindings.WallpaperEngineWallpaper>;
 
+export function HasSecret(arg1:string):Promise<boolean>;
+
 export function HideLauncher():Promise<void>;
 
 export function ImportResourcePack(arg1:string):Promise<bindings.ResourcePackProject>;
@@ -49,8 +51,6 @@ export function LoadResourcePackDraft():Promise<bindings.ResourcePackDraft>;
 export function OpenInExplorer(arg1:string):Promise<void>;
 
 export function OpenPath(arg1:string):Promise<void>;
-
-export function HasSecret(arg1:string):Promise<boolean>;
 
 export function ReadTextFile(arg1:string):Promise<string>;
 

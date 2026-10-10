@@ -82,6 +82,9 @@ jobs:
         working-directory: frontend
         run: |
           npx tsc --noEmit
+          # src 之外的构建配置也必须过类型检查：它们不在 tsconfig.json 的 include 里，
+          # 只靠主工程检查会留下盲区（曾有一个入口文件 import 了已删除的模块而 CI 全绿）。
+          npx tsc -p tsconfig.node.json --noEmit
           npx eslint src --max-warnings 0
           npm test
 

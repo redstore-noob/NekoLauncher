@@ -6,12 +6,16 @@ export function AddAccount(arg1) {
   return window['go']['bindings']['AccountAPI']['AddAccount'](arg1);
 }
 
-export function AuthlibLogin(arg1, arg2, arg3, arg4) {
-  return window['go']['bindings']['AccountAPI']['AuthlibLogin'](arg1, arg2, arg3, arg4);
+export function AuthlibLogin(arg1, arg2, arg3) {
+  return window['go']['bindings']['AccountAPI']['AuthlibLogin'](arg1, arg2, arg3);
 }
 
 export function CancelMicrosoftLogin() {
   return window['go']['bindings']['AccountAPI']['CancelMicrosoftLogin']();
+}
+
+export function ConfirmAuthlibProfile(arg1) {
+  return window['go']['bindings']['AccountAPI']['ConfirmAuthlibProfile'](arg1);
 }
 
 export function CreateOfflineAccount(arg1) {
@@ -30,16 +34,8 @@ export function GetAccountSummaries() {
   return window['go']['bindings']['AccountAPI']['GetAccountSummaries']();
 }
 
-export function ConfirmAuthlibProfile(arg1) {
-  return window['go']['bindings']['AccountAPI']['ConfirmAuthlibProfile'](arg1);
-}
-
 export function GetAccounts() {
   return window['go']['bindings']['AccountAPI']['GetAccounts']();
-}
-
-export function GetAuthlibClientToken() {
-  return window['go']['bindings']['AccountAPI']['GetAuthlibClientToken']();
 }
 
 export function GetAvatarUrl(arg1) {
