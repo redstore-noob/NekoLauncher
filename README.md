@@ -8,7 +8,7 @@
 ## 🐱项目概览
 
 许可证:NekoLauncher整体全部采用Apache2.0许可证<br>
-项目技术栈:整体基于Go+Gowails，前端使用React+HeroUI
+项目技术栈:整体基于Go+Gowails(v2)，前端使用React+HeroUI
 
 ## 平台支持情况
 
@@ -28,17 +28,13 @@
 - Rewind备份系统:参考Git设计，文件级的对存档备份，支持Minecraft存档/实例备份。
 - 创作中心:一条龙功能，从NekoLauncher插件制作到Minecraft整合包生成，再到资源包制作。
 
-## 项目未来将会更新的内容&未完成的内容
-
-- 插件在线商店:没钱买服务器这个真不一定😭
-
 ## ❓关于新仓库的问题Q&A
 
 Q:这个项目与之前的NekoLauncher是什么关系?
 
 > A:整体架构移植到Go+Gowails，项目不再被AI完全污染, 确保了占用更低(原来的Avalonia占用要300MB+!!!!!!)以及更易编写的扩展(预计使用js)，同时界面美观度将逐渐改善。
 
-Q:原来的NekoLauncher(Powered by Avalonia)还会更新吗?
+Q:原来的NyaLauncher(Powered by Avalonia)还会更新吗?
 
 > A:大概率不会，目前更新重心已经转移到NekoLauncher(Powered by Golang)，原先的项目已经归档。
 
@@ -48,11 +44,11 @@ Q:除了程序本体，有没有什么其他的不同?
 
 Q:还跟猫娘有关吗?
 
-> A:当然，这个很可爱🥰
+> A:当然，这个很可爱🥰![?!虚标是!?](docs/please_enter_text.gif)
 
 Q:关于代码，与之前是否有联系?
 
-> A:NekoLauncher的go重置版与之前没有任何代码上的联系，只有项目名字、设计原则有些许关联。当然，我们会确保用户体验较之前更好。
+> A:NekoLauncher的go重置版与之前技术栈上的联系基本为0（有些组件用了.NET写🤔），但NekoLauncher现后端功能有部分代码直接移植与原项目后端（以go重写🤔）
 
 Q:插件系统是否会出现新的变化?
 
@@ -102,8 +98,9 @@ _本名单只关于对于NekoLauncher改革后，含有编写代码/提交pr/提
 _下列名单没有排名，没有先后，我发自内心的感谢每一位为项目做出贡献的人，无论贡献大或小_
 
 [HatsukiYukina](https://github.com/HatsukiYukina)
-[TeapotCat](https://github.com/RealReGlaze)
+[RealReGlaze](https://github.com/RealReGlaze)
 [IrisDream-Cubic](https://github.com/IrisDream-Cubic)
+[LSGtorch](https://github.com/LSGtorch)
 
 ## 🤔版本命名规则
 
