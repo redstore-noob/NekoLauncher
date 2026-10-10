@@ -3647,7 +3647,10 @@ const InstancesPage: React.FC = () => {
                                 maxRows={26}
                                 minRows={18}
                                 radius="lg"
-                                spellCheck={false}
+                                // 字符串写法而非布尔字面量:@heroui 的 TextareaProps 把
+                                // spellCheck 声明成 "true" | "false"(自带的一份 AriaAttributes
+                                // 未收 boolean),传 false 会当场 TS2322;DOM 语义完全一致
+                                spellCheck="false"
                                 value={rawOptionsText}
                                 variant="bordered"
                                 onValueChange={(v) => {
