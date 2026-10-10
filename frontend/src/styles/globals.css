@@ -414,6 +414,19 @@ html[data-panel-blur="off"] [class*="backdrop-blur"] {
   -webkit-backdrop-filter: none;
 }
 
+/* ---------------- 窗口恢复后的强制重绘 ----------------
+ * lib/repaint.ts 在窗口从最小化/遮挡恢复、或重新获得焦点时，给 <html> 临时挂上
+ * 这个类，迫使 Chromium 重建图层树并重新光栅化：WebView2 在窗口被遮挡期间可能
+ * 丢弃 backdrop-filter 表面与整窗背景层的光栅缓存，恢复时不重建，表现为
+ * "卡片变透明、直接透出桌面"。
+ *
+ * 只提升图层、不改包含块：用 will-change 而不是 transform: translateZ(0)，
+ * 后者会让 <html> 成为 fixed 后代的包含块，那一帧里固定定位元素会跳位。
+ * 类只存在一帧（见 repaint.ts 的双 rAF），因此不产生常驻合成层开销。 */
+.nya-force-repaint {
+  will-change: transform;
+}
+
 /* ---------------- Linux 低特效路径（WebKitGTK） ----------------
  * background.tsx 在 Linux 上写 <html data-low-fx="true">。WebKitGTK 的合成器
  * 对 box-shadow / height / background-position 这类 paint、layout 型属性没有

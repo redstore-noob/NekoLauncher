@@ -42,6 +42,7 @@ import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { onNavigate } from "../lib/navigation";
 import { prefetchIdlePages } from "../lib/lazy";
 import { startAudioBridge } from "../lib/audioBridge";
+import { startRepaintOnRestore } from "../lib/repaint";
 import { notify } from "../components/overlay/dialog";
 import { notifyCrashIfNeeded } from "../lib/crashNotice";
 import { GetLaunchSnapshot } from "../../wailsjs/go/bindings/LauncherAPI";
@@ -295,6 +296,11 @@ const Shell: React.FC = () => {
       .then((supported) => setTraySupported(supported === true))
       .catch(() => setTraySupported(false));
   }, []);
+
+  // 窗口从最小化/遮挡恢复后强制重建合成层：WebView2 在窗口被遮挡期间可能丢掉
+  // backdrop-filter 表面与整窗背景层的光栅缓存，恢复时不重建，表现为"卡片变透明、
+  // 直接透出桌面"。详见 lib/repaint.ts。
+  useEffect(() => startRepaintOnRestore(), []);
 
   useEffect(
     () => EventsOn("launcher:close-requested", () => setCloseAskOpen(true)),
