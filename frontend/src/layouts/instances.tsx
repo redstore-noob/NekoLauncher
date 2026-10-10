@@ -2560,7 +2560,7 @@ const InstancesPage: React.FC = () => {
 
         {/* 右列：实例详情面板 */}
         {selected && expandedInstance ? (
-          <div className="nya-border flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border px-4 py-3">
+          <div className="nya-border nya-panel flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border px-4 py-3">
             <SwitchTransition
               activeKey={selected}
               className="flex min-h-0 flex-1 flex-col"
