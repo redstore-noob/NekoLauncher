@@ -26,6 +26,8 @@ func (a *MonitorAPI) GetDiskUsage(path string) (monitoring.DiskUsage, error) {
 // ---- ServerAPI ----
 
 // PingServer 查询 Minecraft 服务器状态（Server List Ping）。
+// 域名 + 默认端口 25565 时先解析 _minecraft._tcp SRV 记录再连接，
+// 与原版客户端一致；显式端口 / IP 地址直接连接。
 func (a *ServerAPI) PingServer(host string, port int) (network.MinecraftServerStatus, error) {
 	return network.Ping(host, port)
 }

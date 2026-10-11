@@ -41,7 +41,7 @@ type MinecraftServerStatus struct {
 }
 
 // MinecraftServerPinger 原版 Minecraft 服务器状态查询（Server List Ping）：
-// TCP 连接 → 握手包（nextState=1）→ 状态请求 → 读取 JSON 状态响应。
+// SRV 解析 → TCP 连接 → 握手包（nextState=1）→ 状态请求 → 读取 JSON 状态响应。
 // 仅依赖原版协议，不额外引入依赖。
 type MinecraftServerPinger struct{}
 
@@ -127,14 +127,19 @@ func ParseServerAddress(input string) (ServerAddress, error) {
 
 // Ping 查询服务器状态；失败返回 error（调用方决定降级展示）。
 // ctx 用于取消（对应 C# 的 CancellationToken）。
+// 连接前先做 SRV 解析（见 resolveServerTarget）：hypixel.net 这类只发布
+// _minecraft._tcp 记录的服务器无需写端口即可查询。
 func (MinecraftServerPinger) Ping(ctx context.Context, host string, port int) (MinecraftServerStatus, error) {
 	// 总超时（对应 C# OverallTimeout = 10s）
 	ctx, cancel := context.WithTimeout(ctx, overallTimeout)
 	defer cancel()
 
+	// SRV 解析只做一次，命中后用目标地址尝试全部候选协议
+	targetHost, targetPort := resolveServerTarget(ctx, host, port)
+
 	var lastError error
 	for _, protocol := range handshakeProtocolCandidates {
-		status, err := pingOnce(ctx, host, port, protocol)
+		status, err := pingOnce(ctx, targetHost, targetPort, protocol)
 		if err == nil {
 			return status, nil
 		}
