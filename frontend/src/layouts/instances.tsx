@@ -147,6 +147,7 @@ import {
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { config } from "../../wailsjs/go/models";
 import { asObject, asArray } from "../lib/guards";
+import { isInstanceSelectionChange } from "../lib/instanceSnapshot";
 import {
   badgeToneFor,
   downloadLink,
@@ -856,6 +857,8 @@ const InstancesPage: React.FC = () => {
 
   // ---------- 列表与目录 ----------
   const [snap, setSnap] = useState<instance.GameInstanceSnapshot | null>(null);
+  const snapshotRef = useRef<instance.GameInstanceSnapshot | null>(null);
+  const selectedRef = useRef("");
   const [folders, setFolders] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("");
@@ -1163,6 +1166,7 @@ const InstancesPage: React.FC = () => {
         ? await RefreshInstances(folder)
         : await GetCurrentInstanceSnapshot();
 
+    snapshotRef.current = snap;
     setSnap(snap);
 
     return snap;
@@ -1209,6 +1213,7 @@ const InstancesPage: React.FC = () => {
     async (versionId: string, mcDir: string) => {
       const seq = ++selectionSeqRef.current;
 
+      selectedRef.current = versionId;
       setSelected(versionId);
       setDetails(null);
       setProfile(null);
@@ -1305,6 +1310,7 @@ const InstancesPage: React.FC = () => {
               snap.MinecraftDirectory,
             );
           } else {
+            selectedRef.current = "";
             setSelected("");
             setDetails(null);
             setProfile(null);
@@ -1350,7 +1356,27 @@ const InstancesPage: React.FC = () => {
   useEffect(() => {
     void memorySliderMax();
     void reloadAll();
-    const changed = () => {
+    const changed = (next: instance.GameInstanceSnapshot) => {
+      const previous = snapshotRef.current;
+
+      snapshotRef.current = next;
+      setSnap(next);
+      // 真正的扫描由后端发布加载态；等完成事件再读取图标和详情。
+      if (next.IsLoading) {
+        setLoading(true);
+
+        return;
+      }
+      if (isInstanceSelectionChange(previous, next)) {
+        // 本页点击已经加载了详情，只同步快照；外部切换仅加载新的选中项。
+        if (
+          next.SelectedVersionId &&
+          next.SelectedVersionId !== selectedRef.current
+        )
+          void selectVersion(next.SelectedVersionId, next.MinecraftDirectory);
+
+        return;
+      }
       void reloadAll();
     };
 
@@ -2383,10 +2409,15 @@ const InstancesPage: React.FC = () => {
               {t("导入其他启动器")}
             </Button>
             <Button
+              isDisabled={loading}
               size="sm"
               startContent={<RefreshIcon />}
               variant="flat"
-              onPress={() => void reloadAll()}
+              onPress={() =>
+                void reloadAll(
+                  snap?.SourcePath || snap?.MinecraftDirectory || "",
+                )
+              }
             >
               {t("重新扫描")}
             </Button>
@@ -2479,7 +2510,7 @@ const InstancesPage: React.FC = () => {
                         }`}
                         onClick={() => {
                           setExpandedInstance(true);
-                          if (snap)
+                          if (snap && v !== selectedRef.current)
                             void selectVersion(v, snap.MinecraftDirectory);
                         }}
                         onContextMenu={(e) => openInstanceMenu(v, e)}
@@ -2529,7 +2560,7 @@ const InstancesPage: React.FC = () => {
 
         {/* 右列：实例详情面板 */}
         {selected && expandedInstance ? (
-          <div className="nya-border flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border px-4 py-3">
+          <div className="nya-border nya-panel flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border px-4 py-3">
             <SwitchTransition
               activeKey={selected}
               className="flex min-h-0 flex-1 flex-col"
